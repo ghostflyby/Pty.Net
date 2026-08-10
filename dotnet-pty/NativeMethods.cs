@@ -10,20 +10,24 @@ namespace dotnet_pty;
 ///
 /// fd-typed declarations use <see cref="SafeFileHandle"/> and rely on the runtime's
 /// automatic handle marshaling, so native fds are wrapped, owned and closed for us.
-/// Byte transfer goes through a <see cref="FileStream"/> over the master handle
-/// (see <see cref="PtyProcess"/>) instead of raw read/write P/Invokes.
+/// Byte transfer goes through raw read(2)/write(2) on the non-blocking master fd,
+/// driven by <see cref="PtyStream"/> / <see cref="PtyIoEngine"/> (see <see cref="PtyProcess"/>).
 ///
 /// Constants are split per platform: macOS (OSX) and Linux glibc differ in the
 /// POSIX_SPAWN_SETSID value and the fd-closing mechanism.
 /// </summary>
 internal static partial class NativeMethods
 {
-    // poll(2) event bits.
+    // poll(2) event bits (identical values on macOS and Linux).
     [Flags]
     internal enum PollEvents : short
     {
         None = 0,
         Pollin = 0x0001,
+        Pollout = 0x0004,
+        Pollerr = 0x0008,
+        Pollhup = 0x0010,
+        Pollnval = 0x0020,
     }
 
     // waitpid(2) options.
@@ -69,9 +73,33 @@ internal static partial class NativeMethods
 #endif
     }
 
-    // errno values used in the poll/waitpid retry logic (identical on macOS and Linux).
+    // errno values used in the poll/read/write retry logic.
+    // EINTR and EIO are identical on macOS and Linux; EAGAIN differs.
     internal const int Eintr = 4;
+    internal const int Eio = 5;
     internal const int Echild = 10;
+#if OSX
+    internal const int Eagain = 35;
+#elif LINUX
+    internal const int Eagain = 11;
+#else
+#error "dotnet-pty supports macOS (define OSX) and Linux (define LINUX) only."
+#endif
+
+    // open(2) / posix_openpt(2) flag bits. O_RDWR is identical; O_NONBLOCK and
+    // O_NOCTTY differ per platform. O_NONBLOCK is applied to the pty master at
+    // posix_openpt time (via fcntl it would hit the broken variadic fcntl on Apple
+    // arm64 — posix_openpt is non-variadic and portable).
+#if OSX
+    internal const int ONonblock = 0x0004;
+    internal const int ONoctty = 0x20000;
+#elif LINUX
+    internal const int ONonblock = 0x0800;
+    internal const int ONoctty = 0x00100;
+#else
+#error "dotnet-pty supports macOS (define OSX) and Linux (define LINUX) only."
+#endif
+    internal const int ORdwr = 0x0002;
 
     // Buffer sizes for the opaque spawn types: both are well under this on macOS.
     internal const int PosixSpawnFileActionsSize = 512;
@@ -90,11 +118,35 @@ internal static partial class NativeMethods
         internal PollEvents Revents;
     }
 
-    // openpty writes the master/slave fds into the caller's slots; the runtime wraps
-    // them in SafeFileHandles and transfers ownership (disposing the handle closes the
-    // fd, and the SafeHandle finalizer is the backstop if we forget).
+    // posix_openpt(3) + grantpt/unlockpt/ptsname/open(2) replace openpty(3): all are
+    // non-variadic, so they work on Apple arm64 (where variadic fcntl mis-delivers
+    // its third argument). The O_NONBLOCK flag on the master fd is the foundation of
+    // PtyStream's poll-driven I/O. posix_openpt/grantpt/unlockpt return raw fds;
+    // the runtime wraps the master in a SafeFileHandle for PtyStream, the slave is
+    // closed after spawn.
     [LibraryImport("libc", SetLastError = true)]
-    internal static partial int openpty(out SafeFileHandle master, out SafeFileHandle slave, IntPtr name, IntPtr termp, IntPtr winp);
+    internal static partial int posix_openpt(int flags);
+
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int grantpt(int fd);
+
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int unlockpt(int fd);
+
+    // ptsname returns a pointer to a libc-owned static buffer. The runtime's string
+    // return marshaling would try to free that pointer (interop treats returned char*
+    // as allocated), corrupting every later call — so it is declared as IntPtr and
+    // converted with Marshal.PtrToStringUTF8 (which does not free) by the caller.
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial IntPtr ptsname(int fd);
+
+    // Two-argument open(2) — the pty slave never needs O_CREAT, whose mode argument
+    // would exercise the same broken variadic path as fcntl.
+    [LibraryImport("libc", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int open(string path, int flags);
+
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int close(int fd);
 
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int posix_spawn(
@@ -163,6 +215,20 @@ internal static partial class NativeMethods
 
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int poll([In, Out] PollFd[] fds, nuint nfds, int timeout);
+
+    // Byte transfer for PtyStream: raw read(2)/write(2) on the non-blocking pty master
+    // fd. Callers pin the buffer (MemoryHandle / fixed) and pass the raw pointer, so a
+    // single IntPtr overload serves both the sync and the engine-driven async paths.
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial nint read(int fd, IntPtr buf, nuint count);
+
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial nint write(int fd, IntPtr buf, nuint count);
+
+    // pipe(2) creates the PtyIoEngine wakeup channel: any thread writes a byte to
+    // interrupt the engine's poll(2) so it applies pending register/unregister messages.
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int pipe([Out] int[] fds);
 
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int waitpid(int pid, out int status, WaitOptions options);

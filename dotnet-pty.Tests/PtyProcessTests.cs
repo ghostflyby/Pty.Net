@@ -117,6 +117,55 @@ public class PtyProcessTests : IDisposable
         Assert.Contains("sleep 0.5", jobs);
     }
 
+    // --- async convenience methods ------------------------------------------
+
+    [Fact]
+    public async Task WriteAsync_And_ReadUntilAsync_RoundTrip()
+    {
+        DisableEcho();
+
+        await bash.WriteAsync($"echo async-AAAA; echo {Done}\n", default);
+        var output = await bash.ReadUntilAsync(Done, Timeout, default);
+
+        Assert.Contains("async-AAAA", output);
+    }
+
+    [Fact]
+    public async Task ReadUntilAsync_Timeout_ThrowsTimeoutException()
+    {
+        var ex = await Assert.ThrowsAsync<TimeoutException>(
+            () => bash.ReadUntilAsync("never-appears", TimeSpan.FromMilliseconds(300), default));
+        Assert.Contains("never-appears", ex.Message);
+    }
+
+    [Fact]
+    public async Task ReadUntilAsync_Cancellation_ThrowsOperationCanceledException()
+    {
+        using var cts = new CancellationTokenSource();
+        var task = bash.ReadUntilAsync("never-appears", Timeout, cts.Token);
+
+        await Task.Delay(100);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task).WaitAsync(Timeout);
+        sw.Stop();
+
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(1), $"cancel took {sw.Elapsed}");
+    }
+
+    [Fact]
+    public async Task ReadUntilAsync_ReturnsEarlyWhenChildExits()
+    {
+        bash.ReadUntil("$", Timeout);
+        bash.Write("exit\n");
+
+        // Returns on EOF (child gone) instead of blocking until the timeout.
+        var output = await bash.ReadUntilAsync("never-appears", Timeout, default);
+        Assert.NotNull(output);
+
+        Assert.True(bash.WaitForExit(Timeout)); // confirm the child actually exited
+    }
+
     /// <summary>
     /// Turns off the tty line-discipline echo so command output is not mixed with
     /// the echoed input, then waits for the change to take effect.

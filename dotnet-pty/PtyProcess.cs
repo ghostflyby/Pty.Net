@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using Microsoft.Win32.SafeHandles;
 
 namespace dotnet_pty;
 
@@ -10,40 +11,42 @@ namespace dotnet_pty;
 /// </summary>
 /// <remarks>
 /// The pty master fd comes from openpty as a <see cref="Microsoft.Win32.SafeHandles.SafeFileHandle"/>
-/// and is wrapped in an unbuffered <see cref="FileStream"/>, so read/write go through managed APIs
-/// and disposing the stream closes the fd automatically. Reading still uses a short-poll +
-/// blocking-read model: <c>poll(2)</c> tells us when data is readable (we only rely on its return
-/// value, not <c>revents</c>), then a single blocking read is safe because poll guaranteed data is
-/// available.
+/// and is wrapped in a non-blocking <see cref="PtyStream"/>: all I/O is driven by poll(2),
+/// so no operation ever blocks a thread-pool thread and cancellation is immediate (see
+/// <see cref="PtyIoEngine"/>). <see cref="BaseStream"/> exposes the raw byte stream; the
+/// string methods below layer a UTF-8 text buffer on top of it.
 /// </remarks>
 public sealed class PtyProcess : IDisposable
 {
     private const int ReadBufferSize = 4096;
 
-    // Raw master fd for poll(2) only — the FileStream owns and closes the actual handle.
-    private readonly int masterFd;
-    private readonly FileStream stream;
-    private readonly int pid;
-    private readonly Lock gate = new();
+    private readonly SemaphoreSlim gate = new(1, 1);
     private readonly List<byte> pending = [];
 
-    private int? exitCode;
     private bool eof;
     private bool disposed;
 
     /// <summary>OS process id of the child.</summary>
-    public int Pid => pid;
+    public int Pid { get; }
 
     /// <summary>Exit code, set once the child has been reaped via <see cref="WaitForExit"/> or dispose.</summary>
-    public int? ExitCode => exitCode;
+    public int? ExitCode { get; private set; }
 
-    public bool HasExited => exitCode is not null;
+    public bool HasExited => ExitCode is not null;
 
-    private PtyProcess(int masterFd, FileStream stream, int pid)
+    /// <summary>
+    /// The raw byte stream over the pty master. Read/write directly only when you need
+    /// byte-level (not string) I/O; note that reading from <see cref="BaseStream"/> bypasses
+    /// the pending-text buffer that the string methods (<see cref="ReadUntil"/>,
+    /// <see cref="ReadAvailable"/>) accumulate, so interleaving both kinds of reads can
+    /// reorder or consume output in surprising ways.
+    /// </summary>
+    public PtyStream BaseStream { get; }
+
+    private PtyProcess(PtyStream stream, int pid)
     {
-        this.masterFd = masterFd;
-        this.stream = stream;
-        this.pid = pid;
+        BaseStream = stream;
+        Pid = pid;
     }
 
     /// <summary>
@@ -66,37 +69,52 @@ public sealed class PtyProcess : IDisposable
     /// stays safe even when other threads are concurrently allocating memory (fork in a multi-threaded
     /// process can deadlock the child on inherited malloc locks).
     /// </summary>
-    public static PtyProcess Start(string file, string[] arguments, string? workingDirectory = null)
+    private static PtyProcess Start(string file, string[] arguments, string? workingDirectory = null)
     {
         // Everything is prepared in the parent; posix_spawn performs the exec natively.
         var envp = ToNative(BuildEnvironment());
         var argv = ToNative([Path.GetFileName(file), .. arguments]);
         var path = Marshal.StringToHGlobalAnsi(file);
 
-        // openpty hands us the master/slave fds as SafeFileHandles (ownership transferred).
-        // The FileStream takes over the master; the slave is closed once spawn has run.
-        FileStream? stream = null;
-        if (NativeMethods.openpty(out var master, out var slave, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero) != 0)
+        // Create the pty via posix_openpt(O_NONBLOCK) + grantpt/unlockpt/ptsname/open:
+        // all non-variadic, so they work on Apple arm64 (where the variadic fcntl call
+        // mis-delivers its third argument and could never set O_NONBLOCK). The master
+        // fd is non-blocking from birth — the foundation of PtyStream's poll-driven I/O.
+        PtyStream? stream = null;
+        var masterFd = NativeMethods.posix_openpt(NativeMethods.ORdwr | NativeMethods.ONonblock);
+        if (masterFd < 0 ||
+            NativeMethods.grantpt(masterFd) != 0 ||
+            NativeMethods.unlockpt(masterFd) != 0)
         {
             var err = Marshal.GetLastPInvokeError();
             FreeNative(envp);
             FreeNative(argv);
             Marshal.FreeHGlobal(path);
-            throw new IOException($"openpty failed: errno={err}");
+            if (masterFd >= 0)
+                NativeMethods.close(masterFd);
+            throw new IOException($"posix_openpt/grantpt/unlockpt failed: errno={err}");
         }
 
-        var masterFd = (int)master.DangerousGetHandle();
-        var slaveFd = (int)slave.DangerousGetHandle();
+        var slavePath = Marshal.PtrToStringUTF8(NativeMethods.ptsname(masterFd)) ?? string.Empty;
+        var slaveFd = NativeMethods.open(slavePath, NativeMethods.ORdwr | NativeMethods.ONoctty);
+        if (slaveFd < 0)
+        {
+            var err = Marshal.GetLastPInvokeError();
+            FreeNative(envp);
+            FreeNative(argv);
+            Marshal.FreeHGlobal(path);
+            NativeMethods.close(masterFd);
+            throw new IOException($"open slave '{slavePath}' failed: errno={err}");
+        }
 
         var fileActions = Marshal.AllocHGlobal(NativeMethods.PosixSpawnFileActionsSize);
         var attr = Marshal.AllocHGlobal(NativeMethods.PosixSpawnAttrSize);
         var spawned = false;
         try
         {
-            // Unbuffered (bufferSize 1) so reads/writes map 1:1 to syscalls: a pty is not
-            // seekable, and our poll-based reader must never leave data stranded in a
-            // stream buffer that poll(2) cannot see.
-            stream = new FileStream(master, FileAccess.ReadWrite, bufferSize: 1, isAsync: false);
+            // PtyStream takes over the non-blocking master fd. Reads/writes are
+            // poll-gated, so no thread-pool thread is ever blocked on the pty.
+            stream = new PtyStream(new SafeFileHandle(new IntPtr(masterFd), ownsHandle: true));
 
             if (NativeMethods.posix_spawn_file_actions_init(fileActions) != 0 ||
                 NativeMethods.posix_spawnattr_init(attr) != 0)
@@ -159,7 +177,7 @@ public sealed class PtyProcess : IDisposable
                 throw new IOException($"posix_spawn failed: errno={spawnRc}");
 
             spawned = true;
-            return new PtyProcess(masterFd, stream, pid);
+            return new PtyProcess(stream, pid);
         }
         finally
         {
@@ -167,16 +185,16 @@ public sealed class PtyProcess : IDisposable
             NativeMethods.posix_spawnattr_destroy(attr);
             Marshal.FreeHGlobal(fileActions);
             Marshal.FreeHGlobal(attr);
-            slave.Dispose(); // parent's copy of the slave is no longer needed
+            NativeMethods.close(slaveFd); // parent's copy of the slave is no longer needed
             FreeNative(envp);
             FreeNative(argv);
             Marshal.FreeHGlobal(path);
             if (!spawned)
             {
-                // The stream owns the master handle; dispose both (SafeHandle disposal is
+                // The stream owns the master fd; dispose both (SafeHandle disposal is
                 // idempotent) so a failed spawn cannot leak the fd.
                 stream?.Dispose();
-                master.Dispose();
+                NativeMethods.close(masterFd);
             }
         }
     }
@@ -186,13 +204,38 @@ public sealed class PtyProcess : IDisposable
     {
         ArgumentNullException.ThrowIfNull(data);
         var bytes = Encoding.UTF8.GetBytes(data);
-        lock (gate)
+        gate.Wait();
+        try
         {
             ObjectDisposedException.ThrowIf(disposed, this);
-            // Unbuffered FileStream: writes go straight to the pty master. The fd is
-            // blocking, so a full pty buffer just blocks here until the child drains it.
-            stream.Write(bytes, 0, bytes.Length);
-            stream.Flush();
+            // The fd is non-blocking; PtyStream's poll loop blocks here until the child
+            // drains enough for all bytes to be accepted.
+            BaseStream.Write(bytes, 0, bytes.Length);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Sends <paramref name="data"/> to the shell's stdin asynchronously. Serialized with the
+    /// sync <see cref="Write"/> by the same gate. Cancellation stops the write after whatever
+    /// the device has consumed (a partial write) and throws <see cref="OperationCanceledException"/>.
+    /// </summary>
+    public async Task WriteAsync(string data, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        var bytes = Encoding.UTF8.GetBytes(data);
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            await BaseStream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            gate.Release();
         }
     }
 
@@ -202,10 +245,15 @@ public sealed class PtyProcess : IDisposable
     /// </summary>
     public string ReadAvailable(TimeSpan timeout)
     {
-        lock (gate)
+        gate.Wait();
+        try
         {
             ObjectDisposedException.ThrowIf(disposed, this);
             return ReadAvailableCore((int)Math.Min(timeout.TotalMilliseconds, int.MaxValue));
+        }
+        finally
+        {
+            gate.Release();
         }
     }
 
@@ -229,11 +277,12 @@ public sealed class PtyProcess : IDisposable
             var remaining = deadline - DateTime.UtcNow;
             if (remaining <= TimeSpan.Zero)
             {
-                var diag = $"pid={pid} eof={eof} pending={pending.Count} exited={HasExited}";
+                var diag = $"pid={Pid} eof={eof} pending={pending.Count} exited={HasExited}";
                 throw new TimeoutException($"Timed out after {timeout} waiting for '{marker}'. Got: {sb} [{diag}]");
             }
 
-            lock (gate)
+            gate.Wait();
+            try
             {
                 ObjectDisposedException.ThrowIf(disposed, this);
                 sb.Append(ReadAvailableCore((int)Math.Min(remaining.TotalMilliseconds, int.MaxValue)));
@@ -243,6 +292,67 @@ public sealed class PtyProcess : IDisposable
                 if (eof)
                     return sb.ToString(); // child exited before the marker appeared
             }
+            finally
+            {
+                gate.Release();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Reads until <paramref name="marker"/> appears in the output (inclusive) and returns
+    /// everything read so far, asynchronously. Throws <see cref="TimeoutException"/> if the
+    /// marker does not appear within <paramref name="timeout"/>. Returns whatever was read
+    /// if the child exits before the marker shows up. Cancellation is immediate: no thread
+    /// is parked while waiting.
+    /// </summary>
+    public async Task<string> ReadUntilAsync(string marker, TimeSpan timeout, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(marker);
+        if (marker.Length == 0)
+            throw new ArgumentException("Marker must not be empty.", nameof(marker));
+
+        var sb = new StringBuilder();
+        var chunk = new byte[ReadBufferSize];
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(timeout);
+
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            while (true)
+            {
+                int n;
+                try
+                {
+                    n = await BaseStream.ReadAsync(chunk, timeoutCts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    // The timeout fired (the caller's token did not).
+                    var diag = $"pid={Pid} eof={eof} pending={pending.Count} exited={HasExited}";
+                    throw new TimeoutException($"Timed out after {timeout} waiting for '{marker}'. Got: {sb} [{diag}]");
+                }
+
+                if (n == 0)
+                {
+                    eof = true; // child's slave side closed
+                    return sb.ToString();
+                }
+
+                pending.AddRange(chunk.AsSpan(0, n));
+                sb.Append(Drain());
+
+                if (sb.ToString().Contains(marker, StringComparison.Ordinal))
+                    return sb.ToString();
+                if (eof)
+                    return sb.ToString();
+            }
+        }
+        finally
+        {
+            gate.Release();
         }
     }
 
@@ -256,12 +366,17 @@ public sealed class PtyProcess : IDisposable
         var deadline = DateTime.UtcNow + timeout;
         while (true)
         {
-            lock (gate)
+            gate.Wait();
+            try
             {
                 ObjectDisposedException.ThrowIf(disposed, this);
                 DrainOutput(); // keep the pty buffer flowing while we wait
                 if (TryReap())
                     return true;
+            }
+            finally
+            {
+                gate.Release();
             }
 
             if (DateTime.UtcNow >= deadline)
@@ -272,7 +387,8 @@ public sealed class PtyProcess : IDisposable
 
     public void Dispose()
     {
-        lock (gate)
+        gate.Wait();
+        try
         {
             if (disposed)
                 return;
@@ -283,16 +399,22 @@ public sealed class PtyProcess : IDisposable
                 // The child was spawned with posix_spawn + SETSID, so it has no controlling
                 // terminal: closing the pty master alone does not deliver a hangup. Signal
                 // it explicitly, then close the master so its output writes fail cleanly.
-                NativeMethods.kill(pid, NativeMethods.Signals.Hup);
+                NativeMethods.kill(Pid, NativeMethods.Signals.Hup);
             }
 
-            // Disposing the stream closes the master fd (owned via the SafeFileHandle).
-            stream.Dispose();
+            // Disposing the stream aborts any in-flight async operations and closes the
+            // master fd (the engine defers the close until its last ref is released, so
+            // no fd is ever closed while still being polled).
+            BaseStream.Dispose();
 
             // Reap the child so it does not linger as a zombie.
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
             while (!TryReap() && DateTime.UtcNow < deadline)
                 Thread.Sleep(10);
+        }
+        finally
+        {
+            gate.Release();
         }
     }
 
@@ -306,7 +428,7 @@ public sealed class PtyProcess : IDisposable
             .ToList();
         if (!env.Any(e => e.StartsWith("TERM=", StringComparison.Ordinal)))
             env.Add("TERM=xterm-256color");
-        return env.ToArray();
+        return [.. env];
     }
 
     private static IntPtr[] ToNative(string[] strs)
@@ -330,78 +452,57 @@ public sealed class PtyProcess : IDisposable
         if (eof)
             return Drain();
 
-        // Wait up to timeoutMs for the first byte (or EOF).
-        if (!WaitReadable(timeoutMs))
+        var buf = new byte[ReadBufferSize];
+        if (!ReadOnce(buf, timeoutMs))
             return Drain(); // timed out with nothing new
 
         // Drain: keep reading while data keeps arriving; treat a quiet gap as "drained".
         while (true)
         {
-            if (!WaitReadable(50))
+            if (!ReadOnce(buf, 50))
             {
                 // Nothing this instant; give the child a brief chance to produce more
                 // before declaring the output drained (guards against spurious polls).
                 Thread.Sleep(10);
-                if (!WaitReadable(50))
+                if (!ReadOnce(buf, 50))
                     break;
             }
-
-            var buf = new byte[ReadBufferSize];
-            int n;
-            try
-            {
-                n = stream.Read(buf, 0, buf.Length);
-            }
-            catch (IOException)
-            {
-                // The child's slave side closed: the master read returns EIO (macOS and
-                // Linux), which FileStream surfaces as IOException. Treat as EOF.
-                eof = true;
+            if (eof)
                 break;
-            }
-
-            if (n > 0)
-            {
-                pending.AddRange(buf.AsSpan(0, n));
-                continue;
-            }
-
-            eof = true; // EOF (the master read returns 0 once the slave is gone)
-            break;
         }
 
         return Drain();
     }
 
     /// <summary>
-    /// Polls the master fd for readability (or hangup). Returns true when poll reports an event;
-    /// only the poll return value is trusted, not <c>revents</c>. Uses a short poll timeout plus
-    /// a sleep so it keeps working even on platforms where the poll timeout misbehaves.
+    /// Reads one chunk into <paramref name="buf"/>, waiting up to <paramref name="timeoutMs"/>
+    /// for the first byte. Returns true when data was read (appended to <c>pending</c>) or the
+    /// slave side closed (<c>eof</c> set); false when nothing arrived within the timeout.
     /// </summary>
-    private bool WaitReadable(int timeoutMs)
+    private bool ReadOnce(byte[] buf, int timeoutMs)
     {
-        var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(timeoutMs);
-        while (true)
-        {
-            var fds = new[] { new NativeMethods.PollFd { Fd = masterFd, Events = NativeMethods.PollEvents.Pollin } };
-            int r;
-            do
-            {
-                r = NativeMethods.poll(fds, 1, 50);
-            } while (r < 0 && Marshal.GetLastPInvokeError() == NativeMethods.Eintr);
+        if (eof)
+            return true; // already at EOF: nothing more to read
 
-            if (r < 0)
-                throw new IOException($"poll failed: errno={Marshal.GetLastPInvokeError()}");
-            if (r > 0)
-                return true;
-            if (DateTime.UtcNow >= deadline)
-                return false;
-            Thread.Sleep(5);
+        try
+        {
+            var n = BaseStream.Read(buf, timeoutMs, out var reachedEof);
+            if (reachedEof)
+                eof = true;
+            if (n <= 0) return eof; // n == 0: timeout (false) or EOF (true)
+            pending.AddRange(buf.AsSpan(0, n));
+            return true;
+        }
+        catch (IOException)
+        {
+            // The child's slave side closed (EIO). Treat as EOF.
+            eof = true;
+            return true;
         }
     }
 
     /// <summary>
-    /// Non-blocking drain: reads whatever output is currently available into <c>_pending</c>
+    /// Non-blocking drain: reads whatever output is currently available into <c>pending</c>
     /// without consuming it. Used by <see cref="WaitForExit"/> so the child never blocks on a
     /// full pty buffer while we are not reading.
     /// </summary>
@@ -410,41 +511,18 @@ public sealed class PtyProcess : IDisposable
         if (eof)
             return;
 
+        var buf = new byte[ReadBufferSize];
         while (true)
         {
-            var fds = new[] { new NativeMethods.PollFd { Fd = masterFd, Events = NativeMethods.PollEvents.Pollin } };
-            int r;
-            do
-            {
-                r = NativeMethods.poll(fds, 1, 0); // immediate, non-blocking
-            } while (r < 0 && Marshal.GetLastPInvokeError() == NativeMethods.Eintr);
-
-            if (r < 0)
-                throw new IOException($"poll failed: errno={Marshal.GetLastPInvokeError()}");
-            if (r == 0)
-                return; // nothing readable right now
-
-            var buf = new byte[ReadBufferSize];
-            int n;
-            try
-            {
-                n = stream.Read(buf, 0, buf.Length);
-            }
-            catch (IOException)
-            {
-                // Slave side gone (EIO) — same EOF semantics as ReadAvailableCore.
+            var n = BaseStream.Read(buf, 0, out var reachedEof); // immediate, non-blocking
+            if (reachedEof)
                 eof = true;
-                return;
-            }
-
             if (n > 0)
             {
                 pending.AddRange(buf.AsSpan(0, n));
                 continue; // more may be buffered
             }
-
-            eof = true;
-            return;
+            return; // timeout (nothing available right now) or EOF
         }
     }
 
@@ -493,28 +571,32 @@ public sealed class PtyProcess : IDisposable
 
     private bool TryReap()
     {
-        if (exitCode is not null)
+        if (ExitCode is not null)
             return true;
 
-        var r = NativeMethods.waitpid(pid, out var status, NativeMethods.WaitOptions.Wnohang);
-        if (r == 0)
-            return false; // still running
-
-        if (r < 0)
+        var r = NativeMethods.waitpid(Pid, out var status, NativeMethods.WaitOptions.Wnohang);
+        switch (r)
         {
-            var err = Marshal.GetLastPInvokeError();
-            if (err == NativeMethods.Eintr)
-                return false;
-            if (err == NativeMethods.Echild)
+            case 0:
+                return false; // still running
+            case < 0:
             {
-                exitCode = -1; // already reaped elsewhere
-                return true;
+                var err = Marshal.GetLastPInvokeError();
+                switch (err)
+                {
+                    case NativeMethods.Eintr:
+                        return false;
+                    case NativeMethods.Echild:
+                        ExitCode = -1; // already reaped elsewhere
+                        return true;
+                    default:
+                        throw new IOException($"waitpid failed: errno={err}");
+                }
             }
-            throw new IOException($"waitpid failed: errno={err}");
+            default:
+                ExitCode = ExtractExitCode(status);
+                return true;
         }
-
-        exitCode = ExtractExitCode(status);
-        return true;
     }
 
     private static int ExtractExitCode(int status)
