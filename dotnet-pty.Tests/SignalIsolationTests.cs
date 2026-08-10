@@ -6,7 +6,8 @@ namespace dotnet_pty.Tests;
 // The .NET runtime (or host app) may install custom signal handlers (e.g. ignore
 // SIGPIPE). If posix_spawn inherited those dispositions into the shell, pipe behavior
 // would silently change. This test asserts the child resets caught/ignored signals
-// to their defaults — the sane "fresh process" contract.
+// to their defaults — the sane "fresh process" contract. (On Linux this is enforced
+// explicitly via POSIX_SPAWN_SETSIGDEF; macOS resets caught signals automatically.)
 public partial class SignalIsolationTests
 {
     private const string Done = "__DONE__";
@@ -16,8 +17,8 @@ public partial class SignalIsolationTests
     public void ChildResetsSignalsToDefaults()
     {
         // Parent ignores SIGINT and SIGPIPE.
-        Native.signal(2, new IntPtr(1)); // SIG_IGN
-        Native.signal(13, new IntPtr(1));
+        Native.signal(Native.Signals.Int, new IntPtr(1)); // SIG_IGN
+        Native.signal(Native.Signals.Pipe, new IntPtr(1));
         try
         {
             using var bash = PtyProcess.StartBash();
@@ -32,14 +33,20 @@ public partial class SignalIsolationTests
         }
         finally
         {
-            Native.signal(2, IntPtr.Zero); // SIG_DFL
-            Native.signal(13, IntPtr.Zero);
+            Native.signal(Native.Signals.Int, IntPtr.Zero); // SIG_DFL
+            Native.signal(Native.Signals.Pipe, IntPtr.Zero);
         }
     }
 
-    private static partial class Native
+    internal static partial class Native
     {
+        internal enum Signals : int
+        {
+            Int = 2,
+            Pipe = 13,
+        }
+
         [LibraryImport("libc", SetLastError = true)]
-        internal static partial IntPtr signal(int signum, IntPtr handler);
+        internal static partial IntPtr signal(Signals signum, IntPtr handler);
     }
 }

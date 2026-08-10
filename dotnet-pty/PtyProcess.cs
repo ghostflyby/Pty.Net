@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -10,15 +9,20 @@ namespace dotnet_pty;
 /// Use it to drive an interactive shell (e.g. bash): write commands, read back the terminal output.
 /// </summary>
 /// <remarks>
-/// Reading uses a short-poll + blocking-read model: <c>poll(2)</c> tells us when data is readable
-/// (we only rely on its return value, not <c>revents</c>, which is not written back on some platforms),
-/// then a single blocking <c>read(2)</c> is safe because poll guaranteed data is available.
+/// The pty master fd comes from openpty as a <see cref="Microsoft.Win32.SafeHandles.SafeFileHandle"/>
+/// and is wrapped in an unbuffered <see cref="FileStream"/>, so read/write go through managed APIs
+/// and disposing the stream closes the fd automatically. Reading still uses a short-poll +
+/// blocking-read model: <c>poll(2)</c> tells us when data is readable (we only rely on its return
+/// value, not <c>revents</c>), then a single blocking read is safe because poll guaranteed data is
+/// available.
 /// </remarks>
 public sealed class PtyProcess : IDisposable
 {
     private const int ReadBufferSize = 4096;
 
+    // Raw master fd for poll(2) only — the FileStream owns and closes the actual handle.
     private readonly int masterFd;
+    private readonly FileStream stream;
     private readonly int pid;
     private readonly Lock gate = new();
     private readonly List<byte> pending = [];
@@ -35,9 +39,10 @@ public sealed class PtyProcess : IDisposable
 
     public bool HasExited => exitCode is not null;
 
-    private PtyProcess(int masterFd, int pid)
+    private PtyProcess(int masterFd, FileStream stream, int pid)
     {
         this.masterFd = masterFd;
+        this.stream = stream;
         this.pid = pid;
     }
 
@@ -68,8 +73,10 @@ public sealed class PtyProcess : IDisposable
         var argv = ToNative([Path.GetFileName(file), .. arguments]);
         var path = Marshal.StringToHGlobalAnsi(file);
 
-        int master = 0, slave = 0;
-        if (NativeMethods.openpty(ref master, ref slave, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero) != 0)
+        // openpty hands us the master/slave fds as SafeFileHandles (ownership transferred).
+        // The FileStream takes over the master; the slave is closed once spawn has run.
+        FileStream? stream = null;
+        if (NativeMethods.openpty(out var master, out var slave, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero) != 0)
         {
             var err = Marshal.GetLastPInvokeError();
             FreeNative(envp);
@@ -78,11 +85,19 @@ public sealed class PtyProcess : IDisposable
             throw new IOException($"openpty failed: errno={err}");
         }
 
+        var masterFd = (int)master.DangerousGetHandle();
+        var slaveFd = (int)slave.DangerousGetHandle();
+
         var fileActions = Marshal.AllocHGlobal(NativeMethods.PosixSpawnFileActionsSize);
         var attr = Marshal.AllocHGlobal(NativeMethods.PosixSpawnAttrSize);
         var spawned = false;
         try
         {
+            // Unbuffered (bufferSize 1) so reads/writes map 1:1 to syscalls: a pty is not
+            // seekable, and our poll-based reader must never leave data stranded in a
+            // stream buffer that poll(2) cannot see.
+            stream = new FileStream(master, FileAccess.ReadWrite, bufferSize: 1, isAsync: false);
+
             if (NativeMethods.posix_spawn_file_actions_init(fileActions) != 0 ||
                 NativeMethods.posix_spawnattr_init(attr) != 0)
                 throw new IOException($"posix_spawn init failed: errno={Marshal.GetLastPInvokeError()}");
@@ -91,11 +106,11 @@ public sealed class PtyProcess : IDisposable
             // macOS: SETSID + close-on-exec-everything so runtime fds do not leak into the shell.
             var flagsRc = NativeMethods.posix_spawnattr_setflags(
                 attr,
-                (short)(NativeMethods.PosixSpawnSetsid | NativeMethods.PosixSpawnCloexecDefault));
+                NativeMethods.PosixSpawnFlags.Setsid | NativeMethods.PosixSpawnFlags.CloexecDefault);
 #elif LINUX
             var flagsRc = NativeMethods.posix_spawnattr_setflags(
                 attr,
-                (short)(NativeMethods.PosixSpawnSetsid | NativeMethods.PosixSpawnSetsigdef));
+                NativeMethods.PosixSpawnFlags.Setsid | NativeMethods.PosixSpawnFlags.Setsigdef);
             if (flagsRc != 0)
                 throw new IOException($"posix_spawnattr_setflags failed: errno={flagsRc}");
 
@@ -104,18 +119,25 @@ public sealed class PtyProcess : IDisposable
             // friends, so reset the common ones to their defaults for a clean shell.
             var sigdefRc = NativeMethods.posix_spawnattr_setsigdefault(
                 attr,
-                NativeMethods.SignalSet(1 /*SIGHUP*/, 2 /*SIGINT*/, 3 /*SIGQUIT*/, 13 /*SIGPIPE*/, 15 /*SIGTERM*/));
+                NativeMethods.SignalSet(
+                    NativeMethods.Signals.Hup,
+                    NativeMethods.Signals.Int,
+                    NativeMethods.Signals.Quit,
+                    NativeMethods.Signals.Pipe,
+                    NativeMethods.Signals.Term));
             if (sigdefRc != 0)
                 throw new IOException($"posix_spawnattr_setsigdefault failed: errno={sigdefRc}");
 #else
 #error "dotnet-pty supports macOS (define OSX) and Linux (define LINUX) only."
 #endif
 
-            // Wire the pty slave to the child's stdio and drop our copy of it.
-            NativeMethods.posix_spawn_file_actions_adddup2(fileActions, slave, 0);
-            NativeMethods.posix_spawn_file_actions_adddup2(fileActions, slave, 1);
-            NativeMethods.posix_spawn_file_actions_adddup2(fileActions, slave, 2);
-            NativeMethods.posix_spawn_file_actions_addclose(fileActions, slave);
+            // Wire the pty slave to the child's stdio and drop our copy of it. These take
+            // the exact fd numbers (referenced by the file actions inside the child), so
+            // raw handle values are passed rather than SafeHandles.
+            NativeMethods.posix_spawn_file_actions_adddup2(fileActions, slaveFd, 0);
+            NativeMethods.posix_spawn_file_actions_adddup2(fileActions, slaveFd, 1);
+            NativeMethods.posix_spawn_file_actions_adddup2(fileActions, slaveFd, 2);
+            NativeMethods.posix_spawn_file_actions_addclose(fileActions, slaveFd);
 
 #if LINUX
             // Linux equivalent of macOS POSIX_SPAWN_CLOEXEC_DEFAULT: close every inherited
@@ -137,7 +159,7 @@ public sealed class PtyProcess : IDisposable
                 throw new IOException($"posix_spawn failed: errno={spawnRc}");
 
             spawned = true;
-            return new PtyProcess(master, pid);
+            return new PtyProcess(masterFd, stream, pid);
         }
         finally
         {
@@ -145,12 +167,17 @@ public sealed class PtyProcess : IDisposable
             NativeMethods.posix_spawnattr_destroy(attr);
             Marshal.FreeHGlobal(fileActions);
             Marshal.FreeHGlobal(attr);
-            NativeMethods.close(slave);
+            slave.Dispose(); // parent's copy of the slave is no longer needed
             FreeNative(envp);
             FreeNative(argv);
             Marshal.FreeHGlobal(path);
             if (!spawned)
-                NativeMethods.close(master);
+            {
+                // The stream owns the master handle; dispose both (SafeHandle disposal is
+                // idempotent) so a failed spawn cannot leak the fd.
+                stream?.Dispose();
+                master.Dispose();
+            }
         }
     }
 
@@ -162,24 +189,10 @@ public sealed class PtyProcess : IDisposable
         lock (gate)
         {
             ObjectDisposedException.ThrowIf(disposed, this);
-            var written = 0;
-            while (written < bytes.Length)
-            {
-                var n = NativeMethods.write(masterFd, bytes, (nuint)(bytes.Length - written));
-                if (n < 0)
-                {
-                    var err = Marshal.GetLastPInvokeError();
-                    if (err == NativeMethods.Eintr)
-                        continue;
-                    if (err == NativeMethods.Eagain || err == NativeMethods.Ewouldblock)
-                    {
-                        Thread.Sleep(5); // pty buffer full; retry shortly
-                        continue;
-                    }
-                    throw new IOException($"write to pty failed: errno={err}");
-                }
-                written += n;
-            }
+            // Unbuffered FileStream: writes go straight to the pty master. The fd is
+            // blocking, so a full pty buffer just blocks here until the child drains it.
+            stream.Write(bytes, 0, bytes.Length);
+            stream.Flush();
         }
     }
 
@@ -270,10 +283,11 @@ public sealed class PtyProcess : IDisposable
                 // The child was spawned with posix_spawn + SETSID, so it has no controlling
                 // terminal: closing the pty master alone does not deliver a hangup. Signal
                 // it explicitly, then close the master so its output writes fail cleanly.
-                NativeMethods.kill(pid, NativeMethods.Sighup);
+                NativeMethods.kill(pid, NativeMethods.Signals.Hup);
             }
 
-            NativeMethods.close(masterFd);
+            // Disposing the stream closes the master fd (owned via the SafeFileHandle).
+            stream.Dispose();
 
             // Reap the child so it does not linger as a zombie.
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
@@ -333,31 +347,27 @@ public sealed class PtyProcess : IDisposable
             }
 
             var buf = new byte[ReadBufferSize];
-            var n = NativeMethods.read(masterFd, buf, (nuint)buf.Length);
+            int n;
+            try
+            {
+                n = stream.Read(buf, 0, buf.Length);
+            }
+            catch (IOException)
+            {
+                // The child's slave side closed: the master read returns EIO (macOS and
+                // Linux), which FileStream surfaces as IOException. Treat as EOF.
+                eof = true;
+                break;
+            }
+
             if (n > 0)
             {
                 pending.AddRange(buf.AsSpan(0, n));
                 continue;
             }
 
-            if (n == 0)
-            {
-                eof = true;
-                break;
-            }
-
-            var err = Marshal.GetLastPInvokeError();
-            if (err == NativeMethods.Eintr)
-                continue;
-            if (err == NativeMethods.Eio)
-            {
-                // macOS: master read hits EIO once the slave side is gone.
-                eof = true;
-                break;
-            }
-            if (err == NativeMethods.Eagain || err == NativeMethods.Ewouldblock)
-                continue; // should not happen with blocking fd; be safe anyway
-            throw new IOException($"read from pty failed: errno={err}");
+            eof = true; // EOF (the master read returns 0 once the slave is gone)
+            break;
         }
 
         return Drain();
@@ -373,7 +383,7 @@ public sealed class PtyProcess : IDisposable
         var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(timeoutMs);
         while (true)
         {
-            var fds = new[] { new NativeMethods.PollFd { Fd = masterFd, Events = NativeMethods.Pollin } };
+            var fds = new[] { new NativeMethods.PollFd { Fd = masterFd, Events = NativeMethods.PollEvents.Pollin } };
             int r;
             do
             {
@@ -402,7 +412,7 @@ public sealed class PtyProcess : IDisposable
 
         while (true)
         {
-            var fds = new[] { new NativeMethods.PollFd { Fd = masterFd, Events = NativeMethods.Pollin } };
+            var fds = new[] { new NativeMethods.PollFd { Fd = masterFd, Events = NativeMethods.PollEvents.Pollin } };
             int r;
             do
             {
@@ -415,30 +425,26 @@ public sealed class PtyProcess : IDisposable
                 return; // nothing readable right now
 
             var buf = new byte[ReadBufferSize];
-            var n = NativeMethods.read(masterFd, buf, (nuint)buf.Length);
+            int n;
+            try
+            {
+                n = stream.Read(buf, 0, buf.Length);
+            }
+            catch (IOException)
+            {
+                // Slave side gone (EIO) — same EOF semantics as ReadAvailableCore.
+                eof = true;
+                return;
+            }
+
             if (n > 0)
             {
                 pending.AddRange(buf.AsSpan(0, n));
                 continue; // more may be buffered
             }
 
-            if (n == 0)
-            {
-                eof = true;
-                return;
-            }
-
-            var err = Marshal.GetLastPInvokeError();
-            if (err == NativeMethods.Eintr)
-                continue;
-            if (err == NativeMethods.Eagain || err == NativeMethods.Ewouldblock)
-                return;
-            if (err == NativeMethods.Eio)
-            {
-                eof = true;
-                return;
-            }
-            throw new IOException($"read from pty failed: errno={err}");
+            eof = true;
+            return;
         }
     }
 
@@ -490,7 +496,7 @@ public sealed class PtyProcess : IDisposable
         if (exitCode is not null)
             return true;
 
-        var r = NativeMethods.waitpid(pid, out var status, NativeMethods.Wnohang);
+        var r = NativeMethods.waitpid(pid, out var status, NativeMethods.WaitOptions.Wnohang);
         if (r == 0)
             return false; // still running
 
