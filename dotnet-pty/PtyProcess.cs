@@ -5,7 +5,8 @@ using System.Text;
 namespace dotnet_pty;
 
 /// <summary>
-/// A child process attached to a pseudo-terminal (PTY), created via <c>forkpty(2)</c> + <c>execve(2)</c>.
+/// A child process attached to a pseudo-terminal (PTY), created via <c>openpty(3)</c> +
+/// <c>posix_spawn(2)</c>.
 /// Use it to drive an interactive shell (e.g. bash): write commands, read back the terminal output.
 /// </summary>
 /// <remarks>
@@ -86,15 +87,43 @@ public sealed class PtyProcess : IDisposable
                 NativeMethods.posix_spawnattr_init(attr) != 0)
                 throw new IOException($"posix_spawn init failed: errno={Marshal.GetLastPInvokeError()}");
 
-            NativeMethods.posix_spawnattr_setflags(
+#if OSX
+            // macOS: SETSID + close-on-exec-everything so runtime fds do not leak into the shell.
+            var flagsRc = NativeMethods.posix_spawnattr_setflags(
                 attr,
                 (short)(NativeMethods.PosixSpawnSetsid | NativeMethods.PosixSpawnCloexecDefault));
+#elif LINUX
+            var flagsRc = NativeMethods.posix_spawnattr_setflags(
+                attr,
+                (short)(NativeMethods.PosixSpawnSetsid | NativeMethods.PosixSpawnSetsigdef));
+            if (flagsRc != 0)
+                throw new IOException($"posix_spawnattr_setflags failed: errno={flagsRc}");
+
+            // POSIX spawn inherits SIG_IGN dispositions from the parent (macOS resets
+            // them automatically, glibc does not). The .NET runtime ignores SIGPIPE and
+            // friends, so reset the common ones to their defaults for a clean shell.
+            var sigdefRc = NativeMethods.posix_spawnattr_setsigdefault(
+                attr,
+                NativeMethods.SignalSet(1 /*SIGHUP*/, 2 /*SIGINT*/, 3 /*SIGQUIT*/, 13 /*SIGPIPE*/, 15 /*SIGTERM*/));
+            if (sigdefRc != 0)
+                throw new IOException($"posix_spawnattr_setsigdefault failed: errno={sigdefRc}");
+#else
+#error "dotnet-pty supports macOS (define OSX) and Linux (define LINUX) only."
+#endif
 
             // Wire the pty slave to the child's stdio and drop our copy of it.
             NativeMethods.posix_spawn_file_actions_adddup2(fileActions, slave, 0);
             NativeMethods.posix_spawn_file_actions_adddup2(fileActions, slave, 1);
             NativeMethods.posix_spawn_file_actions_adddup2(fileActions, slave, 2);
             NativeMethods.posix_spawn_file_actions_addclose(fileActions, slave);
+
+#if LINUX
+            // Linux equivalent of macOS POSIX_SPAWN_CLOEXEC_DEFAULT: close every inherited
+            // fd >= 3 in the child (the .NET runtime's sockets/pipes/files) so the shell
+            // starts with a clean fd table.
+            if (NativeMethods.posix_spawn_file_actions_addclosefrom_np(fileActions, 3) != 0)
+                throw new IOException($"posix_spawn addclosefrom failed: errno={Marshal.GetLastPInvokeError()}");
+#endif
 
             if (workingDirectory is not null)
             {
@@ -487,9 +516,4 @@ public sealed class PtyProcess : IDisposable
         var signal = status & 0x7F;
         return signal == 0 ? (status >> 8) & 0xFF : 128 + signal;
     }
-}
-
-class MyClass: Process
-{
-
 }

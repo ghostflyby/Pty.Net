@@ -39,8 +39,10 @@ public partial class FdInheritanceTests
         }
     }
 
-    private const int OCreat = 0x0200;
-    private const int ORdwr = 0x0002;
+    // O_CREAT differs per libc: 0x0200 on macOS, 0x0040 on Linux (glibc) — on Linux
+    // 0x0200 is O_TRUNC, so using the macOS value silently fails to create the file.
+    private static readonly int OCreat = RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? 0x0200 : 0x0040;
+    private const int ORdwr = 0x0002; // same on macOS and Linux
 
     private static partial class Native
     {
