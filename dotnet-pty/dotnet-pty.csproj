@@ -7,6 +7,11 @@
         <Nullable>enable</Nullable>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
+        <!-- No reflection / dynamic loading / dynamic linking: declare AOT compat so the
+             AOT analyzers run at build time (IL20xx diagnostics) instead of needing a
+             full AOT publish smoke test. -->
+        <IsAotCompatible>true</IsAotCompatible>
+
         <!-- Platform symbol used by #if in NativeMethods.cs / PtyProcess.cs. The SDK
              may define OSX/LINUX automatically from the build host, but be explicit. -->
         <DefineConstants Condition="$([MSBuild]::IsOSPlatform('OSX'))">$(DefineConstants);OSX</DefineConstants>
