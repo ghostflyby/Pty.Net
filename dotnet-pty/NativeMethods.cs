@@ -5,17 +5,20 @@ namespace dotnet_pty;
 
 /// <summary>
 /// P/Invoke declarations for the libc functions used to set up a pseudo-terminal
-/// and run an interactive shell in it. Uses <c>openpty(3)</c> + <c>posix_spawn(2)</c>
+/// and run an interactive shell in it. Uses <c>posix_openpt(3)</c> + <c>posix_spawn(2)</c>
 /// (not fork+exec) so spawning stays safe in a multi-threaded process.
 ///
-/// fd-typed declarations use <see cref="SafeFileHandle"/> and rely on the runtime's
-/// automatic handle marshaling, so native fds are wrapped, owned and closed for us.
+/// pty setup returns raw fds (posix_openpt/grantpt/unlockpt/ptsname are non-variadic,
+/// so they work on Apple arm64 where the variadic fcntl mis-delivers its third argument);
+/// the caller wraps the master in a <see cref="SafeFileHandle"/> for <see cref="PtyStream"/>.
 /// Byte transfer goes through raw read(2)/write(2) on the non-blocking master fd,
 /// driven by <see cref="PtyStream"/> / <see cref="PtyIoEngine"/> (see <see cref="PtyProcess"/>).
 ///
 /// Constants are split per platform: macOS (OSX) and Linux glibc differ in the
 /// POSIX_SPAWN_SETSID value and the fd-closing mechanism.
 /// </summary>
+// ReSharper disable IdentifierTypo
+// ReSharper disable CommentTypo
 internal static partial class NativeMethods
 {
     // poll(2) event bits (identical values on macOS and Linux).
@@ -32,18 +35,19 @@ internal static partial class NativeMethods
 
     // waitpid(2) options.
     [Flags]
-    internal enum WaitOptions : int
+    internal enum WaitOptions
     {
         None = 0,
         Wnohang = 0x0001,
     }
 
     // Signal numbers (identical on macOS and Linux).
-    internal enum Signals : int
+    internal enum Signals
     {
         Hup = 1,
         Int = 2,
         Quit = 3,
+        Kill = 9,
         Pipe = 13,
         Term = 15,
     }
@@ -150,7 +154,8 @@ internal static partial class NativeMethods
 
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int posix_spawn(
-        out int pid, IntPtr path, IntPtr fileActions, IntPtr attr, IntPtr[] argv, IntPtr[] envp);
+        out int pid, IntPtr path, IntPtr fileActions, IntPtr attr,
+        [In] IntPtr[] argv, [In] IntPtr[] envp);
 
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int posix_spawn_file_actions_init(IntPtr fileActions);
@@ -182,7 +187,7 @@ internal static partial class NativeMethods
     internal static partial int posix_spawn_file_actions_addclosefrom_np(IntPtr fileActions, int lowfd);
 
     [LibraryImport("libc", SetLastError = true)]
-    internal static partial int posix_spawnattr_setsigdefault(IntPtr attr, byte[] sigset);
+    internal static partial int posix_spawnattr_setsigdefault(IntPtr attr, [In] byte[] sigset);
 
     /// <summary>
     /// Builds a glibc sigset_t: an all-zero buffer is sigemptyset, and each signal N

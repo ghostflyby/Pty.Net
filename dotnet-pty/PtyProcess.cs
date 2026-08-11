@@ -5,25 +5,34 @@ using Microsoft.Win32.SafeHandles;
 namespace dotnet_pty;
 
 /// <summary>
-/// A child process attached to a pseudo-terminal (PTY), created via <c>openpty(3)</c> +
-/// <c>posix_spawn(2)</c>.
-/// Use it to drive an interactive shell (e.g. bash): write commands, read back the terminal output.
+/// A child process attached to a pseudo-terminal (PTY), created via
+/// <c>posix_openpt(3)</c> + <c>posix_spawn(2)</c>.
+/// Use it to drive an interactive shell (e.g. bash): write commands to
+/// <see cref="StandardInput"/>, read back the terminal output from
+/// <see cref="StandardOutput"/>.
 /// </summary>
 /// <remarks>
-/// The pty master fd comes from openpty as a <see cref="Microsoft.Win32.SafeHandles.SafeFileHandle"/>
-/// and is wrapped in a non-blocking <see cref="PtyStream"/>: all I/O is driven by poll(2),
-/// so no operation ever blocks a thread-pool thread and cancellation is immediate (see
-/// <see cref="PtyIoEngine"/>). <see cref="BaseStream"/> exposes the raw byte stream; the
-/// string methods below layer a UTF-8 text buffer on top of it.
+/// I/O is exposed the way <see cref="System.Diagnostics.Process"/> does it:
+/// <see cref="StandardInput"/> / <see cref="StandardOutput"/> are the text-facing
+/// <see cref="System.IO.StreamWriter"/> / <see cref="System.IO.StreamReader"/>, and
+/// <see cref="BaseStream"/> is the raw byte stream (the same one both text facades
+/// wrap). A pty is a single bidirectional device — the child's stdout and stderr are
+/// merged into the one master stream, and there is no separate stderr channel.
+///
+/// The master fd is non-blocking (opened via <c>posix_openpt(O_NONBLOCK)</c>) and all
+/// I/O is driven by poll(2) through <see cref="PtyIoEngine"/>, so no operation ever
+/// blocks a thread-pool thread and cancellation is immediate.
 /// </remarks>
 public sealed class PtyProcess : IDisposable
 {
     private const int ReadBufferSize = 4096;
 
     private readonly SemaphoreSlim gate = new(1, 1);
-    private readonly List<byte> pending = [];
 
-    private bool eof;
+    // Reused by DrainOutput, which WaitForExit calls every ~10ms; a fresh allocation per
+    // call would churn ~4KB each iteration. Serialized by the gate.
+    private readonly byte[] drainBuf = new byte[ReadBufferSize];
+
     private bool disposed;
 
     /// <summary>OS process id of the child.</summary>
@@ -35,44 +44,65 @@ public sealed class PtyProcess : IDisposable
     public bool HasExited => ExitCode is not null;
 
     /// <summary>
-    /// The raw byte stream over the pty master. Read/write directly only when you need
-    /// byte-level (not string) I/O; note that reading from <see cref="BaseStream"/> bypasses
-    /// the pending-text buffer that the string methods (<see cref="ReadUntil"/>,
-    /// <see cref="ReadAvailable"/>) accumulate, so interleaving both kinds of reads can
-    /// reorder or consume output in surprising ways.
+    /// The raw byte stream over the pty master — the single source of bytes for both
+    /// text facades. Reading here consumes bytes that <see cref="StandardOutput"/> would
+    /// otherwise decode, so use only one of them at a time.
     /// </summary>
     public PtyStream BaseStream { get; }
 
-    private PtyProcess(PtyStream stream, int pid)
+    /// <summary>Text writer to the child's input, like <see cref="System.Diagnostics.Process.StandardInput"/>. Auto-flushed so writes are visible to the child immediately.</summary>
+    public StreamWriter StandardInput { get; }
+
+    /// <summary>
+    /// Text reader over the child's output, like <see cref="System.Diagnostics.Process.StandardOutput"/>
+    /// (a pty merges the child's stdout and stderr). Like <see cref="StreamReader"/>, disposing
+    /// this reader closes the underlying master fd — dispose <see cref="BaseStream"/> (or the
+    /// whole <see cref="PtyProcess"/>) instead, or never dispose the facades at all.
+    /// </summary>
+    public StreamReader StandardOutput { get; }
+
+    private PtyProcess(PtyStream stream, int pid, Encoding? inputEncoding, Encoding? outputEncoding)
     {
         BaseStream = stream;
+        // Null encoding means UTF-8 — the terminal default on both macOS and Linux.
+        // The reader's read-ahead buffer is fine: this text facade owns the stream until
+        // the caller switches to BaseStream (never mix — like Process's StandardOutput).
+        StandardInput = new StreamWriter(stream, inputEncoding ?? new UTF8Encoding(encoderShouldEmitUTF8Identifier: false))
+        {
+            AutoFlush = true,
+        };
+        StandardOutput = new StreamReader(stream, outputEncoding ?? Encoding.UTF8);
         Pid = pid;
     }
 
     /// <summary>
-    /// Spawns an interactive bash. Runs with <c>--noprofile --norc --noediting -i</c> so the session
-    /// is deterministic and does not pick up the user's rc files. <c>--noediting</c> disables readline,
-    /// so <c>stty -echo</c> can suppress input echo (readline does its own echoing regardless).
-    /// Note: the long options must come before <c>-i</c>, otherwise macOS bash 3.2 rejects the invocation.
+    /// Launches <paramref name="info"/> in a new PTY session (child process attached to a
+    /// pseudo-terminal). Uses <c>posix_openpt(3)</c> + <c>posix_spawn(2)</c>: posix_spawn
+    /// avoids <c>fork(2)</c>, so launching stays safe even when other threads are
+    /// concurrently allocating memory (fork in a multithreaded process can deadlock the
+    /// child on inherited malloc locks). A <see cref="System.Diagnostics.ProcessStartInfo"/>
+    /// can be passed via <see cref="PtyStartInfo(ProcessStartInfo)"/>.
     /// </summary>
-    public static PtyProcess StartBash(string? workingDirectory = null, params string[]? arguments)
+    public static PtyProcess Start(PtyStartInfo info)
     {
-        var args = arguments is { Length: > 0 }
-            ? arguments
-            : ["--noprofile", "--norc", "--noediting", "-i"];
-        return Start("/bin/bash", args, workingDirectory);
+        ArgumentNullException.ThrowIfNull(info);
+        return StartCore(info.FileName, info.ResolveArguments(), info.WorkingDirectory, info.Environment,
+            info.StandardInputEncoding, info.StandardOutputEncoding);
     }
 
-    /// <summary>
-    /// Runs <paramref name="file"/> in a new PTY session (child process attached to a pseudo-terminal).
-    /// Uses <c>openpty(3)</c> + <c>posix_spawn(2)</c>: posix_spawn avoids <c>fork(2)</c>, so spawning
-    /// stays safe even when other threads are concurrently allocating memory (fork in a multi-threaded
-    /// process can deadlock the child on inherited malloc locks).
-    /// </summary>
-    private static PtyProcess Start(string file, string[] arguments, string? workingDirectory = null)
+    /// <summary>Convenience overload of <see cref="Start(PtyStartInfo)"/> with the launch parameters inline (UTF-8 I/O).</summary>
+    public static PtyProcess Start(string file, string[] arguments, string? workingDirectory = null)
+    {
+        return StartCore(file, arguments, workingDirectory, environment: null,
+            inputEncoding: null, outputEncoding: null);
+    }
+
+    private static PtyProcess StartCore(string file, string[] arguments, string? workingDirectory,
+        IDictionary<string, string?>? environment, Encoding? inputEncoding, Encoding? outputEncoding)
     {
         // Everything is prepared in the parent; posix_spawn performs the exec natively.
-        var envp = ToNative(BuildEnvironment());
+        var env = environment ?? ParentEnvironment();
+        var envp = ToNative(BuildEnvironment(env));
         var argv = ToNative([Path.GetFileName(file), .. arguments]);
         var path = Marshal.StringToHGlobalAnsi(file);
 
@@ -125,6 +155,8 @@ public sealed class PtyProcess : IDisposable
             var flagsRc = NativeMethods.posix_spawnattr_setflags(
                 attr,
                 NativeMethods.PosixSpawnFlags.Setsid | NativeMethods.PosixSpawnFlags.CloexecDefault);
+            if (flagsRc != 0)
+                throw new IOException($"posix_spawnattr_setflags failed: errno={flagsRc}");
 #elif LINUX
             var flagsRc = NativeMethods.posix_spawnattr_setflags(
                 attr,
@@ -152,10 +184,16 @@ public sealed class PtyProcess : IDisposable
             // Wire the pty slave to the child's stdio and drop our copy of it. These take
             // the exact fd numbers (referenced by the file actions inside the child), so
             // raw handle values are passed rather than SafeHandles.
-            NativeMethods.posix_spawn_file_actions_adddup2(fileActions, slaveFd, 0);
-            NativeMethods.posix_spawn_file_actions_adddup2(fileActions, slaveFd, 1);
-            NativeMethods.posix_spawn_file_actions_adddup2(fileActions, slaveFd, 2);
-            NativeMethods.posix_spawn_file_actions_addclose(fileActions, slaveFd);
+            // Failures are theoretically impossible (the slave fd was just opened and
+            // 0/1/2 are always valid), but checked for consistency with the other steps:
+            // a silently broken stdio wiring would surface as a child with no output.
+            foreach (var target in new[] { 0, 1, 2 })
+            {
+                if (NativeMethods.posix_spawn_file_actions_adddup2(fileActions, slaveFd, target) != 0)
+                    throw new IOException($"posix_spawn adddup2({target}) failed: errno={Marshal.GetLastPInvokeError()}");
+            }
+            if (NativeMethods.posix_spawn_file_actions_addclose(fileActions, slaveFd) != 0)
+                throw new IOException($"posix_spawn addclose failed: errno={Marshal.GetLastPInvokeError()}");
 
 #if LINUX
             // Linux equivalent of macOS POSIX_SPAWN_CLOEXEC_DEFAULT: close every inherited
@@ -177,7 +215,7 @@ public sealed class PtyProcess : IDisposable
                 throw new IOException($"posix_spawn failed: errno={spawnRc}");
 
             spawned = true;
-            return new PtyProcess(stream, pid);
+            return new PtyProcess(stream, pid, inputEncoding, outputEncoding);
         }
         finally
         {
@@ -191,179 +229,31 @@ public sealed class PtyProcess : IDisposable
             Marshal.FreeHGlobal(path);
             if (!spawned)
             {
-                // The stream owns the master fd; dispose both (SafeHandle disposal is
-                // idempotent) so a failed spawn cannot leak the fd.
-                stream?.Dispose();
-                NativeMethods.close(masterFd);
+                // The PtyStream owns the master fd (SafeFileHandle, ownsHandle: true):
+                // disposing it closes the fd. Only fall back to a raw close if the
+                // stream was never constructed — never close an already-closed fd, as
+                // the OS may have reused the number for a concurrent open.
+                if (stream is not null)
+                    stream.Dispose();
+                else
+                    NativeMethods.close(masterFd);
             }
-        }
-    }
-
-    /// <summary>Sends <paramref name="data"/> to the shell's stdin (via the PTY master).</summary>
-    public void Write(string data)
-    {
-        ArgumentNullException.ThrowIfNull(data);
-        var bytes = Encoding.UTF8.GetBytes(data);
-        gate.Wait();
-        try
-        {
-            ObjectDisposedException.ThrowIf(disposed, this);
-            // The fd is non-blocking; PtyStream's poll loop blocks here until the child
-            // drains enough for all bytes to be accepted.
-            BaseStream.Write(bytes, 0, bytes.Length);
-        }
-        finally
-        {
-            gate.Release();
-        }
-    }
-
-    /// <summary>
-    /// Sends <paramref name="data"/> to the shell's stdin asynchronously. Serialized with the
-    /// sync <see cref="Write"/> by the same gate. Cancellation stops the write after whatever
-    /// the device has consumed (a partial write) and throws <see cref="OperationCanceledException"/>.
-    /// </summary>
-    public async Task WriteAsync(string data, CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(data);
-        var bytes = Encoding.UTF8.GetBytes(data);
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            ObjectDisposedException.ThrowIf(disposed, this);
-            await BaseStream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            gate.Release();
-        }
-    }
-
-    /// <summary>
-    /// Reads whatever output is currently available, waiting up to <paramref name="timeout"/>
-    /// for the first byte. Returns an empty string if nothing arrives within the timeout.
-    /// </summary>
-    public string ReadAvailable(TimeSpan timeout)
-    {
-        gate.Wait();
-        try
-        {
-            ObjectDisposedException.ThrowIf(disposed, this);
-            return ReadAvailableCore((int)Math.Min(timeout.TotalMilliseconds, int.MaxValue));
-        }
-        finally
-        {
-            gate.Release();
-        }
-    }
-
-    /// <summary>
-    /// Reads until <paramref name="marker"/> appears in the output (inclusive) and returns
-    /// everything read so far. Throws <see cref="TimeoutException"/> if the marker does not
-    /// appear within <paramref name="timeout"/>. Returns whatever was read if the child
-    /// exits before the marker shows up.
-    /// </summary>
-    public string ReadUntil(string marker, TimeSpan timeout)
-    {
-        ArgumentNullException.ThrowIfNull(marker);
-        if (marker.Length == 0)
-            throw new ArgumentException("Marker must not be empty.", nameof(marker));
-
-        var sb = new StringBuilder();
-        var deadline = DateTime.UtcNow + timeout;
-
-        while (true)
-        {
-            var remaining = deadline - DateTime.UtcNow;
-            if (remaining <= TimeSpan.Zero)
-            {
-                var diag = $"pid={Pid} eof={eof} pending={pending.Count} exited={HasExited}";
-                throw new TimeoutException($"Timed out after {timeout} waiting for '{marker}'. Got: {sb} [{diag}]");
-            }
-
-            gate.Wait();
-            try
-            {
-                ObjectDisposedException.ThrowIf(disposed, this);
-                sb.Append(ReadAvailableCore((int)Math.Min(remaining.TotalMilliseconds, int.MaxValue)));
-
-                if (sb.ToString().Contains(marker, StringComparison.Ordinal))
-                    return sb.ToString();
-                if (eof)
-                    return sb.ToString(); // child exited before the marker appeared
-            }
-            finally
-            {
-                gate.Release();
-            }
-        }
-    }
-
-    /// <summary>
-    /// Reads until <paramref name="marker"/> appears in the output (inclusive) and returns
-    /// everything read so far, asynchronously. Throws <see cref="TimeoutException"/> if the
-    /// marker does not appear within <paramref name="timeout"/>. Returns whatever was read
-    /// if the child exits before the marker shows up. Cancellation is immediate: no thread
-    /// is parked while waiting.
-    /// </summary>
-    public async Task<string> ReadUntilAsync(string marker, TimeSpan timeout, CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(marker);
-        if (marker.Length == 0)
-            throw new ArgumentException("Marker must not be empty.", nameof(marker));
-
-        var sb = new StringBuilder();
-        var chunk = new byte[ReadBufferSize];
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(timeout);
-
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            ObjectDisposedException.ThrowIf(disposed, this);
-            while (true)
-            {
-                int n;
-                try
-                {
-                    n = await BaseStream.ReadAsync(chunk, timeoutCts.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-                {
-                    // The timeout fired (the caller's token did not).
-                    var diag = $"pid={Pid} eof={eof} pending={pending.Count} exited={HasExited}";
-                    throw new TimeoutException($"Timed out after {timeout} waiting for '{marker}'. Got: {sb} [{diag}]");
-                }
-
-                if (n == 0)
-                {
-                    eof = true; // child's slave side closed
-                    return sb.ToString();
-                }
-
-                pending.AddRange(chunk.AsSpan(0, n));
-                sb.Append(Drain());
-
-                if (sb.ToString().Contains(marker, StringComparison.Ordinal))
-                    return sb.ToString();
-                if (eof)
-                    return sb.ToString();
-            }
-        }
-        finally
-        {
-            gate.Release();
         }
     }
 
     /// <summary>
     /// Blocks until the child exits or the timeout elapses. Returns false on timeout.
     /// While waiting, output is drained continuously so the child never blocks writing
-    /// to a full pty buffer; the drained bytes stay queued for later <see cref="ReadAvailable"/>.
+    /// to a full pty buffer. Note: like <see cref="System.Diagnostics.Process.WaitForExit()"/>
+    /// with redirected output, concurrent consumption of <see cref="StandardOutput"/> /
+    /// <see cref="BaseStream"/> is not safe while waiting — the drained bytes are
+    /// discarded, so capture output you need before or concurrently with this call.
+    /// Pass <see cref="Timeout.InfiniteTimeSpan"/> to wait indefinitely.
     /// </summary>
     public bool WaitForExit(TimeSpan timeout)
     {
-        var deadline = DateTime.UtcNow + timeout;
+        var infinite = timeout == Timeout.InfiniteTimeSpan;
+        var deadline = infinite ? DateTime.MaxValue : DateTime.UtcNow + timeout;
         while (true)
         {
             gate.Wait();
@@ -379,11 +269,27 @@ public sealed class PtyProcess : IDisposable
                 gate.Release();
             }
 
-            if (DateTime.UtcNow >= deadline)
+            if (!infinite && DateTime.UtcNow >= deadline)
                 return false;
             Thread.Sleep(10);
         }
     }
+
+    /// <summary>
+    /// Blocks until the child exits and has been reaped. Aligns with
+    /// <see cref="System.Diagnostics.Process.WaitForExit()"/> (no timeout); the infinite
+    /// wait only returns once the child has been reaped.
+    /// </summary>
+    public void WaitForExit() => WaitForExit(Timeout.InfiniteTimeSpan);
+
+    /// <summary>
+    /// Terminates the child with SIGKILL immediately, without giving it a chance to
+    /// clean up — matching <see cref="System.Diagnostics.Process.Kill()"/>. For PTY
+    /// workflows prefer <see cref="Dispose"/> (SIGHUP + closing the master), which lets
+    /// the shell exit normally. The child is not reaped here; call
+    /// <see cref="WaitForExit()"/> or <see cref="Dispose"/> afterwards.
+    /// </summary>
+    public void Kill() => NativeMethods.kill(Pid, NativeMethods.Signals.Kill);
 
     public void Dispose()
     {
@@ -420,15 +326,20 @@ public sealed class PtyProcess : IDisposable
 
     // --- internals ---------------------------------------------------------
 
-    private static string[] BuildEnvironment()
+    /// <summary>A snapshot of the parent's environment, for launches with no explicit <see cref="PtyStartInfo.Environment"/>.</summary>
+    private static IDictionary<string, string?> ParentEnvironment() => PtyStartInfo.SnapshotParentEnvironment();
+
+    /// <summary>Flattens the environment dictionary into the <c>KEY=VALUE</c> array posix_spawn expects, dropping null values.</summary>
+    private static string[] BuildEnvironment(IDictionary<string, string?> env)
     {
-        var env = Environment.GetEnvironmentVariables()
-            .Keys.Cast<string>()
-            .Select(key => $"{key}={Environment.GetEnvironmentVariable(key)}")
+        var result = env
+            .Where(kv => kv.Value is not null)
+            .Select(kv => $"{kv.Key}={kv.Value}")
             .ToList();
-        if (!env.Any(e => e.StartsWith("TERM=", StringComparison.Ordinal)))
-            env.Add("TERM=xterm-256color");
-        return [.. env];
+        // Without a TERM the shell may fall back to dumb/unknown; set a sane default.
+        if (!result.Any(e => e.StartsWith("TERM=", StringComparison.Ordinal)))
+            result.Add("TERM=xterm-256color");
+        return [.. result];
     }
 
     private static IntPtr[] ToNative(string[] strs)
@@ -447,126 +358,20 @@ public sealed class PtyProcess : IDisposable
                 Marshal.FreeHGlobal(p);
     }
 
-    private string ReadAvailableCore(int timeoutMs)
-    {
-        if (eof)
-            return Drain();
-
-        var buf = new byte[ReadBufferSize];
-        if (!ReadOnce(buf, timeoutMs))
-            return Drain(); // timed out with nothing new
-
-        // Drain: keep reading while data keeps arriving; treat a quiet gap as "drained".
-        while (true)
-        {
-            if (!ReadOnce(buf, 50))
-            {
-                // Nothing this instant; give the child a brief chance to produce more
-                // before declaring the output drained (guards against spurious polls).
-                Thread.Sleep(10);
-                if (!ReadOnce(buf, 50))
-                    break;
-            }
-            if (eof)
-                break;
-        }
-
-        return Drain();
-    }
-
     /// <summary>
-    /// Reads one chunk into <paramref name="buf"/>, waiting up to <paramref name="timeoutMs"/>
-    /// for the first byte. Returns true when data was read (appended to <c>pending</c>) or the
-    /// slave side closed (<c>eof</c> set); false when nothing arrived within the timeout.
-    /// </summary>
-    private bool ReadOnce(byte[] buf, int timeoutMs)
-    {
-        if (eof)
-            return true; // already at EOF: nothing more to read
-
-        try
-        {
-            var n = BaseStream.Read(buf, timeoutMs, out var reachedEof);
-            if (reachedEof)
-                eof = true;
-            if (n <= 0) return eof; // n == 0: timeout (false) or EOF (true)
-            pending.AddRange(buf.AsSpan(0, n));
-            return true;
-        }
-        catch (IOException)
-        {
-            // The child's slave side closed (EIO). Treat as EOF.
-            eof = true;
-            return true;
-        }
-    }
-
-    /// <summary>
-    /// Non-blocking drain: reads whatever output is currently available into <c>pending</c>
-    /// without consuming it. Used by <see cref="WaitForExit"/> so the child never blocks on a
-    /// full pty buffer while we are not reading.
+    /// Non-blocking drain: reads whatever output is currently available and discards it.
+    /// Used by <see cref="WaitForExit"/> so the child never blocks on a full pty buffer
+    /// while nobody is reading.
     /// </summary>
     private void DrainOutput()
     {
-        if (eof)
-            return;
-
-        var buf = new byte[ReadBufferSize];
         while (true)
         {
-            var n = BaseStream.Read(buf, 0, out var reachedEof); // immediate, non-blocking
-            if (reachedEof)
-                eof = true;
-            if (n > 0)
-            {
-                pending.AddRange(buf.AsSpan(0, n));
-                continue; // more may be buffered
-            }
-            return; // timeout (nothing available right now) or EOF
+            // 0ms timeout: only drain what is already there, never wait.
+            var n = BaseStream.Read(drainBuf, 0, out _);
+            if (n <= 0)
+                return; // nothing available right now, or EOF
         }
-    }
-
-    /// <summary>
-    /// Decodes accumulated bytes as UTF-8, keeping any trailing bytes that are the head of
-    /// a multi-byte sequence so they can be combined with the next chunk.
-    /// </summary>
-    private string Drain()
-    {
-        if (pending.Count == 0)
-            return string.Empty;
-
-        var bytes = pending.ToArray();
-        pending.Clear();
-
-        var keep = IncompleteTailLength(bytes);
-        var text = Encoding.UTF8.GetString(bytes, 0, bytes.Length - keep);
-        if (keep > 0)
-            pending.AddRange(bytes.AsSpan(bytes.Length - keep, keep));
-        return text;
-    }
-
-    private static int IncompleteTailLength(byte[] bytes)
-    {
-        var i = bytes.Length - 1;
-        if (i < 0 || bytes[i] < 0x80)
-            return 0;
-
-        // Walk back over continuation bytes to find the lead byte of the last sequence.
-        var start = i;
-        while (start > 0 && bytes[start] is >= 0x80 and < 0xC0)
-            start--;
-
-        if (bytes[start] < 0xC0)
-            return 0; // stray continuation byte(s) with no lead byte
-
-        var expected = bytes[start] switch
-        {
-            < 0xE0 => 1,
-            < 0xF0 => 2,
-            _ => 3,
-        };
-        var available = i - start;
-        return available < expected ? i - start + 1 : 0;
     }
 
     private bool TryReap()

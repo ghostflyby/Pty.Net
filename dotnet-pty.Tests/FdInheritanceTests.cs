@@ -10,40 +10,42 @@ namespace dotnet_pty.Tests;
 // FAILS without that isolation and PASSES with it.
 public partial class FdInheritanceTests
 {
-    private const string ProbeFile = "/tmp/pty-fd-leak-probe";
     private const string Done = "__DONE__";
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(5);
 
     [Fact]
     public void ChildDoesNotInheritParentFileDescriptors()
     {
+        // Unique probe file in the system temp dir, so parallel runs cannot collide.
+        var probeFile = Path.Combine(Path.GetTempPath(), "pty-fd-leak-probe-" + Guid.NewGuid().ToString("N"));
+
         // open(2) returns a raw fd (the LibraryImport generator supports SafeFileHandle
         // as parameters/out only, not as return values), so we wrap the fd ourselves;
         // the SafeFileHandle then owns and closes it via `using`.
         using var probe = new SafeFileHandle(
-            (IntPtr)Native.open(
-                ProbeFile,
+            Native.open(
+                probeFile,
                 Native.OpenFlags.OCreat | Native.OpenFlags.ORdwr,
-                Native.UnixPermissions.UserRead | Native.UnixPermissions.UserWrite
-                    | Native.UnixPermissions.GroupRead | Native.UnixPermissions.OtherRead),
+                Native.UnixPermissions.UserRead | Native.UnixPermissions.UserWrite |
+                Native.UnixPermissions.GroupRead | Native.UnixPermissions.OtherRead),
             ownsHandle: true);
         var fd = (int)probe.DangerousGetHandle();
         Assert.True(fd >= 3, $"expected a parent-side fd >= 3, got {fd}");
         try
         {
-            using var bash = PtyProcess.StartBash();
-            bash.ReadUntil("$", Timeout);
+            using var bash = TestBash.Start();
+            TestBash.ReadUntil(bash.StandardOutput, "$", Timeout);
 
             // If fd leaked into the child, `/dev/fd/{fd}` is accessible from bash and
             // prints LEAKED; otherwise the child reports CLEAN.
-            bash.Write($"if [ -e /dev/fd/{fd} ]; then echo LEAKED; else echo CLEAN; fi; echo {Done}\n");
-            var output = bash.ReadUntil(Done, Timeout);
+            bash.StandardInput.WriteLine($"if [ -e /dev/fd/{fd} ]; then echo LEAKED; else echo CLEAN; fi; echo {Done}");
+            var output = TestBash.ReadUntil(bash.StandardOutput, Done, Timeout);
 
             Assert.Contains("CLEAN", output);
         }
         finally
         {
-            File.Delete(ProbeFile);
+            File.Delete(probeFile);
         }
     }
 
@@ -52,7 +54,7 @@ public partial class FdInheritanceTests
         // O_CREAT differs per libc: 0x0200 on macOS, 0x0040 on Linux (glibc) — on Linux
         // 0x0200 is O_TRUNC, so using the macOS value silently fails to create the file.
         [Flags]
-        internal enum OpenFlags : int
+        internal enum OpenFlags
         {
             ORdwr = 0x0002,
 #if OSX
@@ -64,7 +66,7 @@ public partial class FdInheritanceTests
 
         // Permission bits for the probe file (0644).
         [Flags]
-        internal enum UnixPermissions : int
+        internal enum UnixPermissions
         {
             UserRead = 0x100,  // 0400
             UserWrite = 0x080, // 0200

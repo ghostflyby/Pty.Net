@@ -6,7 +6,7 @@ namespace dotnet_pty.Tests;
 public class ConcurrencyTests
 {
     [Fact]
-    public void ConcurrentSessions_AllStartAndEcho()
+    public async Task ConcurrentSessions_AllStartAndEcho()
     {
         // Spawn and use many sessions in parallel. This validates the posix_spawn
         // approach: fork() in a multi-threaded process can deadlock the child on
@@ -32,10 +32,10 @@ public class ConcurrencyTests
 
                 try
                 {
-                    using var bash = PtyProcess.StartBash();
-                    bash.ReadUntil("$", TimeSpan.FromSeconds(8));
-                    bash.Write($"echo marker-{i}; echo __DONE__\n");
-                    var output = bash.ReadUntil("__DONE__", TimeSpan.FromSeconds(8));
+                    using var bash = TestBash.Start();
+                    TestBash.ReadUntil(bash.StandardOutput, "$", TimeSpan.FromSeconds(8));
+                    bash.StandardInput.WriteLine($"echo marker-{i}; echo __DONE__\n");
+                    var output = TestBash.ReadUntil(bash.StandardOutput, "__DONE__", TimeSpan.FromSeconds(8));
                     if (!output.Contains($"marker-{i}"))
                         failures.Enqueue($"session {i}: marker missing in output");
                 }
@@ -46,7 +46,7 @@ public class ConcurrencyTests
             }
         })).ToArray();
 
-        Task.WaitAll(tasks);
+        await Task.WhenAll(tasks);
 
         Assert.True(failures.IsEmpty, string.Join(" | ", failures));
     }

@@ -21,13 +21,13 @@ public partial class SignalIsolationTests
         Native.signal(Native.Signals.Pipe, new IntPtr(1));
         try
         {
-            using var bash = PtyProcess.StartBash();
-            bash.ReadUntil("$", Timeout);
+            using var bash = TestBash.Start();
+            TestBash.ReadUntil(bash.StandardOutput, "$", Timeout);
 
             // SIGINT (2): if the child inherited SIG_IGN, trap -p prints
             // "trap '' INT". Default disposition prints nothing for INT.
-            bash.Write($"trap -p INT TERM; echo {Done}\n");
-            var output = bash.ReadUntil(Done, Timeout);
+            bash.StandardInput.WriteLine($"trap -p INT TERM; echo {Done}");
+            var output = TestBash.ReadUntil(bash.StandardOutput, Done, Timeout);
 
             Assert.DoesNotContain("trap '' INT", output);
         }
@@ -40,7 +40,7 @@ public partial class SignalIsolationTests
 
     internal static partial class Native
     {
-        internal enum Signals : int
+        internal enum Signals
         {
             Int = 2,
             Pipe = 13,

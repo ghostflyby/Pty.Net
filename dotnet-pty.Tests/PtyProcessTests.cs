@@ -1,18 +1,20 @@
 namespace dotnet_pty.Tests;
 
+using System.Text;
+
 public class PtyProcessTests : IDisposable
 {
     private const string Done = "__DONE__";
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(5);
 
-    private readonly PtyProcess bash = PtyProcess.StartBash();
+    private readonly PtyProcess bash = TestBash.Start();
 
     public void Dispose() => bash.Dispose();
 
     [Fact]
     public void StartsInteractiveBash_ShowsPrompt()
     {
-        var output = bash.ReadUntil("$", Timeout);
+        var output = TestBash.ReadUntil(bash.StandardOutput, "$", Timeout);
 
         Assert.Contains("$", output);
     }
@@ -22,8 +24,8 @@ public class PtyProcessTests : IDisposable
     {
         DisableEcho();
 
-        bash.Write($"echo hello-from-pty; echo {Done}\n");
-        var output = bash.ReadUntil(Done, Timeout);
+        bash.StandardInput.WriteLine($"echo hello-from-pty; echo {Done}");
+        var output = TestBash.ReadUntil(bash.StandardOutput, Done, Timeout);
 
         Assert.Contains("hello-from-pty", output);
     }
@@ -33,14 +35,14 @@ public class PtyProcessTests : IDisposable
     {
         DisableEcho();
 
-        bash.Write($"echo one-AAAA; echo {Done}\n");
-        var one = bash.ReadUntil(Done, Timeout);
+        bash.StandardInput.WriteLine($"echo one-AAAA; echo {Done}");
+        var one = TestBash.ReadUntil(bash.StandardOutput, Done, Timeout);
 
-        bash.Write($"echo two-BBBB; echo {Done}\n");
-        var two = bash.ReadUntil(Done, Timeout);
+        bash.StandardInput.WriteLine($"echo two-BBBB; echo {Done}");
+        var two = TestBash.ReadUntil(bash.StandardOutput, Done, Timeout);
 
-        bash.Write($"echo three-CCCC; echo {Done}\n");
-        var three = bash.ReadUntil(Done, Timeout);
+        bash.StandardInput.WriteLine($"echo three-CCCC; echo {Done}");
+        var three = TestBash.ReadUntil(bash.StandardOutput, Done, Timeout);
 
         Assert.Contains("one-AAAA", one);
         Assert.Contains("two-BBBB", two);
@@ -54,11 +56,11 @@ public class PtyProcessTests : IDisposable
 
         // Variables set by one command are still visible to the next one:
         // proof we are talking to the same interactive shell session.
-        bash.Write("ANSWER=42; echo set-AAAA; echo " + Done + "\n");
-        Assert.Contains("set-AAAA", bash.ReadUntil(Done, Timeout));
+        bash.StandardInput.WriteLine($"ANSWER=42; echo set-AAAA; echo {Done}");
+        Assert.Contains("set-AAAA", TestBash.ReadUntil(bash.StandardOutput, Done, Timeout));
 
-        bash.Write($"echo the-answer-is-$ANSWER; echo {Done}\n");
-        var output = bash.ReadUntil(Done, Timeout);
+        bash.StandardInput.WriteLine($"echo the-answer-is-$ANSWER; echo {Done}");
+        var output = TestBash.ReadUntil(bash.StandardOutput, Done, Timeout);
 
         Assert.Contains("the-answer-is-42", output);
     }
@@ -68,8 +70,8 @@ public class PtyProcessTests : IDisposable
     {
         // Wait until bash is fully up (prompt visible) before sending exit,
         // otherwise the early input can be lost during startup.
-        bash.ReadUntil("$", Timeout);
-        bash.Write("exit\n");
+        TestBash.ReadUntil(bash.StandardOutput, "$", Timeout);
+        bash.StandardInput.WriteLine("exit");
 
         Assert.True(bash.WaitForExit(Timeout));
         Assert.Equal(0, bash.ExitCode);
@@ -82,9 +84,13 @@ public class PtyProcessTests : IDisposable
         Directory.CreateDirectory(dir);
         try
         {
-            using var bash = PtyProcess.StartBash(dir);
-            bash.Write($"pwd; echo {Done}\n");
-            var output = bash.ReadUntil(Done, Timeout);
+            using var bash = TestBash.Start(dir);
+            // Echo off so the command's own text does not shadow the marker read.
+            bash.StandardInput.WriteLine("stty -echo");
+            TestBash.Drain(bash.StandardOutput, TimeSpan.FromMilliseconds(200));
+
+            bash.StandardInput.WriteLine($"pwd; echo {Done}");
+            var output = TestBash.ReadUntil(bash.StandardOutput, Done, Timeout);
 
             Assert.Contains(dir, output);
         }
@@ -102,77 +108,105 @@ public class PtyProcessTests : IDisposable
         // Monitor (job control) must be on: this is the functional difference between a
         // proper pty session leader and a plain subprocess. It requires the child to have
         // a session with a controlling terminal (POSIX_SPAWN_SETSID = 0x0400 on macOS).
-        bash.Write("set +H; echo __DONE__\n"); // disable history expansion for the $! below
-        bash.ReadUntil("__DONE__", Timeout);
+        bash.StandardInput.WriteLine($"set +H; echo {Done}"); // disable history expansion for the $! below
+        TestBash.ReadUntil(bash.StandardOutput, Done, Timeout);
 
         // Background job reports its pid and is listed by jobs -l.
-        bash.Write("sleep 0.5 & echo JOBPID=$!; echo __DONE__\n");
-        var bg = bash.ReadUntil("__DONE__", Timeout);
+        bash.StandardInput.WriteLine($"sleep 0.5 & echo JOBPID=$!; echo {Done}");
+        var bg = TestBash.ReadUntil(bash.StandardOutput, Done, Timeout);
         Assert.Contains("[1]", bg);
         Assert.Contains("JOBPID=", bg);
 
-        bash.Write("jobs -l; echo __DONE__\n");
-        var jobs = bash.ReadUntil("__DONE__", Timeout);
+        bash.StandardInput.WriteLine($"jobs -l; echo {Done}");
+        var jobs = TestBash.ReadUntil(bash.StandardOutput, Done, Timeout);
         Assert.Contains("[1]", jobs);
         Assert.Contains("sleep 0.5", jobs);
     }
 
-    // --- async convenience methods ------------------------------------------
+    // --- async surface -----------------------------------------------------
 
     [Fact]
-    public async Task WriteAsync_And_ReadUntilAsync_RoundTrip()
+    public async Task WriteAsync_RoundTrip()
     {
         DisableEcho();
 
-        await bash.WriteAsync($"echo async-AAAA; echo {Done}\n", default);
-        var output = await bash.ReadUntilAsync(Done, Timeout, default);
+        await bash.StandardInput.WriteLineAsync($"echo async-AAAA; echo {Done}");
+        var output = TestBash.ReadUntil(bash.StandardOutput, Done, Timeout);
 
         Assert.Contains("async-AAAA", output);
     }
 
     [Fact]
-    public async Task ReadUntilAsync_Timeout_ThrowsTimeoutException()
+    public void ReadUntil_ReturnsEarlyWhenChildExits()
     {
-        var ex = await Assert.ThrowsAsync<TimeoutException>(
-            () => bash.ReadUntilAsync("never-appears", TimeSpan.FromMilliseconds(300), default));
-        Assert.Contains("never-appears", ex.Message);
+        bash.StandardInput.WriteLine("exit");
+
+        // The reader hits EOF and returns what was read instead of hanging until the timeout.
+        var output = TestBash.ReadUntil(bash.StandardOutput, "never-appears", Timeout);
+        Assert.False(string.IsNullOrEmpty(output));
     }
 
     [Fact]
-    public async Task ReadUntilAsync_Cancellation_ThrowsOperationCanceledException()
+    public void Kill_TerminatesChildWithSignal()
     {
-        using var cts = new CancellationTokenSource();
-        var task = bash.ReadUntilAsync("never-appears", Timeout, cts.Token);
+        // A bare `sleep` has no reason to exit on its own; Kill must bring it down.
+        using var p = PtyProcess.Start("/bin/sleep", ["100"]);
 
-        await Task.Delay(100);
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        cts.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task).WaitAsync(Timeout);
-        sw.Stop();
+        Assert.False(p.HasExited);
+        p.Kill();
 
-        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(1), $"cancel took {sw.Elapsed}");
+        Assert.True(p.WaitForExit(Timeout));
+        // Killed by SIGKILL (9): exit code is 128 + 9.
+        Assert.Equal(137, p.ExitCode);
     }
 
     [Fact]
-    public async Task ReadUntilAsync_ReturnsEarlyWhenChildExits()
+    public void WaitForExit_NoTimeout_ReturnsAfterChildExits()
     {
-        bash.ReadUntil("$", Timeout);
-        bash.Write("exit\n");
+        bash.StandardInput.WriteLine("exit");
 
-        // Returns on EOF (child gone) instead of blocking until the timeout.
-        var output = await bash.ReadUntilAsync("never-appears", Timeout, default);
-        Assert.NotNull(output);
+        bash.WaitForExit(); // must not throw and must return once the child is reaped
 
-        Assert.True(bash.WaitForExit(Timeout)); // confirm the child actually exited
+        Assert.True(bash.HasExited);
     }
 
     /// <summary>
-    /// Turns off the tty line-discipline echo so command output is not mixed with
-    /// the echoed input, then waits for the change to take effect.
+    /// Latin-1 I/O round-trip: a non-UTF-8 payload written via StandardInput must be
+    /// encoded as configured, and the child's output must be decoded as configured
+    /// (é is 0xE9 in Latin-1 but 0xC3 0xA9 in UTF-8, so a wrong encoding garbles it).
+    /// </summary>
+    [Fact]
+    public void Encoding_ConfiguredViaStartInfo()
+    {
+        var latin1 = Encoding.Latin1; // ISO-8859-1
+        using var p = PtyProcess.Start(new PtyStartInfo
+        {
+            FileName = "/bin/bash",
+            ArgumentList = { "--noprofile", "--norc", "--noediting", "-i" },
+            StandardInputEncoding = latin1,
+            StandardOutputEncoding = latin1,
+        });
+
+        p.StandardInput.WriteLine("stty -echo");
+        TestBash.Drain(p.StandardOutput, TimeSpan.FromMilliseconds(200));
+
+        // 0xE9 is a single byte in Latin-1; if the writer used UTF-8 it would send
+        // two bytes and bash would see a garbled command, and the marker never shows.
+        p.StandardInput.WriteLine($"echo caf\u00e9; echo {Done}");
+        var output = TestBash.ReadUntil(p.StandardOutput, Done, Timeout);
+
+        Assert.Contains("caf\u00e9", output);
+    }
+
+    /// <summary>
+    /// Turns off the tty line-discipline echo so command output is not mixed with the
+    /// echoed input, and waits for the change to take effect (echo off is what keeps a
+    /// command's own literal text out of the output, which otherwise short-circuits
+    /// marker reads).
     /// </summary>
     private void DisableEcho()
     {
-        bash.Write("stty -echo\n");
-        bash.ReadAvailable(TimeSpan.FromMilliseconds(200));
+        bash.StandardInput.WriteLine("stty -echo");
+        TestBash.Drain(bash.StandardOutput, TimeSpan.FromMilliseconds(200));
     }
 }
