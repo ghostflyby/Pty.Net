@@ -20,7 +20,7 @@ jobs:
         # Pty.WindowsTests.cs plus the portable bash-driven tests.
         os: [windows-latest, ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v4
@@ -63,7 +63,7 @@ jobs:
     container:
       image: ${{ matrix.image }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Prepare non-root user
         run: |
