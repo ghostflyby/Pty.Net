@@ -54,7 +54,7 @@ public class AaaPtyWindowsDiagnostics
             sb.AppendLine($"library Start OK: pid={p.Pid}");
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             var buf = new byte[512];
-            var n = await p.BaseStream.ReadAsync(buf, cts.Token).WaitAsync(TimeSpan.FromSeconds(6));
+            var n = await p.BaseStream.ReadAsync(buf, cts.Token).AsTask().WaitAsync(TimeSpan.FromSeconds(6));
             sb.AppendLine($"library ReadAsync: n={n} bytes=[{Encoding.UTF8.GetString(buf, 0, n)}]");
         }
         catch (Exception ex)
