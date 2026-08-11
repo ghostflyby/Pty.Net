@@ -1,3 +1,4 @@
+#if !WINDOWS
 using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -633,3 +634,4 @@ internal static class PtyIoEngine
         }
     }
 }
+#endif
