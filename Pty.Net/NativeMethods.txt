@@ -23,6 +23,7 @@ WriteFile
 
 # Process spawn with the pseudoconsole attribute attached
 CreateProcessW
+STARTUPINFOW_FLAGS
 InitializeProcThreadAttributeList
 UpdateProcThreadAttribute
 DeleteProcThreadAttributeList

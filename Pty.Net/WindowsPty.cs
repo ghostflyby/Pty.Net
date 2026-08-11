@@ -102,6 +102,10 @@ internal static partial class WindowsPty
             // first call, allocate, then initialize.
             var startupInfo = new STARTUPINFOEXW();
             startupInfo.StartupInfo.cb = (uint)Marshal.SizeOf<STARTUPINFOEXW>();
+            // Both reference implementations (Microsoft MiniTerm, Porta.Pty) set
+            // STARTF_USESTDHANDLES; without it the child's stdio is not wired to the
+            // pseudoconsole pipes and the child's output never reaches them.
+            startupInfo.StartupInfo.dwFlags = STARTUPINFOW_FLAGS.STARTF_USESTDHANDLES;
 
             const uint attributeCount = 1;
             nuint size = 0;
