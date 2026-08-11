@@ -17,8 +17,7 @@ internal sealed record WindowsPtyResult(
     SafeFileHandle OutputRead,      // read the child's merged stdout+stderr
     ClosePseudoConsoleSafeHandle PseudoConsole,
     SafeProcessHandle ProcessHandle,
-    int Pid,
-    IntPtr AttributeListPtr);       // freed by the stream's Dispose (see WindowsPty.FreeAttributeList)
+    int Pid);
 
 /// <summary>
 /// Windows/ConPTY launch path. ConPTY (<c>CreatePseudoConsole</c>) creates a virtual console
@@ -96,11 +95,11 @@ internal static partial class WindowsPty
                 throw new Win32Exception(hr.Value, $"CreatePseudoConsole failed: {hr}");
             Trace($"CreatePseudoConsole ok hPc={(long)pseudoConsole.DangerousGetHandle()}");
 
-            // The pseudo console owns these ends, but we must NOT close them before the
-            // child is spawned: the ConPTY channel is still being wired up and closing a
-            // handle early disconnects the channel (later sessions then produce no output
-            // at all). Porta.Pty closes them only after CreateProcess returns. We defer
-            // the closes to right after the successful CreateProcessW below.
+            // The pseudo console owns these ends; close them right away so they do not
+            // stay open on our side (keeping them open causes input/output buffering
+            // issues — Porta.Pty closes them immediately after CreatePseudoConsole).
+            inPipeConPtySide.Dispose();
+            outPipeConPtySide.Dispose();
 
             // STARTUPINFOEX with the pseudoconsole attribute. Get the required size with a
             // first call, allocate, then initialize.
@@ -165,27 +164,22 @@ internal static partial class WindowsPty
             }
             finally
             {
-                // NOTE: the attribute list must stay valid for the child's initialization —
-                // the kernel may still be reading it after CreateProcess returns (the child
-                // process has not necessarily consumed the pseudoconsole attribute yet).
-                // Ownership moves to the returned WindowsPtyResult and is freed by
-                // WindowsPty.FreeAttributeList once the stream is disposed (the child is
-                // gone by then). MiniTerm (the reference implementation) does the same.
+                // The attribute list is consumed by the child during CreateProcess; free it
+                // immediately, matching Porta.Pty (the child duplicates what it needs).
+                if (!startupInfo.lpAttributeList.IsNull)
+                    DeleteProcThreadAttributeList(startupInfo.lpAttributeList);
+                if (attrListPtr != IntPtr.Zero)
+                    Marshal.FreeHGlobal(attrListPtr);
             }
 
             if (!success)
-            {
-                DeleteProcThreadAttributeList(startupInfo.lpAttributeList);
-                Marshal.FreeHGlobal(attrListPtr);
                 throw new Win32Exception($"CreateProcessW failed for '{file}'");
-            }
-            Trace($"CreateProcessW ok pid={processInfo.dwProcessId}");
 
             processHandle = new SafeProcessHandle(processInfo.hProcess, ownsHandle: true);
             if (processInfo.hThread != 0)
                 new SafeFileHandle(processInfo.hThread, ownsHandle: true).Dispose();
 
-            return new WindowsPtyResult(inPipeOurSide, outPipeOurSide, pseudoConsole, processHandle, (int)processInfo.dwProcessId, attrListPtr);
+            return new WindowsPtyResult(inPipeOurSide, outPipeOurSide, pseudoConsole, processHandle, (int)processInfo.dwProcessId);
         }
         catch
         {
@@ -195,16 +189,6 @@ internal static partial class WindowsPty
             outPipeConPtySide.Dispose();
             pseudoConsole?.Dispose();
             throw;
-        }
-    }
-
-    /// <summary>Releases the deferred thread attribute list (see Start's ownership note).</summary>
-    internal static void FreeAttributeList(IntPtr attrListPtr)
-    {
-        if (attrListPtr != IntPtr.Zero)
-        {
-            DeleteProcThreadAttributeList(new LPPROC_THREAD_ATTRIBUTE_LIST(attrListPtr));
-            Marshal.FreeHGlobal(attrListPtr);
         }
     }
 

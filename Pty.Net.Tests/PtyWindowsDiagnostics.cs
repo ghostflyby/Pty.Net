@@ -4,41 +4,37 @@ using Ghostflyby.Pty;
 
 namespace Ghostflyby.Pty.Tests;
 
-/// <summary>Temporary diagnostic: does session B's child actually execute? File side-effect + hard timeouts.</summary>
+/// <summary>Temporary diagnostic: A (echo) then B (mkdir side-effect, no quoting hazards).</summary>
 public class AaaPtyWindowsDiagnostics
 {
     [Fact]
-    public async Task DoesBChildExecute()
+    public async Task ABWithSideEffect()
     {
         var sb = new StringBuilder();
-        sb.AppendLine("=== does-B-execute start ===");
-        var markerB = Path.Combine(Path.GetTempPath(), "pty-b-marker-" + Guid.NewGuid().ToString("N") + ".txt");
+        sb.AppendLine("=== AB-with-side-effect start ===");
+        var dirB = Path.Combine(Path.GetTempPath(), "pty-b-dir-" + Guid.NewGuid().ToString("N"));
 
-        // A: confirm the baseline works.
         try
         {
             using var pA = PtyProcess.Start("cmd.exe", ["/c", "echo AAA-OK"]);
             var a = await ReadAllAsync(pA, 3).WaitAsync(TimeSpan.FromSeconds(6));
-            sb.AppendLine($"A: got={a.Contains("AAA-OK")} len={a.Length}");
+            sb.AppendLine($"A: got={a.Contains("AAA-OK")} len={a.Length} exited={pA.HasExited}");
         }
         catch (Exception ex) { sb.AppendLine($"A threw {ex.GetType().Name}: {ex.Message}"); }
 
-        // B: child writes a file as a side effect (works even if stdout is disconnected).
         try
         {
-            using var pB = PtyProcess.Start("cmd.exe", ["/c", $"echo BBB-OK > \"{markerB}\""]);
+            using var pB = PtyProcess.Start("cmd.exe", ["/c", $"mkdir {dirB}"]);
             sb.AppendLine($"B started pid={pB.Pid}");
             var b = await ReadAllAsync(pB, 3).WaitAsync(TimeSpan.FromSeconds(6));
-            sb.AppendLine($"B stdout: got={b.Contains("BBB-OK")} len={b.Length}");
-            pB.WaitForExit(TimeSpan.FromSeconds(2));
+            sb.AppendLine($"B stdout: got={b.Contains("mkdir")} len={b.Length} bytes=[{b.Replace("\u001b", "<ESC>")}]");
+            pB.WaitForExit(TimeSpan.FromSeconds(3));
             sb.AppendLine($"B exited={pB.HasExited} exitCode={pB.ExitCode}");
         }
         catch (Exception ex) { sb.AppendLine($"B threw {ex.GetType().Name}: {ex.Message}"); }
 
         await Task.Delay(500);
-        sb.AppendLine($"B marker file exists={File.Exists(markerB)} path={markerB}");
-        if (File.Exists(markerB))
-            sb.AppendLine($"B marker content=[{File.ReadAllText(markerB)}]");
+        sb.AppendLine($"B dir exists={Directory.Exists(dirB)}");
 
         sb.AppendLine("=== end ===");
         throw new Exception(sb.ToString());
