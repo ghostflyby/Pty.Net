@@ -2,6 +2,7 @@
 using System.Runtime.InteropServices;
 using System.Text;
 using Ghostflyby.Pty;
+using Microsoft.Win32.SafeHandles;
 
 namespace Ghostflyby.Pty.Tests;
 
