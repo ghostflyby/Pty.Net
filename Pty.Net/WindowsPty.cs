@@ -207,6 +207,11 @@ internal static partial class WindowsPty
         }
     }
 
+    // TEMPORARY diagnostic (removed once the multi-session issue is resolved).
+    private static readonly System.Collections.Concurrent.ConcurrentQueue<string> DebugLog = new();
+    private static void Trace(string message) => DebugLog.Enqueue(message);
+    internal static string GetDebugLog() => string.Join("\n", DebugLog);
+    internal static void Diag(string message) => DebugLog.Enqueue(message);
 
     /// <summary>Terminates the child (ConPTY has no signals; ClosePseudoConsole would also terminate the tree).</summary>
     internal static void Terminate(SafeProcessHandle processHandle)
