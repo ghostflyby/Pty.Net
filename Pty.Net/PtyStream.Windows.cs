@@ -263,8 +263,8 @@ public sealed partial class PtyStream
         var tid = readerThreadId;
         if (tid == 0)
             return; // reader never started (constructor raced dispose)
-        var threadHandle = OpenThread(ThreadAccessRights.THREAD_TERMINATE, false, tid);
-        if (threadHandle.IsInvalid)
+        var threadHandle = OpenThread(THREAD_ACCESS_RIGHTS.THREAD_TERMINATE, false, tid);
+        if (threadHandle.IsNull)
             return; // reader already exited and closed its thread
         try
         {
@@ -279,7 +279,7 @@ public sealed partial class PtyStream
         }
         finally
         {
-            threadHandle.Dispose();
+            CloseHandle(threadHandle);
         }
     }
 
