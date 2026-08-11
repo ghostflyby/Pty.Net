@@ -4,10 +4,10 @@ using Ghostflyby.Pty;
 
 namespace Ghostflyby.Pty.Tests;
 
-/// <summary>Temporary diagnostic: sequential sessions with full handle/reader trace.</summary>
+/// <summary>Temporary diagnostic: does the FIRST ConPTY session break later ones? Disposal as the trigger?</summary>
 public class AaaPtyWindowsDiagnostics
 {
-    private static async Task<string> ReadAll(PtyProcess p, TimeSpan timeout)
+    private static async Task<string> ReadAll(PtyProcess p, string tag, TimeSpan timeout)
     {
         var sb = new StringBuilder();
         var deadline = DateTime.UtcNow + timeout;
@@ -27,26 +27,29 @@ public class AaaPtyWindowsDiagnostics
     }
 
     [Fact]
-    public async Task SequentialWithTrace()
+    public async Task NoDisposeBetweenSessions()
     {
         var sb = new StringBuilder();
-        sb.AppendLine("=== sequential-with-trace start ===");
+        sb.AppendLine("=== no-dispose-between start ===");
 
-        for (var i = 0; i < 3; i++)
-        {
-            try
-            {
-                using var p = PtyProcess.Start("cmd.exe", ["/c", $"echo TRC-{i}-OK"]);
-                var out1 = await ReadAll(p, TimeSpan.FromSeconds(4)).WaitAsync(TimeSpan.FromSeconds(7));
-                sb.AppendLine($"seq#{i}: got={out1.Contains($"TRC-{i}-OK")} len={out1.Length}");
-                p.WaitForExit(TimeSpan.FromSeconds(3));
-                if (i == 0) { GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect(); sb.AppendLine("forced GC after seq#0"); }
-            }
-            catch (Exception ex)
-            {
-                sb.AppendLine($"seq#{i} threw {ex.GetType().Name}: {ex.Message}");
-            }
-        }
+        // Session A: start and read, but DO NOT dispose yet.
+        var pA = PtyProcess.Start("cmd.exe", ["/c", "echo AAA-OK"]);
+        var a = await ReadAll(pA, "A", TimeSpan.FromSeconds(5)).WaitAsync(TimeSpan.FromSeconds(8));
+        sb.AppendLine($"A: got={a.Contains("AAA-OK")} len={a.Length}");
+
+        // Session B: start while A still alive (not disposed).
+        var pB = PtyProcess.Start("cmd.exe", ["/c", "echo BBB-OK"]);
+        var b = await ReadAll(pB, "B", TimeSpan.FromSeconds(5)).WaitAsync(TimeSpan.FromSeconds(8));
+        sb.AppendLine($"B (A not disposed): got={b.Contains("BBB-OK")} len={b.Length}");
+
+        // Dispose A, then session C.
+        pA.Dispose();
+        var pC = PtyProcess.Start("cmd.exe", ["/c", "echo CCC-OK"]);
+        var c = await ReadAll(pC, "C", TimeSpan.FromSeconds(5)).WaitAsync(TimeSpan.FromSeconds(8));
+        sb.AppendLine($"C (after A disposed): got={c.Contains("CCC-OK")} len={c.Length}");
+
+        pB.Dispose();
+        pC.Dispose();
 
         sb.AppendLine("--- trace ---");
         sb.AppendLine(WindowsPty.GetDebugLog());

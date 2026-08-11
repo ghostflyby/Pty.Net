@@ -292,6 +292,7 @@ public sealed partial class PtyStream
                 }
                 return;
             }
+            WindowsPty.Diag($"reader ReadFile ok={ok} read={read} outRead={(long)outputRead.DangerousGetHandle()}");
 
             lock (gate)
             {
