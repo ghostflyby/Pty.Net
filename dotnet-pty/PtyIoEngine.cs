@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading.Channels;
 using Microsoft.Win32.SafeHandles;
@@ -72,7 +73,11 @@ internal static class PtyIoEngine
     /// <summary>Removes every pending operation for the handle; used by PtyStream.Dispose.</summary>
     public static void AbortHandle(SafeFileHandle handle)
     {
-        EnsureStarted();
+        // If the engine never started (sync-only usage), there is nothing in flight and
+        // nothing to abort — forcing the singleton thread to spawn just for this would
+        // leak a process-lifetime background thread.
+        if (!Thread.IsValueCreated)
+            return;
         Thread.Value.Post(new Control { Kind = ControlKind.CancelHandle, Handle = handle });
     }
 
@@ -179,6 +184,13 @@ internal static class PtyIoEngine
 
         // Engine thread only.
         private readonly Dictionary<(int Fd, OperationKind Kind), Slot> slots = [];
+
+        // Handles that PtyStream.Dispose has torn down (via AbortHandle). AbortHandle
+        // queues a CancelHandle message, but a concurrent Enqueue may deliver its
+        // Register message *after* CancelHandle has already scanned the slots — without
+        // this marker that op would then be registered with no one left to cancel it.
+        // A ConditionalWeakTable keeps the marker without keeping the handle alive.
+        private readonly ConditionalWeakTable<SafeFileHandle, object> canceledHandles = new();
         private readonly byte[] wakeBuffer = new byte[64];
         private NativeMethods.PollFd[] pollFds = new NativeMethods.PollFd[64];
         private int pollCount;
@@ -314,6 +326,16 @@ internal static class PtyIoEngine
                     return;
                 }
 
+                // AbortHandle may have been processed before this Register: the handle
+                // is already torn down and no Cancel will ever arrive for this op.
+                // (AddRef above still succeeded because the actual close is deferred
+                // while other ops hold refs, so IsClosed alone cannot detect this.)
+                if (canceledHandles.TryGetValue(op.Handle, out _))
+                {
+                    Complete(op, OpStatus.Canceled, 0, null);
+                    return;
+                }
+
                 // Fd is captured only now, under the AddRef: a raw value read earlier
                 // could have been reused by the OS if the handle closed in between.
                 op.Fd = (int)op.Handle.DangerousGetHandle();
@@ -401,6 +423,15 @@ internal static class PtyIoEngine
 
             foreach (var op in toCancel)
                 Cancel(op);
+
+            // Remember the handle so any Register that arrives *after* this message is
+            // rejected instead of being registered with no cancel to ever come.
+            canceledHandles.AddOrUpdate(handle, Sentinel.Value);
+        }
+
+        private sealed class Sentinel
+        {
+            internal static readonly object Value = new();
         }
 
         // --------------------------------------------------------------- dispatch
@@ -422,8 +453,8 @@ internal static class PtyIoEngine
 
         private void DispatchRead(Operation op, NativeMethods.PollEvents revents)
         {
-            // Poll asserted POLLIN, so this read is safe (data is available). A single
-            // read: partial reads are legal and the caller can issue another op for the
+            // Poll asserted POLLIN, so a read normally returns data. A single read:
+            // partial reads are legal and the caller can issue another op for the
             // rest. If the slave is gone, poll reports HUP — read to confirm EOF.
             while (true)
             {
@@ -443,6 +474,16 @@ internal static class PtyIoEngine
                 var err = Marshal.GetLastPInvokeError();
                 if (err == Eintr)
                     continue;
+                if (err == Eagain)
+                {
+                    // Spurious wakeup: the data was consumed before this read ran (e.g.
+                    // by a concurrent read on the same stream), or the readiness state
+                    // changed. Stay registered for the next POLLIN — not an error. If the
+                    // fd also reports hangup/error, the slave is gone: that is EOF.
+                    if ((revents & (NativeMethods.PollEvents.Pollhup | NativeMethods.PollEvents.Pollerr)) != 0)
+                        Complete(op, OpStatus.Succeeded, 0, null);
+                    return;
+                }
                 if (err == Eio)
                 {
                     Complete(op, OpStatus.Succeeded, 0, null); // slave closed: EOF on both platforms

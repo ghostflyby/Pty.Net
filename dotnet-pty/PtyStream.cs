@@ -32,6 +32,12 @@ public sealed class PtyStream : Stream
 {
     private readonly SafeFileHandle handle;
 
+    // Number of async reads currently in flight on this stream (engine-owned). The sync
+    // read path checks it: while an async read is pending, a sync read would race the
+    // engine for the same bytes — which one wins is undefined and a lost race can even
+    // look like EOF. Mixing is refused with a clear error instead of a wrong result.
+    private int pendingAsyncReads;
+
     /// <summary>Takes ownership of <paramref name="handle"/> (the non-blocking pty master).</summary>
     internal PtyStream(SafeFileHandle handle)
     {
@@ -94,6 +100,9 @@ public sealed class PtyStream : Stream
     internal int Read(Span<byte> buffer, int timeoutMs, out bool eof)
     {
         ObjectDisposedException.ThrowIf(handle.IsClosed, this);
+        if (Volatile.Read(ref pendingAsyncReads) > 0)
+            throw new InvalidOperationException(
+                "A pending async read is in progress on this pty stream; sync and async reads on the same stream cannot be mixed.");
         eof = false;
         if (buffer.IsEmpty)
             return 0;
@@ -145,13 +154,21 @@ public sealed class PtyStream : Stream
 
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
     {
+        ObjectDisposedException.ThrowIf(handle.IsClosed, this);
         if (buffer.IsEmpty)
             return 0;
-        ObjectDisposedException.ThrowIf(handle.IsClosed, this);
 
         // After the engine copies bytes into the buffer it completes with the count,
         // so data already read wins over a concurrent cancellation by construction.
-        return await PtyIoEngine.ReadAsync(handle, buffer, cancellationToken).ConfigureAwait(false);
+        Interlocked.Increment(ref pendingAsyncReads);
+        try
+        {
+            return await PtyIoEngine.ReadAsync(handle, buffer, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref pendingAsyncReads);
+        }
     }
 
     // -------------------------------------------------------------------- write
@@ -214,9 +231,9 @@ public sealed class PtyStream : Stream
     /// </summary>
     public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
     {
+        ObjectDisposedException.ThrowIf(handle.IsClosed, this);
         if (buffer.IsEmpty)
             return ValueTask.CompletedTask;
-        ObjectDisposedException.ThrowIf(handle.IsClosed, this);
         return new ValueTask(PtyIoEngine.WriteAsync(handle, buffer, cancellationToken));
     }
 
@@ -257,19 +274,18 @@ public sealed class PtyStream : Stream
                 r = NativeMethods.poll([pollFd], 1, remainingMs);
             } while (r < 0 && Marshal.GetLastPInvokeError() == NativeMethods.Eintr);
 
-            if (r < 0)
-                throw new IOException($"poll failed: errno={Marshal.GetLastPInvokeError()}");
+            switch (r)
+            {
+                case < 0:
+                    throw new IOException($"poll failed: errno={Marshal.GetLastPInvokeError()}");
+                case > 0:
+                    revents = pollFd.Revents;
+                    return true;
+            }
 
-            if (r > 0)
-            {
-                revents = pollFd.Revents;
-                return true;
-            }
-            if (remainingMs == 0)
-            {
-                revents = 0;
-                return false; // poll(..., 0) timed out: nothing available right now
-            }
+            if (remainingMs != 0) continue;
+            revents = 0;
+            return false; // poll(..., 0) timed out: nothing available right now
         }
     }
 
