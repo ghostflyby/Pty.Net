@@ -1,4 +1,4 @@
-namespace dotnet_pty.Tests;
+namespace Ghostflyby.Pty.Tests;
 
 using System.Text;
 

@@ -1,4 +1,0 @@
-<Solution>
-  <Project Path="dotnet-pty/dotnet-pty.csproj" />
-  <Project Path="dotnet-pty.Tests/dotnet-pty.Tests.csproj" />
-</Solution>

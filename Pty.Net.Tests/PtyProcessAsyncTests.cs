@@ -1,7 +1,7 @@
 using System.Diagnostics;
-using dotnet_pty;
+using Ghostflyby.Pty;
 
-namespace dotnet_pty.Tests;
+namespace Ghostflyby.Pty.Tests;
 
 /// <summary>
 /// Exercises the async process-control surface: <see cref="PtyProcess.WaitForExitAsync(CancellationToken)"/>,

@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
-using dotnet_pty;
+using Ghostflyby.Pty;
 
-namespace dotnet_pty.Tests;
+namespace Ghostflyby.Pty.Tests;
 
 public class ConcurrencyTests
 {

@@ -2,7 +2,7 @@
 
     <PropertyGroup>
         <TargetFramework>net10.0</TargetFramework>
-        <RootNamespace>dotnet_pty.Tests</RootNamespace>
+        <RootNamespace>Ghostflyby.Pty.Tests</RootNamespace>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -31,7 +31,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\dotnet-pty\dotnet-pty.csproj" />
+    <ProjectReference Include="..\Pty.Net\Pty.Net.csproj" />
   </ItemGroup>
 
 </Project>

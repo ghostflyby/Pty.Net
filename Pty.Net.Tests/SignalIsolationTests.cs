@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
-using dotnet_pty;
+using Ghostflyby.Pty;
 
-namespace dotnet_pty.Tests;
+namespace Ghostflyby.Pty.Tests;
 
 // The .NET runtime (or host app) may install custom signal handlers (e.g. ignore
 // SIGPIPE). If posix_spawn inherited those dispositions into the shell, pipe behavior

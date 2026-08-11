@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Pty.Net/Pty.Net.csproj" />
+  <Project Path="Pty.Net.Tests/Pty.Net.Tests.csproj" />
+</Solution>

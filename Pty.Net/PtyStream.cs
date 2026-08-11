@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
-namespace dotnet_pty;
+namespace Ghostflyby.Pty;
 
 /// <summary>
 /// A <see cref="Stream"/> over the master end of a Unix pseudo-terminal.

@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 
-namespace dotnet_pty;
+namespace Ghostflyby.Pty;
 
 /// <summary>
 /// Describes how to launch a child process inside a pseudo-terminal. Mirrors the

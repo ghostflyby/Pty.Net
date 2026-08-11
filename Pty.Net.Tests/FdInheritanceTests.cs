@@ -1,8 +1,8 @@
 using System.Runtime.InteropServices;
-using dotnet_pty;
+using Ghostflyby.Pty;
 using Microsoft.Win32.SafeHandles;
 
-namespace dotnet_pty.Tests;
+namespace Ghostflyby.Pty.Tests;
 
 // Demonstrates that posix_spawn, unless told otherwise, inherits ALL parent fds
 // into the child (same hole fork has, minus the lock deadlock). macOS

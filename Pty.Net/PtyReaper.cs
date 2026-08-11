@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace dotnet_pty;
+namespace Ghostflyby.Pty;
 
 /// <summary>
 /// Process-wide reaper: the single owner of waitpid(2) for every <see cref="PtyProcess"/>.
@@ -38,7 +38,7 @@ internal static class PtyReaper
 
         public ReaperThread()
         {
-            var thread = new Thread(Loop) { IsBackground = true, Name = "dotnet-pty-reaper" };
+            var thread = new Thread(Loop) { IsBackground = true, Name = "Pty.Net-reaper" };
             thread.Start();
         }
 

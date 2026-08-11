@@ -1,4 +1,4 @@
-# Verifies the Linux (glibc) build of dotnet-pty inside a container.
+# Verifies the Linux (glibc) build of Pty.Net (package: Ghostflyby.Pty) inside a container.
 #
 # The library P/Invokes openpty + posix_spawn, which resolve to glibc here with
 # different constants than macOS: POSIX_SPAWN_SETSID=0x80 (vs 0x0400 on Darwin),
@@ -20,9 +20,9 @@ USER testuser
 
 # Restore first so package downloads are cached in an early layer.
 # COPY runs as root even after USER, so --chown keeps the tree writable by testuser.
-COPY --chown=testuser:testuser dotnet-pty.slnx ./
-COPY --chown=testuser:testuser dotnet-pty/dotnet-pty.csproj dotnet-pty/
-COPY --chown=testuser:testuser dotnet-pty.Tests/dotnet-pty.Tests.csproj dotnet-pty.Tests/
+COPY --chown=testuser:testuser Pty.Net.slnx ./
+COPY --chown=testuser:testuser Pty.Net/Pty.Net.csproj Pty.Net/
+COPY --chown=testuser:testuser Pty.Net.Tests/Pty.Net.Tests.csproj Pty.Net.Tests/
 RUN dotnet restore
 
 # Copy sources (bin/obj/.git excluded via .dockerignore) and run the test suite.

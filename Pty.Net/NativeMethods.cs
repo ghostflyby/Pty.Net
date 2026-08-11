@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
-namespace dotnet_pty;
+namespace Ghostflyby.Pty;
 
 /// <summary>
 /// P/Invoke declarations for the libc functions used to set up a pseudo-terminal
@@ -73,7 +73,7 @@ internal static partial class NativeMethods
         Setsigdef = 0x0004,
         Setsid = 0x0080,
 #else
-#error "dotnet-pty supports macOS (define OSX) and Linux (define LINUX) only."
+#error "Pty.Net supports macOS (define OSX) and Linux (define LINUX) only."
 #endif
     }
 
@@ -87,7 +87,7 @@ internal static partial class NativeMethods
 #elif LINUX
     internal const int Eagain = 11;
 #else
-#error "dotnet-pty supports macOS (define OSX) and Linux (define LINUX) only."
+#error "Pty.Net supports macOS (define OSX) and Linux (define LINUX) only."
 #endif
 
     // open(2) / posix_openpt(2) flag bits. O_RDWR is identical; O_NONBLOCK and
@@ -101,7 +101,7 @@ internal static partial class NativeMethods
     internal const int ONonblock = 0x0800;
     internal const int ONoctty = 0x00100;
 #else
-#error "dotnet-pty supports macOS (define OSX) and Linux (define LINUX) only."
+#error "Pty.Net supports macOS (define OSX) and Linux (define LINUX) only."
 #endif
     internal const int ORdwr = 0x0002;
 

@@ -2,7 +2,12 @@
 
     <PropertyGroup>
         <TargetFramework>net10.0</TargetFramework>
-        <RootNamespace>dotnet_pty</RootNamespace>
+        <RootNamespace>Ghostflyby.Pty</RootNamespace>
+        <!-- The shipped package/assembly name: the repo is Pty.Net, the NuGet id is
+             vendor-prefixed (Ghostflyby.Pty) to avoid colliding with the unlisted
+             Pty.Net package on nuget.org. -->
+        <AssemblyName>Ghostflyby.Pty</AssemblyName>
+        <PackageId>Ghostflyby.Pty</PackageId>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>

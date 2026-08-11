@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 using System.Threading.Channels;
 using Microsoft.Win32.SafeHandles;
 
-namespace dotnet_pty;
+namespace Ghostflyby.Pty;
 
 /// <summary>
 /// Process-wide helper that services <see cref="PtyStream"/> async reads/writes on a
@@ -214,7 +214,7 @@ internal static class PtyIoEngine
                 throw new IOException($"pipe failed: errno={Marshal.GetLastPInvokeError()}");
 
             var thread = new IoThread(fds[0], fds[1]);
-            var t = new Thread(thread.Loop) { IsBackground = true, Name = "dotnet-pty-io" };
+            var t = new Thread(thread.Loop) { IsBackground = true, Name = "Pty.Net-io" };
             t.Start();
             return thread;
         }
@@ -269,7 +269,7 @@ internal static class PtyIoEngine
                 } while (r < 0 && Marshal.GetLastPInvokeError() == Eintr);
 
                 if (r < 0)
-                    throw new IOException($"dotnet-pty poll failed: errno={Marshal.GetLastPInvokeError()}");
+                    throw new IOException($"Pty.Net poll failed: errno={Marshal.GetLastPInvokeError()}");
 
                 if (pollCount > 0 && (pollFds[0].Revents & NativeMethods.PollEvents.Pollin) != 0)
                     DrainWakePipe();

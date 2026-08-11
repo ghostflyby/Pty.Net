@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 
-namespace dotnet_pty;
+namespace Ghostflyby.Pty;
 
 /// <summary>
 /// A child process attached to a pseudo-terminal (PTY), created via
@@ -209,7 +209,7 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
             if (sigdefRc != 0)
                 throw new IOException($"posix_spawnattr_setsigdefault failed: errno={sigdefRc}");
 #else
-#error "dotnet-pty supports macOS (define OSX) and Linux (define LINUX) only."
+#error "Pty.Net supports macOS (define OSX) and Linux (define LINUX) only."
 #endif
 
             // Wire the pty slave to the child's stdio and drop our copy of it. These take

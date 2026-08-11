@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 
-namespace dotnet_pty.Tests;
+namespace Ghostflyby.Pty.Tests;
 
 /// <summary>
 /// Exercises the async/byte-level surface of <see cref="PtyStream"/>: partial reads,
