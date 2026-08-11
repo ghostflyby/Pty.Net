@@ -68,18 +68,61 @@ internal static partial class WindowsPty
             throw new PlatformNotSupportedException(
                 "ConPTY (CreatePseudoConsole) requires Windows 10 version 1809 (build 17763) or later.");
 
-        // Two anonymous pipe pairs. ConPTY gets the input-read / output-write ends; we keep
-        // input-write (child stdin) and output-read (child stdout+stderr).
-        if (!CreatePipe(out var inPipeConPtySide, out var inPipeOurSide, null, 0))
-            throw new Win32Exception("CreatePipe (input) failed");
-        Trace($"Start: inRead={(long)inPipeConPtySide.DangerousGetHandle()} inWrite={(long)inPipeOurSide.DangerousGetHandle()}");
-        if (!CreatePipe(out var outPipeOurSide, out var outPipeConPtySide, null, 0))
+        // Two named pipe pairs (node-pty style). Anonymous pipes (CreatePipe) leave the
+        // second-and-later ConPTY session in a process silently producing no output on
+        // Windows Server / CI runners; node-pty's named pipes with 128KB buffers are
+        // reliable for many sessions. The ConPTY gets the server ends; we read/write
+        // through the client ends (CreateFileW).
+        const uint pipeBufferSize = 128 * 1024;
+        const uint pipeOpenMode = 0x0003; // PIPE_ACCESS_INBOUND | PIPE_ACCESS_OUTBOUND
+        const uint pipeMode = 0x0000;     // PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT
+        const uint openExisting = 3;
+
+        var inName = @"\\.\pipe\pty-in-" + Guid.NewGuid().ToString("N");
+        var outName = @"\\.\pipe\pty-out-" + Guid.NewGuid().ToString("N");
+
+        var inServer = CreateNamedPipeW(inName, pipeOpenMode, pipeMode, 1, pipeBufferSize, pipeBufferSize, 30000, null);
+        if (inServer.IsNull)
+            throw new Win32Exception("CreateNamedPipeW (input) failed");
+        var outServer = CreateNamedPipeW(outName, pipeOpenMode, pipeMode, 1, pipeBufferSize, pipeBufferSize, 30000, null);
+        if (outServer.IsNull)
         {
-            inPipeConPtySide.Dispose();
-            inPipeOurSide.Dispose();
-            throw new Win32Exception("CreatePipe (output) failed");
+            CloseHandle(inServer);
+            throw new Win32Exception("CreateNamedPipeW (output) failed");
         }
-        Trace($"Start: outRead={(long)outPipeOurSide.DangerousGetHandle()} outWrite={(long)outPipeConPtySide.DangerousGetHandle()}");
+
+        // Client ends for our I/O; CreateFileW blocks until ConnectNamedPipe pairs up.
+        using var connectIn = Task.Run(() => ConnectNamedPipe(inServer, null));
+        using var connectOut = Task.Run(() => ConnectNamedPipe(outServer, null));
+        var inClient = CreateFileW(inName, 0x40000000 /* GENERIC_WRITE */, 0, null, openExisting, 0, default);
+        if (inClient.IsInvalid)
+        {
+            CloseHandle(inServer);
+            CloseHandle(outServer);
+            throw new Win32Exception("CreateFileW (input client) failed");
+        }
+        var outClient = CreateFileW(outName, 0x80000000 /* GENERIC_READ */, 0, null, openExisting, 0, default);
+        if (outClient.IsInvalid)
+        {
+            CloseHandle(inServer);
+            CloseHandle(outServer);
+            inClient.Dispose();
+            throw new Win32Exception("CreateFileW (output client) failed");
+        }
+        try
+        {
+            if (!connectIn.Wait(TimeSpan.FromSeconds(5)) || !connectOut.Wait(TimeSpan.FromSeconds(5)))
+                throw new Win32Exception("ConnectNamedPipe timed out");
+        }
+        catch (AggregateException ex) when (ex.InnerException is not null)
+        {
+            CloseHandle(inServer);
+            CloseHandle(outServer);
+            inClient.Dispose();
+            outClient.Dispose();
+            throw new Win32Exception($"ConnectNamedPipe failed: {ex.InnerException.Message}");
+        }
+        Trace($"Start: inServer={(long)inServer.Value} outServer={(long)outServer.Value} inClient={(long)inClient.DangerousGetHandle()} outClient={(long)outClient.DangerousGetHandle()}");
 
         ClosePseudoConsoleSafeHandle? pseudoConsole = null;
         var attrListPtr = IntPtr.Zero;
@@ -87,19 +130,17 @@ internal static partial class WindowsPty
         {
             var hr = CreatePseudoConsole(
                 new COORD { X = DefaultCols, Y = DefaultRows },
-                inPipeConPtySide,
-                outPipeConPtySide,
+                inServer,
+                outServer,
                 0,
                 out pseudoConsole);
             if (hr.Failed)
                 throw new Win32Exception(hr.Value, $"CreatePseudoConsole failed: {hr}");
             Trace($"CreatePseudoConsole ok hPc={(long)pseudoConsole.DangerousGetHandle()}");
 
-            // The pseudo console owns these ends; close them right away so they do not
-            // stay open on our side (keeping them open causes input/output buffering
-            // issues — Porta.Pty closes them immediately after CreatePseudoConsole).
-            inPipeConPtySide.Dispose();
-            outPipeConPtySide.Dispose();
+            // The pseudo console owns the server ends; the client ends carry our I/O.
+            CloseHandle(inServer);
+            CloseHandle(outServer);
 
             // STARTUPINFOEX with the pseudoconsole attribute. Get the required size with a
             // first call, allocate, then initialize.
@@ -179,14 +220,14 @@ internal static partial class WindowsPty
             if (processInfo.hThread != 0)
                 new SafeFileHandle(processInfo.hThread, ownsHandle: true).Dispose();
 
-            return new WindowsPtyResult(inPipeOurSide, outPipeOurSide, pseudoConsole, processHandle, (int)processInfo.dwProcessId);
+            return new WindowsPtyResult(inClient, outClient, pseudoConsole, processHandle, (int)processInfo.dwProcessId);
         }
         catch
         {
-            inPipeConPtySide.Dispose();
-            inPipeOurSide.Dispose();
-            outPipeOurSide.Dispose();
-            outPipeConPtySide.Dispose();
+            // Server ends are closed by the caller paths above on failure; here we only
+            // own the client ends and the pseudo console.
+            inClient.Dispose();
+            outClient.Dispose();
             pseudoConsole?.Dispose();
             throw;
         }

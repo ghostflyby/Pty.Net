@@ -47,3 +47,11 @@ GetCurrentThreadId
 OpenThread
 CancelSynchronousIo
 CloseHandle
+
+# Named-pipe plumbing for the ConPTY channels (node-pty style). Anonymous pipes
+# (CreatePipe) leave the second-and-later ConPTY session in a process silently
+# producing no output on Windows Server/Actions runners; named pipes with 128KB
+# buffers are what node-pty ships and are reliable for many sessions.
+CreateNamedPipeW
+ConnectNamedPipe
+CreateFileW
