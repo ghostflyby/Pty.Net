@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Threading.Channels;
 using Microsoft.Win32.SafeHandles;
 using Windows.Win32;
+using Windows.Win32.Foundation;
 using static Windows.Win32.PInvoke;
 
 namespace Ghostflyby.Pty;
@@ -128,7 +129,7 @@ public sealed partial class PtyStream
                 : (int)Math.Max(0, Math.Min((deadline - DateTime.UtcNow).TotalMilliseconds, int.MaxValue));
             if (remainingMs == 0)
                 return 0; // timed out with nothing available
-            if (!dataAvailable.Wait(remainingMs))
+            if (!dataAvailable.WaitOne(remainingMs))
                 return 0;
         }
     }
@@ -157,10 +158,23 @@ public sealed partial class PtyStream
                 var w = (ReadOperation)state!;
                 lock (w.Owner.gate)
                 {
-                    if (w.Owner.readWaiters.Remove(w) && !w.Completed)
+                    if (!w.Completed)
                     {
-                        w.Completed = true;
-                        w.Tcs.TrySetCanceled(w.Token);
+                        var found = false;
+                        for (var i = 0; i < w.Owner.readWaiters.Count; i++)
+                        {
+                            if (ReferenceEquals(w.Owner.readWaiters.ElementAt(i), w))
+                            {
+                                w.Owner.readWaiters.RemoveAt(i);
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (found)
+                        {
+                            w.Completed = true;
+                            w.Tcs.TrySetCanceled(w.Token);
+                        }
                     }
                 }
             }, waiter);
@@ -256,7 +270,7 @@ public sealed partial class PtyStream
             {
                 fixed (byte* p = temp)
                 {
-                    ok = ReadFile(outputRead, p, PipeBufferSize, &read, null);
+                    ok = ReadFile((HANDLE)outputRead.DangerousGetHandle(), p, PipeBufferSize, &read, null);
                 }
             }
             if (!ok)
@@ -443,7 +457,7 @@ public sealed partial class PtyStream
             {
                 token.ThrowIfCancellationRequested();
                 uint written;
-                var ok = WriteFile(handle, p + offset, (uint)(data.Length - offset), &written, null);
+                var ok = WriteFile((HANDLE)handle.DangerousGetHandle(), p + offset, (uint)(data.Length - offset), &written, null);
                 if (!ok)
                     throw new IOException($"pty write failed: {new Win32Exception().Message}");
                 if (written == 0)
