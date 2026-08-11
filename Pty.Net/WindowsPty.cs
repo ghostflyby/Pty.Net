@@ -205,8 +205,11 @@ internal static partial class WindowsPty
         }
     }
 
-    // TEMPORARY diagnostic: removed once the zero-output issue is resolved.
-    private static void Diagnostic(string message) => Console.Error.WriteLine($"[WinPty] {message}");
+    // TEMPORARY diagnostic: accumulated and surfaced through GetDebugLog (removed once
+    // the zero-output issue is resolved).
+    private static readonly System.Collections.Concurrent.ConcurrentQueue<string> DebugLog = new();
+    private static void Diagnostic(string message) => DebugLog.Enqueue(message);
+    internal static string GetDebugLog() => string.Join("\n", DebugLog);
 
     /// <summary>Terminates the child (ConPTY has no signals; ClosePseudoConsole would also terminate the tree).</summary>
     internal static void Terminate(SafeProcessHandle processHandle)

@@ -4,7 +4,7 @@ using Ghostflyby.Pty;
 
 namespace Ghostflyby.Pty.Tests;
 
-/// <summary>Temporary diagnostic: fails with a message carrying granular launch/IO state.</summary>
+/// <summary>Temporary diagnostic: fails with granular launch/IO state in the message.</summary>
 public class PtyWindowsDiagnostics
 {
     [Fact]
@@ -12,7 +12,6 @@ public class PtyWindowsDiagnostics
     {
         var sb = new StringBuilder();
         sb.AppendLine("=== diagnostic start ===");
-
         try
         {
             using var p = PtyProcess.Start("cmd.exe", ["/c", "echo HELLO-MARKER"]);
@@ -47,6 +46,20 @@ public class PtyWindowsDiagnostics
         catch (Exception ex)
         {
             sb.AppendLine($"Start threw {ex.GetType().Name}: {ex.Message}");
+        }
+
+        // WindowsPty is internal; pull the accumulated launch trace via reflection.
+        try
+        {
+            var asm = typeof(PtyProcess).Assembly;
+            var type = asm.GetType("Ghostflyby.Pty.WindowsPty")!;
+            var log = (string)type.GetMethod("GetDebugLog", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!.Invoke(null, null)!;
+            sb.AppendLine("--- launch trace ---");
+            sb.AppendLine(log);
+        }
+        catch (Exception ex)
+        {
+            sb.AppendLine($"GetDebugLog failed: {ex.Message}");
         }
 
         sb.AppendLine("=== diagnostic end ===");
