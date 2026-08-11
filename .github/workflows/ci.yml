@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      # Report failures on every OS instead of letting one cancel the rest.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore Pty.Net.slnx
+
+      - name: Build
+        run: dotnet build Pty.Net.slnx -c Release --no-restore --nologo
+
+      # The suite spawns interactive bash (/bin/bash) sessions and drives them
+      # through the PTY, exercising fd isolation, signal isolation, job control
+      # and exit-code propagation on each OS.
+      - name: Test
+        run: dotnet test Pty.Net.slnx -c Release --no-build --no-restore --nologo
+
+  # Linux 上的 libc 差异由容器矩阵覆盖：同一套 #if LINUX 代码路径要分别在 glibc
+  # (sdk:10.0，基于 Ubuntu) 与 musl (sdk:10.0-alpine，基于 Alpine) 上验证。
+  # NativeMethods.cs 里的 LINUX 常量目前按 glibc 写死（POSIX_SPAWN_SETSID=0x80、
+  # EAGAIN=11、sigset_t=128 字节、posix_spawn_file_actions_addclosefrom_np），
+  # musl 若与这些假设不符，这个 job 正好把差异暴露出来。
+  # 容器默认以 root 运行，而测试用 bash 的 '$' 提示符作 ReadUntil 标记（root 下是
+  # '#'），所以建 testuser 并以该用户跑——与仓库根 Dockerfile 的做法一致。
+  test-container:
+    name: Test (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - mcr.microsoft.com/dotnet/sdk:10.0        # glibc (Ubuntu 24.04)
+          - mcr.microsoft.com/dotnet/sdk:10.0-alpine # musl (Alpine)
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare non-root user
+        run: |
+          set -e
+          id testuser >/dev/null 2>&1 || useradd -m testuser || adduser -D testuser
+          chown -R testuser:testuser "$GITHUB_WORKSPACE"
+
+      - name: Test (as testuser)
+        run: su testuser -s /bin/sh -c 'cd "$GITHUB_WORKSPACE" && dotnet test Pty.Net.slnx -c Release --nologo'
