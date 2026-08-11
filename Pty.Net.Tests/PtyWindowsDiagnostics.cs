@@ -4,38 +4,37 @@ using Ghostflyby.Pty;
 
 namespace Ghostflyby.Pty.Tests;
 
-/// <summary>Temporary diagnostic: A (echo) then B (mkdir side-effect, no quoting hazards).</summary>
+/// <summary>Temporary diagnostic: A then B with full reader/dispose trace.</summary>
 public class AaaPtyWindowsDiagnostics
 {
     [Fact]
-    public async Task ABWithSideEffect()
+    public async Task ABWithTrace()
     {
         var sb = new StringBuilder();
-        sb.AppendLine("=== AB-with-side-effect start ===");
-        var dirB = Path.Combine(Path.GetTempPath(), "pty-b-dir-" + Guid.NewGuid().ToString("N"));
+        sb.AppendLine("=== AB-with-trace start ===");
 
         try
         {
-            using var pA = PtyProcess.Start("cmd.exe", ["/c", "echo AAA-OK"]);
-            var a = await ReadAllAsync(pA, 3).WaitAsync(TimeSpan.FromSeconds(6));
-            sb.AppendLine($"A: got={a.Contains("AAA-OK")} len={a.Length} exited={pA.HasExited}");
+            using (var pA = PtyProcess.Start("cmd.exe", ["/c", "echo AAA-OK"]))
+            {
+                var a = await ReadAllAsync(pA, 3).WaitAsync(TimeSpan.FromSeconds(6));
+                sb.AppendLine($"A: got={a.Contains("AAA-OK")} len={a.Length}");
+            }
+            sb.AppendLine("A disposed");
         }
         catch (Exception ex) { sb.AppendLine($"A threw {ex.GetType().Name}: {ex.Message}"); }
 
         try
         {
-            using var pB = PtyProcess.Start("cmd.exe", ["/c", $"mkdir {dirB}"]);
-            sb.AppendLine($"B started pid={pB.Pid}");
+            using var pB = PtyProcess.Start("cmd.exe", ["/c", "echo BBB-OK"]);
             var b = await ReadAllAsync(pB, 3).WaitAsync(TimeSpan.FromSeconds(6));
-            sb.AppendLine($"B stdout: got={b.Contains("mkdir")} len={b.Length} bytes=[{b.Replace("\u001b", "<ESC>")}]");
-            pB.WaitForExit(TimeSpan.FromSeconds(3));
-            sb.AppendLine($"B exited={pB.HasExited} exitCode={pB.ExitCode}");
+            sb.AppendLine($"B: got={b.Contains("BBB-OK")} len={b.Length}");
+            pB.WaitForExit(TimeSpan.FromSeconds(2));
         }
         catch (Exception ex) { sb.AppendLine($"B threw {ex.GetType().Name}: {ex.Message}"); }
 
-        await Task.Delay(500);
-        sb.AppendLine($"B dir exists={Directory.Exists(dirB)}");
-
+        sb.AppendLine("--- trace ---");
+        sb.AppendLine(WindowsPty.GetDebugLog());
         sb.AppendLine("=== end ===");
         throw new Exception(sb.ToString());
     }
