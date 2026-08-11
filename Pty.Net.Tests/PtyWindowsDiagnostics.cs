@@ -1,12 +1,11 @@
 #if WINDOWS
-using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
-using Microsoft.Win32.SafeHandles;
+using Ghostflyby.Pty;
 
 namespace Ghostflyby.Pty.Tests;
 
-/// <summary>Temporary diagnostic: directly reads/writes the ConPTY pipe handles to isolate the zero-output issue.</summary>
+/// <summary>Temporary diagnostic: directly reads/writes the ConPTY pipe handles (via InternalsVisibleTo) to isolate the zero-output issue.</summary>
 public class PtyWindowsDiagnostics
 {
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -22,23 +21,20 @@ public class PtyWindowsDiagnostics
         sb.AppendLine("=== diagnostic start ===");
         try
         {
-            var p = Ghostflyby.Pty.PtyProcess.Start("cmd.exe", ["/c", "echo HELLO-MARKER"]);
+            var p = PtyProcess.Start("cmd.exe", ["/c", "echo HELLO-MARKER"]);
             sb.AppendLine($"Start OK: pid={p.Pid}");
 
-            // Pull the pipe handles out of the stream via reflection.
-            var streamType = p.BaseStream.GetType();
-            var outReadField = streamType.GetField("outputRead", BindingFlags.Instance | BindingFlags.NonPublic)!;
-            var inWriteField = streamType.GetField("inputWrite", BindingFlags.Instance | BindingFlags.NonPublic)!;
-            using var outRead = (SafeFileHandle)outReadField.GetValue(p.BaseStream)!;
-            using var inWrite = (SafeFileHandle)inWriteField.GetValue(p.BaseStream)!;
-            sb.AppendLine($"handles: outRead={(long)outRead.DangerousGetHandle()} inWrite={(long)inWrite.DangerousGetHandle()} closed={outRead.IsClosed}");
+            // Direct access to the ConPTY pipe ends (InternalsVisibleTo).
+            var outRead = (SafeFileHandle)typeof(PtyStream).GetField("outputRead", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(p.BaseStream)!;
+            var inWrite = (SafeFileHandle)typeof(PtyStream).GetField("inputWrite", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(p.BaseStream)!;
+            sb.AppendLine($"handles: outRead={(long)outRead.DangerousGetHandle()} inWrite={(long)inWrite.DangerousGetHandle()} outClosed={outRead.IsClosed}");
 
             // Direct write to the child's stdin channel.
             var payload = Encoding.ASCII.GetBytes("echo FROM-DIRECT-WRITE\r\n");
             var okW = WriteFile(inWrite, payload, (uint)payload.Length, out var written, IntPtr.Zero);
             sb.AppendLine($"direct WriteFile: ok={okW} written={written} err={Marshal.GetLastWin32Error()}");
 
-            // Direct blocking read (short, on a task with timeout).
+            // Direct blocking read, on a task with a timeout.
             var buf = new byte[512];
             var readTask = Task.Run(() =>
             {
@@ -62,19 +58,8 @@ public class PtyWindowsDiagnostics
             sb.AppendLine($"threw {ex.GetType().Name}: {ex.Message}");
         }
 
-        try
-        {
-            var asm = typeof(Ghostflyby.Pty.PtyProcess).Assembly;
-            var type = asm.GetType("Ghostflyby.Pty.WindowsPty")!;
-            var log = (string)type.GetMethod("GetDebugLog", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, null)!;
-            sb.AppendLine("--- launch/reader trace ---");
-            sb.AppendLine(log);
-        }
-        catch (Exception ex)
-        {
-            sb.AppendLine($"GetDebugLog failed: {ex.Message}");
-        }
-
+        sb.AppendLine("--- launch/reader trace ---");
+        sb.AppendLine(WindowsPty.GetDebugLog());
         sb.AppendLine("=== diagnostic end ===");
         throw new Exception(sb.ToString());
     }

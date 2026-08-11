@@ -37,4 +37,9 @@
         <PackageReference Include="Microsoft.Windows.CsWin32" Version="0.3.298" PrivateAssets="all" />
     </ItemGroup>
 
+    <!-- The test suite reads internal state (pipe handles, debug trace) directly. -->
+    <ItemGroup>
+        <InternalsVisibleTo Include="Pty.Net.Tests" />
+    </ItemGroup>
+
 </Project>
