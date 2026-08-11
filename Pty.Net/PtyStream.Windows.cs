@@ -1,7 +1,6 @@
 #if WINDOWS
 using System.ComponentModel;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Threading.Channels;
 using Microsoft.Win32.SafeHandles;
 using Windows.Win32;
@@ -52,8 +51,6 @@ public sealed partial class PtyStream
 
     private readonly Channel<WriteOperation> writeChannel;
     private volatile bool disposed;
-    private static int nextInstanceId;
-    private readonly int instanceId = Interlocked.Increment(ref nextInstanceId);
 
     /// <summary>Takes ownership of the ConPTY pipe ends and the pseudo console.</summary>
     internal PtyStream(SafeFileHandle inputWrite, SafeFileHandle outputRead, ClosePseudoConsoleSafeHandle pseudoConsole, IntPtr attributeListPtr)
@@ -282,14 +279,6 @@ public sealed partial class PtyStream
             }
             if (!ok || read == 0)
             {
-                WindowsPty.Diag($"stream#{instanceId} reader ReadFile: ok={ok} read={read} err={(!ok ? new System.ComponentModel.Win32Exception().NativeErrorCode : 0)}");
-            }
-            else
-            {
-                WindowsPty.Diag($"stream#{instanceId} reader ReadFile: ok={ok} read={read}");
-            }
-            if (!ok || read == 0)
-            {
                 // ERROR_BROKEN_PIPE / ERROR_NO_DATA / ERROR_INVALID_HANDLE (or a clean 0-byte
                 // read) all mean the channel is gone: the child exited and the pseudo console
                 // closed, or the stream was disposed. That is EOF — the same 0 the Unix half
@@ -306,7 +295,6 @@ public sealed partial class PtyStream
             lock (gate)
             {
                 var span = temp.AsSpan(0, (int)read);
-                var waiterCountBefore = readWaiters.Count;
                 // Satisfy pending async reads first (FIFO), then buffer the remainder.
                 while (span.Length > 0 && readWaiters.Count > 0)
                 {
@@ -328,28 +316,11 @@ public sealed partial class PtyStream
                         waiter.Tcs.TrySetResult(waiter.Offset);
                     }
                 }
-                WindowsPty.Diag($"stream#{instanceId} reader processed {read} bytes; waitersBefore={waiterCountBefore} waitersAfter={readWaiters.Count} buffered={bufferCount + span.Length}");
                 if (span.Length > 0)
                     AppendToBuffer(span);
             }
         }
     }
-
-    private string DebugBufferSnapshot()
-    {
-        lock (gate)
-        {
-            var n = Math.Min(bufferCount, 256);
-            return Encoding.UTF8.GetString(buffer, bufferStart, n).Replace("\u001b", "<ESC>");
-        }
-    }
-
-    // --- debug surface (InternalsVisibleTo; used by the temporary diagnostic test) ---
-    internal int DebugInstanceId => instanceId;
-    internal int DebugBufferCount => Volatile.Read(ref bufferCount);
-    internal int DebugReadWaiterCount { get { lock (gate) return readWaiters.Count; } }
-    internal bool DebugReaderEof => readerEof;
-    internal string DebugBufferText => DebugBufferSnapshot();
 
     /// <summary>Appends reader data to the sync-read buffer, dropping oldest bytes when full.</summary>
     private void AppendToBuffer(ReadOnlySpan<byte> data)
@@ -388,6 +359,7 @@ public sealed partial class PtyStream
             bufferStart = 0;
         }
         waiter.Completed = true;
+        waiter.Offset = n; // the sync return path reads Offset (not the TCS result)
         waiter.Tcs.TrySetResult(n);
         return true;
     }
