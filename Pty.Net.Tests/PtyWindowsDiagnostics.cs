@@ -1,111 +1,104 @@
 #if WINDOWS
 using System.Runtime.InteropServices;
 using System.Text;
+using Ghostflyby.Pty;
 using Microsoft.Win32.SafeHandles;
 
 namespace Ghostflyby.Pty.Tests;
 
-/// <summary>Temporary diagnostic: hand-written (library-free) ConPTY, two sequential sessions.</summary>
+/// <summary>Temporary diagnostic: library path — A (success) then B (sync read, bypassing the reader thread).</summary>
 public class AaaPtyWindowsDiagnostics
 {
     [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern int CreatePseudoConsole(COORD size, SafeFileHandle hInput, SafeFileHandle hOutput, uint dwFlags, out IntPtr phPC);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern int ClosePseudoConsole(IntPtr hPC);
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern bool CreateProcessW(string? lpApplicationName, StringBuilder lpCommandLine, IntPtr lpProcessAttributes, IntPtr lpThreadAttributes, bool bInheritHandles, uint dwCreationFlags, IntPtr lpEnvironment, string? lpCurrentDirectory, ref STARTUPINFOEXW lpStartupInfo, out PROCESS_INFORMATION lpProcessInformation);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool InitializeProcThreadAttributeList(IntPtr lpAttributeList, uint dwAttributeCount, uint dwFlags, ref IntPtr lpSize);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool UpdateProcThreadAttribute(IntPtr lpAttributeList, uint dwFlags, nuint attribute, IntPtr lpValue, IntPtr cbSize, IntPtr lpPreviousValue, IntPtr lpReturnSize);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool CreatePipe(out SafeFileHandle hReadPipe, out SafeFileHandle hWritePipe, IntPtr lpPipeAttributes, int nSize);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool ReadFile(SafeFileHandle hFile, byte[] lpBuffer, uint nNumberOfBytesToRead, out uint lpNumberOfBytesRead, IntPtr lpOverlapped);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
-
-    private const uint PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = 0x00020016;
-
-    [StructLayout(LayoutKind.Sequential)] private struct COORD { public short X; public short Y; }
-    [StructLayout(LayoutKind.Sequential)] private struct STARTUPINFOW { public uint cb; public string? lpReserved; public string? lpDesktop; public string? lpTitle; public uint dwX; public uint dwY; public uint dwXSize; public uint dwYSize; public uint dwXCountChars; public uint dwYCountChars; public uint dwFillAttribute; public uint dwFlags; public ushort wShowWindow; public ushort cbReserved2; public IntPtr lpReserved2; public IntPtr hStdInput; public IntPtr hStdOutput; public IntPtr hStdError; }
-    [StructLayout(LayoutKind.Sequential)] private struct STARTUPINFOEXW { public STARTUPINFOW StartupInfo; public IntPtr lpAttributeList; }
-    [StructLayout(LayoutKind.Sequential)] private struct PROCESS_INFORMATION { public IntPtr hProcess; public IntPtr hThread; public uint dwProcessId; public uint dwThreadId; }
+    private static extern bool GetFileInformationByHandle(SafeFileHandle hFile, out BY_HANDLE_FILE_INFORMATION lpFileInformation);
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BY_HANDLE_FILE_INFORMATION
+    {
+        public uint dwFileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME ftCreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME ftLastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME ftLastWriteTime;
+        public uint dwVolumeSerialNumber;
+        public uint nFileSizeHigh;
+        public uint nFileSizeLow;
+        public uint nNumberOfLinks;
+        public uint nFileIndexHigh;
+        public uint nFileIndexLow;
+    }
 
     [Fact]
-    public async Task HandwrittenTwoSessions()
+    public async Task AB_SyncReadForB()
     {
         var sb = new StringBuilder();
-        sb.AppendLine("=== handwritten-two-sessions start ===");
+        sb.AppendLine("=== AB-sync-read start ===");
 
-        sb.AppendLine("-- session 1 --");
-        sb.AppendLine(RunSession("M1-OK"));
+        // A: async read via reader thread (should succeed).
+        PtyProcess? pA = null;
+        try
+        {
+            pA = PtyProcess.Start("cmd.exe", ["/c", "echo AAA-OK"]);
+            var a = await ReadAllAsync(pA).WaitAsync(TimeSpan.FromSeconds(8));
+            sb.AppendLine($"A (async): got={a.Contains("AAA-OK")} len={a.Length}");
+        }
+        catch (Exception ex) { sb.AppendLine($"A threw {ex.GetType().Name}: {ex.Message}"); }
 
-        sb.AppendLine("-- session 2 --");
-        sb.AppendLine(RunSession("M2-OK"));
+        // B: same, but read synchronously (bypass reader thread) with a timeout.
+        PtyProcess? pB = null;
+        try
+        {
+            pB = PtyProcess.Start("cmd.exe", ["/c", "echo BBB-OK"]);
+            sb.AppendLine($"B started pid={pB.Pid}");
+
+            // Dump the outR handle validity.
+            var field = typeof(PtyStream).GetField("outputRead", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+            using var outR = (SafeFileHandle)field.GetValue(pB.BaseStream)!;
+            var valid = GetFileInformationByHandle(outR, out _);
+            sb.AppendLine($"B outR valid={valid} err={Marshal.GetLastWin32Error()}");
+
+            // Sync read on a background task with timeout.
+            var readTask = Task.Run(() =>
+            {
+                var buf = new byte[512];
+                try
+                {
+                    var n = pB.BaseStream.Read(buf, 0, buf.Length);
+                    return $"B sync Read: n={n} bytes=[{Encoding.UTF8.GetString(buf, 0, n)}]";
+                }
+                catch (Exception ex)
+                {
+                    return $"B sync Read threw {ex.GetType().Name}: {ex.Message}";
+                }
+            });
+            var result = await readTask.WaitAsync(TimeSpan.FromSeconds(6));
+            sb.AppendLine(result);
+            sb.AppendLine($"B WaitForExit(2s)={pB.WaitForExit(TimeSpan.FromSeconds(2))} exitCode={pB.ExitCode}");
+        }
+        catch (Exception ex) { sb.AppendLine($"B threw {ex.GetType().Name}: {ex.Message}"); }
+
+        pA?.Dispose();
+        pB?.Dispose();
 
         sb.AppendLine("=== end ===");
         throw new Exception(sb.ToString());
     }
 
-    private static string RunSession(string marker)
+    private static async Task<string> ReadAllAsync(PtyProcess p)
     {
-        var log = new StringBuilder();
-        if (!CreatePipe(out var inR, out var inW, IntPtr.Zero, 0)) return "CreatePipe in failed";
-        if (!CreatePipe(out var outR, out var outW, IntPtr.Zero, 0)) return "CreatePipe out failed";
-        log.AppendLine($"pipes inR={(long)inR.DangerousGetHandle()} outR={(long)outR.DangerousGetHandle()}");
-
-        var rc = CreatePseudoConsole(new COORD { X = 120, Y = 30 }, inR, outW, 0, out var hPc);
-        if (rc != 0) return $"CreatePseudoConsole rc={rc} err={Marshal.GetLastWin32Error()}";
-        log.AppendLine($"CreatePseudoConsole ok hPc={(long)hPc}");
-
-        IntPtr size = IntPtr.Zero;
-        InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
-        var attr = Marshal.AllocHGlobal(size);
-        if (!InitializeProcThreadAttributeList(attr, 1, 0, ref size)) return $"attr init failed {Marshal.GetLastWin32Error()}";
-        if (!UpdateProcThreadAttribute(attr, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, hPc, (IntPtr)IntPtr.Size, IntPtr.Zero, IntPtr.Zero)) return $"attr update failed {Marshal.GetLastWin32Error()}";
-        log.AppendLine("attr ok");
-
-        var si = new STARTUPINFOEXW();
-        si.StartupInfo.cb = (uint)Marshal.SizeOf<STARTUPINFOEXW>();
-        si.StartupInfo.dwFlags = 0x100; // STARTF_USESTDHANDLES
-        si.lpAttributeList = attr;
-        var cmdLine = new StringBuilder($"\"cmd.exe\" /c echo {marker}");
-        var ok = CreateProcessW(null, cmdLine, IntPtr.Zero, IntPtr.Zero, false, 0x08000000, IntPtr.Zero, null, ref si, out var pi);
-        if (!ok) return $"CreateProcessW failed err={Marshal.GetLastWin32Error()}";
-        log.AppendLine($"CreateProcessW ok pid={pi.dwProcessId}");
-        inR.Dispose();
-        outW.Dispose();
-        log.AppendLine("closed conpty pipe ends");
-
-        // Bounded wait for child exit, then drain the output pipe.
-        var exitCode = 259u; // STILL_ACTIVE
-        var exitDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
-        while (DateTime.UtcNow < exitDeadline && exitCode == 259u)
-        {
-            GetExitCodeProcess(pi.hProcess, out exitCode);
-            if (exitCode == 259u) System.Threading.Thread.Sleep(50);
-        }
-        log.AppendLine($"child exitCode={exitCode}");
-
-        var buf = new byte[512];
-        var total = new StringBuilder();
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
+        var sb = new StringBuilder();
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
         while (DateTime.UtcNow < deadline)
         {
-            var readOk = ReadFile(outR, buf, (uint)buf.Length, out var readN, IntPtr.Zero);
-            if (!readOk) { log.AppendLine($"ReadFile err={Marshal.GetLastWin32Error()}"); break; }
-            if (readN == 0) { log.AppendLine("ReadFile EOF"); break; }
-            total.Append(Encoding.UTF8.GetString(buf, 0, (int)readN));
-            if (total.Length > 100) break;
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            var buf = new byte[512];
+            try
+            {
+                var n = await p.BaseStream.ReadAsync(buf, cts.Token).AsTask().WaitAsync(TimeSpan.FromSeconds(4));
+                if (n == 0) break;
+                sb.Append(Encoding.UTF8.GetString(buf, 0, n));
+            }
+            catch (Exception) { break; }
         }
-        log.AppendLine($"output=[{total}] gotMarker={total.ToString().Contains(marker)}");
-
-        ClosePseudoConsole(hPc);
-        Marshal.FreeHGlobal(attr);
-        return log.ToString();
+        return sb.ToString();
     }
 }
 #endif
