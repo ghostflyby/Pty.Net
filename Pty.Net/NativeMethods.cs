@@ -178,14 +178,33 @@ internal static partial class NativeMethods
     internal static partial int posix_spawn_file_actions_addchdir_np(IntPtr fileActions, string path);
 
 #if LINUX
-    // Upper bound for the per-fd isolation loop in PtyProcess.StartCore. The default
-    // RLIMIT_NOFILE soft limit is 1024, and the runtime's own sockets/pipes/files live
-    // in the low fds — anything above this would require a raisefd limit to exist at
-    // all. A single closefrom call would be nicer (glibc's addclosefrom_np), but musl
-    // does not export it, so a loop of the standard posix_spawn_file_actions_addclose
-    // is used instead: both libcs execute FDOP_CLOSE in the child and ignore EBADF
-    // when closing an already-closed fd, so the loop is portable and cheap.
-    internal const int MaxInheritedFd = 1024;
+    // Upper bound for the per-fd isolation loop in PtyProcess.StartCore. The loop runs
+    // to min(RLIMIT_NOFILE soft limit, this cap): the soft limit because glibc's addclose
+    // rejects fds >= sysconf(_SC_OPEN_MAX) with EBADF (musl accepts any non-negative fd
+    // and ignores EBADF at close time); the cap so a huge limit (servers/containers often
+    // run hundreds of thousands) cannot turn every spawn into a million-file-action loop.
+    // Fds above the cap would leak into the child, but .NET's own fds are all CLOEXEC
+    // (closed by the kernel at exec), so only non-CLOEXEC fds from P/Invoke could leak —
+    // those live in the low range in practice. A single closefrom call would be nicer
+    // (glibc's addclosefrom_np), but musl does not export it, so the portable addclose
+    // loop is used: both libcs execute FDOP_CLOSE in the child and ignore EBADF when
+    // closing an already-closed fd.
+    internal const int FdIsolationCap = 4096;
+
+    // Linux: RLIMIT_NOFILE from <sys/resource.h>. Per-arch in musl/glibc (MIPS uses 5);
+    // 7 is the generic value on x86_64/aarch64. Sits in the LINUX section because macOS
+    // uses a different number.
+    internal const int RlimitNofile = 7;
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct RLimit
+    {
+        internal nuint Cur; // rlim_cur (soft limit)
+        internal nuint Max; // rlim_max (hard limit)
+    }
+
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int getrlimit(int resource, out RLimit rlim);
 
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int posix_spawnattr_setsigdefault(IntPtr attr, [In] byte[] sigset);

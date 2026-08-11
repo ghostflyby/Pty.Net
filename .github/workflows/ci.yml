@@ -40,7 +40,11 @@ jobs:
   # (sdk:10.0，基于 Ubuntu) 与 musl (sdk:10.0-alpine，基于 Alpine) 上验证。
   # POSIX_SPAWN_SETSID 在两种 libc 上都是 0x80，但 musl 不导出 glibc 的
   # posix_spawn_file_actions_addclosefrom_np，所以 fd 隔离统一用标准 addclose
-  # 逐 fd 关闭 (3..1024)，两端行为一致。此 job 跑红即表示 musl 与这些假设不符。
+  # 逐 fd 关闭至 min(RLIMIT_NOFILE, cap)，两端行为一致。此 job 跑红即表示 musl
+  # 与这些假设不符。
+  # 测试步骤将 fd 硬+软上限压到 512（ulimit）：小于默认 1024，把 fd 隔离循环的
+  # 真实上界逼到 RLIMIT_NOFILE——若循环仍按固定 1024 跑，glibc addclose 对
+  # fd >= 上限会报 EBADF 导致整个 spawn 失败，从而暴露硬编码上界的缺陷。
   # 容器默认以 root 运行，而测试用 bash 的 '$' 提示符作 ReadUntil 标记（root 下是
   # '#'），所以建 testuser 并以该用户跑——与仓库根 Dockerfile 的做法一致。
   test-container:
@@ -69,4 +73,7 @@ jobs:
           chown -R testuser:testuser "$GITHUB_WORKSPACE"
 
       - name: Test (as testuser)
-        run: su testuser -s /bin/sh -c 'cd "$GITHUB_WORKSPACE" && dotnet test Pty.Net.slnx -c Release --nologo'
+        # ulimit -Hn first (hard), so nothing (e.g. the runtime) can raise the soft
+        # limit back above 512 — the fd-isolation loop must survive a constrained
+        # fd table on both glibc and musl.
+        run: su testuser -s /bin/sh -c 'cd "$GITHUB_WORKSPACE" && ulimit -Hn 512 && ulimit -Sn 512 && dotnet test Pty.Net.slnx -c Release --nologo'

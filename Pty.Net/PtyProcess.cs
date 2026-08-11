@@ -231,8 +231,14 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
             // fd >= 3 in the child (the .NET runtime's sockets/pipes/files) so the shell
             // starts with a clean fd table. glibc's addclosefrom_np would do this in one
             // call, but musl does not export it — a loop of the standard addclose file
-            // action works on both (both libcs ignore EBADF from an already-closed fd).
-            for (var fd = 3; fd <= NativeMethods.MaxInheritedFd; fd++)
+            // action works on both. Bound the loop by the current soft fd limit (glibc
+            // rejects addclose for fds >= it with EBADF), capped so huge limits do not
+            // turn every spawn into a million-iteration loop.
+            var maxFd = NativeMethods.FdIsolationCap;
+            if (NativeMethods.getrlimit(NativeMethods.RlimitNofile, out var rlim) == 0 &&
+                rlim.Cur < (nuint)maxFd)
+                maxFd = (int)rlim.Cur;
+            for (var fd = 3; fd < maxFd; fd++)
             {
                 if (NativeMethods.posix_spawn_file_actions_addclose(fileActions, fd) != 0)
                     throw new IOException($"posix_spawn addclose({fd}) failed: errno={Marshal.GetLastPInvokeError()}");

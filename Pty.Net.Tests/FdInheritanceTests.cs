@@ -6,8 +6,8 @@ namespace Ghostflyby.Pty.Tests;
 
 // Demonstrates that posix_spawn, unless told otherwise, inherits ALL parent fds
 // into the child (same hole fork has, minus the lock deadlock). macOS
-// POSIX_SPAWN_CLOEXEC_DEFAULT / Linux per-fd addclose(3..1024) close the leak. This
-// test FAILS without that isolation and PASSES with it.
+// POSIX_SPAWN_CLOEXEC_DEFAULT / Linux per-fd addclose (up to the soft fd limit,
+// capped) close the leak. This test FAILS without that isolation and PASSES with it.
 public partial class FdInheritanceTests
 {
     private const string Done = "__DONE__";
