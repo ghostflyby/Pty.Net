@@ -178,13 +178,14 @@ internal static partial class NativeMethods
     internal static partial int posix_spawn_file_actions_addchdir_np(IntPtr fileActions, string path);
 
 #if LINUX
-    // glibc extension (>= 2.34): close every fd >= lowfd in the child except the ones
-    // the file actions keep open (our dup2 of the pty slave to 0/1/2). Linux equivalent
-    // of macOS POSIX_SPAWN_CLOEXEC_DEFAULT: keeps the runtime's fds (sockets, files,
-    // pipes) out of the shell. glibc's vfork-based posix_spawn does this anyway, but
-    // being explicit makes the guarantee independent of that implementation detail.
-    [LibraryImport("libc", SetLastError = true)]
-    internal static partial int posix_spawn_file_actions_addclosefrom_np(IntPtr fileActions, int lowfd);
+    // Upper bound for the per-fd isolation loop in PtyProcess.StartCore. The default
+    // RLIMIT_NOFILE soft limit is 1024, and the runtime's own sockets/pipes/files live
+    // in the low fds — anything above this would require a raisefd limit to exist at
+    // all. A single closefrom call would be nicer (glibc's addclosefrom_np), but musl
+    // does not export it, so a loop of the standard posix_spawn_file_actions_addclose
+    // is used instead: both libcs execute FDOP_CLOSE in the child and ignore EBADF
+    // when closing an already-closed fd, so the loop is portable and cheap.
+    internal const int MaxInheritedFd = 1024;
 
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int posix_spawnattr_setsigdefault(IntPtr attr, [In] byte[] sigset);

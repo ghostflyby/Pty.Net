@@ -38,9 +38,9 @@ jobs:
 
   # Linux 上的 libc 差异由容器矩阵覆盖：同一套 #if LINUX 代码路径要分别在 glibc
   # (sdk:10.0，基于 Ubuntu) 与 musl (sdk:10.0-alpine，基于 Alpine) 上验证。
-  # NativeMethods.cs 里的 LINUX 常量目前按 glibc 写死（POSIX_SPAWN_SETSID=0x80、
-  # EAGAIN=11、sigset_t=128 字节、posix_spawn_file_actions_addclosefrom_np），
-  # musl 若与这些假设不符，这个 job 正好把差异暴露出来。
+  # POSIX_SPAWN_SETSID 在两种 libc 上都是 0x80，但 musl 不导出 glibc 的
+  # posix_spawn_file_actions_addclosefrom_np，所以 fd 隔离统一用标准 addclose
+  # 逐 fd 关闭 (3..1024)，两端行为一致。此 job 跑红即表示 musl 与这些假设不符。
   # 容器默认以 root 运行，而测试用 bash 的 '$' 提示符作 ReadUntil 标记（root 下是
   # '#'），所以建 testuser 并以该用户跑——与仓库根 Dockerfile 的做法一致。
   test-container:

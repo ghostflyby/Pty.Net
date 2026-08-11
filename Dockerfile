@@ -3,7 +3,7 @@
 # The library P/Invokes openpty + posix_spawn, which resolve to glibc here with
 # different constants than macOS: POSIX_SPAWN_SETSID=0x80 (vs 0x0400 on Darwin),
 # EAGAIN=11 (vs 35), POSIX_SPAWN_SETSIGDEF to reset inherited SIG_IGNs (macOS does
-# that automatically), and fd isolation via posix_spawn_file_actions_addclosefrom_np
+# that automatically), and fd isolation via per-fd addclose(3..1024) file actions
 # (vs POSIX_SPAWN_CLOEXEC_DEFAULT). `docker build` runs the full xUnit suite, so a
 # green build == the Linux implementation passes every test (fd isolation, signal
 # isolation, 24-way concurrent sessions, job control, exit codes).

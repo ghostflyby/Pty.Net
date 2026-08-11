@@ -229,9 +229,14 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
 #if LINUX
             // Linux equivalent of macOS POSIX_SPAWN_CLOEXEC_DEFAULT: close every inherited
             // fd >= 3 in the child (the .NET runtime's sockets/pipes/files) so the shell
-            // starts with a clean fd table.
-            if (NativeMethods.posix_spawn_file_actions_addclosefrom_np(fileActions, 3) != 0)
-                throw new IOException($"posix_spawn addclosefrom failed: errno={Marshal.GetLastPInvokeError()}");
+            // starts with a clean fd table. glibc's addclosefrom_np would do this in one
+            // call, but musl does not export it — a loop of the standard addclose file
+            // action works on both (both libcs ignore EBADF from an already-closed fd).
+            for (var fd = 3; fd <= NativeMethods.MaxInheritedFd; fd++)
+            {
+                if (NativeMethods.posix_spawn_file_actions_addclose(fileActions, fd) != 0)
+                    throw new IOException($"posix_spawn addclose({fd}) failed: errno={Marshal.GetLastPInvokeError()}");
+            }
 #endif
 
             if (workingDirectory is not null)
