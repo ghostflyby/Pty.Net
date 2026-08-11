@@ -45,7 +45,7 @@ public sealed partial class PtyStream
     private int bufferCount;
     private bool readerEof;
 
-    private readonly Queue<ReadOperation> readWaiters = new();
+    private readonly List<ReadOperation> readWaiters = new();
     private readonly AutoResetEvent dataAvailable = new(false);
 
     private readonly Channel<WriteOperation> writeChannel;
@@ -150,7 +150,7 @@ public sealed partial class PtyStream
             {
                 if (bufferCount > 0 && TrySatisfyFromBuffer(waiter))
                     return new ValueTask<int>(waiter.Offset);
-                readWaiters.Enqueue(waiter);
+                readWaiters.Add(waiter);
             }
 
             cancellationToken.Register(static state =>
@@ -163,7 +163,7 @@ public sealed partial class PtyStream
                         var found = false;
                         for (var i = 0; i < w.Owner.readWaiters.Count; i++)
                         {
-                            if (ReferenceEquals(w.Owner.readWaiters.ElementAt(i), w))
+                            if (ReferenceEquals(w.Owner.readWaiters[i], w))
                             {
                                 w.Owner.readWaiters.RemoveAt(i);
                                 found = true;
@@ -302,11 +302,11 @@ public sealed partial class PtyStream
                 // Satisfy pending async reads first (FIFO), then buffer the remainder.
                 while (span.Length > 0 && readWaiters.Count > 0)
                 {
-                    var waiter = readWaiters.Peek();
+                    var waiter = readWaiters[0];
                     var space = waiter.Buffer.Length - waiter.Offset;
                     if (space == 0)
                     {
-                        readWaiters.Dequeue();
+                        readWaiters.RemoveAt(0);
                         continue;
                     }
                     var n = Math.Min(span.Length, space);
@@ -315,7 +315,7 @@ public sealed partial class PtyStream
                     span = span[n..];
                     if (waiter.Offset == waiter.Buffer.Length)
                     {
-                        readWaiters.Dequeue();
+                        readWaiters.RemoveAt(0);
                         waiter.Completed = true;
                         waiter.Tcs.TrySetResult(waiter.Offset);
                     }
@@ -370,9 +370,10 @@ public sealed partial class PtyStream
 
     private void CompleteAllWaitersAsEof()
     {
-        while (readWaiters.Count > 0)
+        for (var i = readWaiters.Count - 1; i >= 0; i--)
         {
-            var waiter = readWaiters.Dequeue();
+            var waiter = readWaiters[i];
+            readWaiters.RemoveAt(i);
             if (!waiter.Completed)
             {
                 waiter.Completed = true;
@@ -383,9 +384,10 @@ public sealed partial class PtyStream
 
     private void FailAllWaiters(Exception ex)
     {
-        while (readWaiters.Count > 0)
+        for (var i = readWaiters.Count - 1; i >= 0; i--)
         {
-            var waiter = readWaiters.Dequeue();
+            var waiter = readWaiters[i];
+            readWaiters.RemoveAt(i);
             if (!waiter.Completed)
             {
                 waiter.Completed = true;
