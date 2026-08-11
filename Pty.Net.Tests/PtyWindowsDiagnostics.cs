@@ -7,7 +7,7 @@ using Microsoft.Win32.SafeHandles;
 namespace Ghostflyby.Pty.Tests;
 
 /// <summary>Temporary diagnostic: runs a hand-written MiniTerm-style ConPTY launch side by side with the library path.</summary>
-public class PtyWindowsDiagnostics
+public class AaaPtyWindowsDiagnostics
 {
     // ---- independent MiniTerm-style P/Invoke (does not touch the library) ----
     [DllImport("kernel32.dll", SetLastError = true)]
