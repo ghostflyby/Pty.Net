@@ -4,63 +4,52 @@ using Ghostflyby.Pty;
 
 namespace Ghostflyby.Pty.Tests;
 
-/// <summary>Temporary diagnostic: single vs concurrent ConPTY sessions, each reading its own output.</summary>
+/// <summary>Temporary diagnostic: sequential vs parallel ConPTY sessions to isolate multi-session behavior.</summary>
 public class AaaPtyWindowsDiagnostics
 {
-    [Fact]
-    public async Task ConcurrentVsSingle()
+    /// <summary>Reads everything available up to a timeout; distinguishes frames from command output.</summary>
+    private static async Task<string> ReadAll(PtyProcess p, TimeSpan timeout)
     {
         var sb = new StringBuilder();
-        sb.AppendLine("=== concurrent-vs-single start ===");
-
-        // Single session, StreamReader path (mirrors the suite).
-        try
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
         {
-            using var p = PtyProcess.Start("cmd.exe", ["/c", "echo SINGLE-OK"]);
-            var sr = new StreamReader(p.BaseStream, Encoding.UTF8);
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            var buf = new char[512];
-            var n = await sr.ReadAsync(buf.AsMemory(), cts.Token).AsTask().WaitAsync(TimeSpan.FromSeconds(6));
-            sb.AppendLine($"single StreamReader: n={n} text=[{new string(buf, 0, n)}]");
-            p.WaitForExit(TimeSpan.FromSeconds(3));
-        }
-        catch (Exception ex)
-        {
-            sb.AppendLine($"single threw {ex.GetType().Name}: {ex.Message}");
-        }
-
-        // 8 concurrent sessions, BaseStream reads.
-        var tasks = new List<Task>();
-        for (var i = 0; i < 8; i++)
-        {
-            var idx = i;
-            tasks.Add(Task.Run(async () =>
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            var buf = new byte[512];
+            try
             {
-                try
-                {
-                    using var p = PtyProcess.Start("cmd.exe", ["/c", $"echo CONC-{idx}-OK"]);
-                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                    var buf = new byte[256];
-                    var n = await p.BaseStream.ReadAsync(buf, cts.Token).AsTask().WaitAsync(TimeSpan.FromSeconds(6));
-                    sb.AppendLine($"conc#{idx}: n={n} bytes=[{Encoding.UTF8.GetString(buf, 0, n)}]");
-                    p.WaitForExit(TimeSpan.FromSeconds(3));
-                }
-                catch (Exception ex)
-                {
-                    sb.AppendLine($"conc#{idx} threw {ex.GetType().Name}: {ex.Message}");
-                }
-            }));
+                var n = await p.BaseStream.ReadAsync(buf, cts.Token).AsTask().WaitAsync(TimeSpan.FromSeconds(4));
+                if (n == 0) break; // EOF
+                sb.Append(Encoding.UTF8.GetString(buf, 0, n));
+            }
+            catch (Exception) { break; } // timeout/cancel: stop collecting
         }
-        try
+        return sb.ToString();
+    }
+
+    [Fact]
+    public async Task SequentialVsParallel()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("=== sequential-vs-parallel start ===");
+
+        // Sequential: 5 sessions one after another, each fully drained.
+        for (var i = 0; i < 5; i++)
         {
-            await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(30));
-        }
-        catch (TimeoutException)
-        {
-            sb.AppendLine("concurrent batch TIMED OUT after 30s");
+            try
+            {
+                using var p = PtyProcess.Start("cmd.exe", ["/c", $"echo SEQ-{i}-OK"]);
+                var out1 = await ReadAll(p, TimeSpan.FromSeconds(5)).WaitAsync(TimeSpan.FromSeconds(8));
+                sb.AppendLine($"seq#{i}: hasSeq={out1.Contains($"SEQ-{i}-OK")} len={out1.Length} sample=[{out1.Replace("\u001b", "<ESC>")}]");
+                p.WaitForExit(TimeSpan.FromSeconds(3));
+            }
+            catch (Exception ex)
+            {
+                sb.AppendLine($"seq#{i} threw {ex.GetType().Name}: {ex.Message}");
+            }
         }
 
-        sb.AppendLine("=== concurrent-vs-single end ===");
+        sb.AppendLine("=== end ===");
         throw new Exception(sb.ToString());
     }
 }
