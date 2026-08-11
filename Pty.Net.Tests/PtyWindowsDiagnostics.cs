@@ -24,6 +24,8 @@ public class AaaPtyWindowsDiagnostics
     private static extern bool ReadFile(SafeFileHandle hFile, byte[] lpBuffer, uint nNumberOfBytesToRead, out uint lpNumberOfBytesRead, IntPtr lpOverlapped);
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
 
     private const uint PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = 0x00020016;
 
@@ -39,12 +41,10 @@ public class AaaPtyWindowsDiagnostics
         sb.AppendLine("=== handwritten-two-sessions start ===");
 
         sb.AppendLine("-- session 1 --");
-        try { sb.AppendLine(await Task.Run(() => RunSession("M1-OK")).WaitAsync(TimeSpan.FromSeconds(15))); }
-        catch (Exception ex) { sb.AppendLine($"s1 threw {ex.GetType().Name}: {ex.Message}"); }
+        sb.AppendLine(RunSession("M1-OK"));
 
         sb.AppendLine("-- session 2 --");
-        try { sb.AppendLine(await Task.Run(() => RunSession("M2-OK")).WaitAsync(TimeSpan.FromSeconds(15))); }
-        catch (Exception ex) { sb.AppendLine($"s2 threw {ex.GetType().Name}: {ex.Message}"); }
+        sb.AppendLine(RunSession("M2-OK"));
 
         sb.AppendLine("=== end ===");
         throw new Exception(sb.ToString());
@@ -55,6 +55,7 @@ public class AaaPtyWindowsDiagnostics
         var log = new StringBuilder();
         if (!CreatePipe(out var inR, out var inW, IntPtr.Zero, 0)) return "CreatePipe in failed";
         if (!CreatePipe(out var outR, out var outW, IntPtr.Zero, 0)) return "CreatePipe out failed";
+        log.AppendLine($"pipes inR={(long)inR.DangerousGetHandle()} outR={(long)outR.DangerousGetHandle()}");
 
         var rc = CreatePseudoConsole(new COORD { X = 120, Y = 30 }, inR, outW, 0, out var hPc);
         if (rc != 0) return $"CreatePseudoConsole rc={rc} err={Marshal.GetLastWin32Error()}";
@@ -65,6 +66,7 @@ public class AaaPtyWindowsDiagnostics
         var attr = Marshal.AllocHGlobal(size);
         if (!InitializeProcThreadAttributeList(attr, 1, 0, ref size)) return $"attr init failed {Marshal.GetLastWin32Error()}";
         if (!UpdateProcThreadAttribute(attr, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, hPc, (IntPtr)IntPtr.Size, IntPtr.Zero, IntPtr.Zero)) return $"attr update failed {Marshal.GetLastWin32Error()}";
+        log.AppendLine("attr ok");
 
         var si = new STARTUPINFOEXW();
         si.StartupInfo.cb = (uint)Marshal.SizeOf<STARTUPINFOEXW>();
@@ -76,10 +78,17 @@ public class AaaPtyWindowsDiagnostics
         log.AppendLine($"CreateProcessW ok pid={pi.dwProcessId}");
         inR.Dispose();
         outW.Dispose();
+        log.AppendLine("closed conpty pipe ends");
 
-        // Wait for child exit, then drain the output pipe.
-        WaitForSingleObject(pi.hProcess, 5000);
-        log.AppendLine("child exited");
+        // Bounded wait for child exit, then drain the output pipe.
+        var exitCode = 259u; // STILL_ACTIVE
+        var exitDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
+        while (DateTime.UtcNow < exitDeadline && exitCode == 259u)
+        {
+            GetExitCodeProcess(pi.hProcess, out exitCode);
+            if (exitCode == 259u) System.Threading.Thread.Sleep(50);
+        }
+        log.AppendLine($"child exitCode={exitCode}");
 
         var buf = new byte[512];
         var total = new StringBuilder();
