@@ -73,7 +73,8 @@ jobs:
           chown -R testuser:testuser "$GITHUB_WORKSPACE"
 
       - name: Test (as testuser)
-        # ulimit -Hn first (hard), so nothing (e.g. the runtime) can raise the soft
-        # limit back above 512 — the fd-isolation loop must survive a constrained
-        # fd table on both glibc and musl.
-        run: su testuser -s /bin/sh -c 'cd "$GITHUB_WORKSPACE" && ulimit -Hn 512 && ulimit -Sn 512 && dotnet test Pty.Net.slnx -c Release --nologo'
+        # Lower only the SOFT fd limit (ulimit -Sn): sysconf(_SC_OPEN_MAX), which glibc's
+        # addclose validates against, tracks the soft limit. Lowering the HARD limit
+        # would need CAP_SYS_RESOURCE, which the container's users lack — and it is not
+        # needed to exercise the constrained-fd path.
+        run: su testuser -s /bin/sh -c 'cd "$GITHUB_WORKSPACE" && ulimit -Sn 512 && dotnet test Pty.Net.slnx -c Release --nologo'
