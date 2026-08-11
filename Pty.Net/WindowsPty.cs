@@ -73,12 +73,14 @@ internal static partial class WindowsPty
         // input-write (child stdin) and output-read (child stdout+stderr).
         if (!CreatePipe(out var inPipeConPtySide, out var inPipeOurSide, null, 0))
             throw new Win32Exception("CreatePipe (input) failed");
+        Trace($"pipes: inRead={(long)inPipeConPtySide.DangerousGetHandle()} inWrite={(long)inPipeOurSide.DangerousGetHandle()}");
         if (!CreatePipe(out var outPipeOurSide, out var outPipeConPtySide, null, 0))
         {
             inPipeConPtySide.Dispose();
             inPipeOurSide.Dispose();
             throw new Win32Exception("CreatePipe (output) failed");
         }
+        Trace($"pipes: outRead={(long)outPipeOurSide.DangerousGetHandle()} outWrite={(long)outPipeConPtySide.DangerousGetHandle()}");
 
         ClosePseudoConsoleSafeHandle? pseudoConsole = null;
         var attrListPtr = IntPtr.Zero;
@@ -92,6 +94,7 @@ internal static partial class WindowsPty
                 out pseudoConsole);
             if (hr.Failed)
                 throw new Win32Exception(hr.Value, $"CreatePseudoConsole failed: {hr}");
+            Trace($"CreatePseudoConsole ok hPc={(long)pseudoConsole.DangerousGetHandle()}");
 
             // The pseudo console now owns these ends; keeping them open on our side causes
             // input/output buffering issues.
@@ -175,6 +178,7 @@ internal static partial class WindowsPty
                 Marshal.FreeHGlobal(attrListPtr);
                 throw new Win32Exception($"CreateProcessW failed for '{file}'");
             }
+            Trace($"CreateProcessW ok pid={processInfo.dwProcessId}");
 
             processHandle = new SafeProcessHandle(processInfo.hProcess, ownsHandle: true);
             if (processInfo.hThread != 0)

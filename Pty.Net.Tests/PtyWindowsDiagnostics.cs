@@ -4,10 +4,9 @@ using Ghostflyby.Pty;
 
 namespace Ghostflyby.Pty.Tests;
 
-/// <summary>Temporary diagnostic: sequential vs parallel ConPTY sessions to isolate multi-session behavior.</summary>
+/// <summary>Temporary diagnostic: sequential sessions with full handle/reader trace.</summary>
 public class AaaPtyWindowsDiagnostics
 {
-    /// <summary>Reads everything available up to a timeout; distinguishes frames from command output.</summary>
     private static async Task<string> ReadAll(PtyProcess p, TimeSpan timeout)
     {
         var sb = new StringBuilder();
@@ -19,29 +18,29 @@ public class AaaPtyWindowsDiagnostics
             try
             {
                 var n = await p.BaseStream.ReadAsync(buf, cts.Token).AsTask().WaitAsync(TimeSpan.FromSeconds(4));
-                if (n == 0) break; // EOF
+                if (n == 0) break;
                 sb.Append(Encoding.UTF8.GetString(buf, 0, n));
             }
-            catch (Exception) { break; } // timeout/cancel: stop collecting
+            catch (Exception) { break; }
         }
         return sb.ToString();
     }
 
     [Fact]
-    public async Task SequentialVsParallel()
+    public async Task SequentialWithTrace()
     {
         var sb = new StringBuilder();
-        sb.AppendLine("=== sequential-vs-parallel start ===");
+        sb.AppendLine("=== sequential-with-trace start ===");
 
-        // Sequential: 5 sessions one after another, each fully drained.
-        for (var i = 0; i < 5; i++)
+        for (var i = 0; i < 3; i++)
         {
             try
             {
-                using var p = PtyProcess.Start("cmd.exe", ["/c", $"echo SEQ-{i}-OK"]);
-                var out1 = await ReadAll(p, TimeSpan.FromSeconds(5)).WaitAsync(TimeSpan.FromSeconds(8));
-                sb.AppendLine($"seq#{i}: hasSeq={out1.Contains($"SEQ-{i}-OK")} len={out1.Length} sample=[{out1.Replace("\u001b", "<ESC>")}]");
+                using var p = PtyProcess.Start("cmd.exe", ["/c", $"echo TRC-{i}-OK"]);
+                var out1 = await ReadAll(p, TimeSpan.FromSeconds(4)).WaitAsync(TimeSpan.FromSeconds(7));
+                sb.AppendLine($"seq#{i}: got={out1.Contains($"TRC-{i}-OK")} len={out1.Length}");
                 p.WaitForExit(TimeSpan.FromSeconds(3));
+                if (i == 0) { GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect(); sb.AppendLine("forced GC after seq#0"); }
             }
             catch (Exception ex)
             {
@@ -49,6 +48,8 @@ public class AaaPtyWindowsDiagnostics
             }
         }
 
+        sb.AppendLine("--- trace ---");
+        sb.AppendLine(WindowsPty.GetDebugLog());
         sb.AppendLine("=== end ===");
         throw new Exception(sb.ToString());
     }

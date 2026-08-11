@@ -279,6 +279,7 @@ public sealed partial class PtyStream
             }
             if (!ok || read == 0)
             {
+                WindowsPty.Diag($"reader ReadFile ok={ok} read={read} err={(!ok ? new Win32Exception().NativeErrorCode : 0)} outRead={(long)outputRead.DangerousGetHandle()}");
                 // ERROR_BROKEN_PIPE / ERROR_NO_DATA / ERROR_INVALID_HANDLE (or a clean 0-byte
                 // read) all mean the channel is gone: the child exited and the pseudo console
                 // closed, or the stream was disposed. That is EOF — the same 0 the Unix half
