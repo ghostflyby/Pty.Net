@@ -38,3 +38,12 @@ WaitForSingleObject
 # ConPTY availability check (Windows 10 1809+)
 LoadLibrary
 GetProcAddress
+
+# Aborting blocked synchronous I/O: ConPTY channels are synchronous-only and closing
+# the pipe handle does NOT unblock a pending ReadFile, which would leave a zombie
+# reader thread whose handle slot gets reused by the next session. CancelSynchronousIo
+# is the proper way to abort it.
+GetCurrentThreadId
+OpenThread
+CancelSynchronousIo
+CloseHandle

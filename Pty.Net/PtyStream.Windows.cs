@@ -5,6 +5,7 @@ using System.Threading.Channels;
 using Microsoft.Win32.SafeHandles;
 using Windows.Win32;
 using Windows.Win32.Foundation;
+using Windows.Win32.System.Threading;
 using static Windows.Win32.PInvoke;
 
 namespace Ghostflyby.Pty;
@@ -51,6 +52,14 @@ public sealed partial class PtyStream
 
     private readonly Channel<WriteOperation> writeChannel;
     private volatile bool disposed;
+
+    // ConPTY channels are synchronous-only, and closing the pipe handle does NOT
+    // unblock a pending ReadFile. A reader thread blocked forever would keep its
+    // handle-table slot alive; the next session's CreatePipe can reuse the value, and
+    // the zombie reader then steals that session's bytes. Dispose aborts the blocked
+    // read with CancelSynchronousIo instead of relying on the pipe close.
+    private volatile uint readerThreadId;
+    private readonly ManualResetEventSlim readerStarted = new(false);
 
     /// <summary>Takes ownership of the ConPTY pipe ends and the pseudo console.</summary>
     internal PtyStream(SafeFileHandle inputWrite, SafeFileHandle outputRead, ClosePseudoConsoleSafeHandle pseudoConsole, IntPtr attributeListPtr)
@@ -229,11 +238,14 @@ public sealed partial class PtyStream
         if (disposing)
         {
             // ClosePseudoConsole terminates the attached process tree and closes the
-            // console's channel; closing our output pipe then unblocks the reader's
-            // blocked ReadFile (ERROR_BROKEN_PIPE), which is what ends the reader thread.
-            // The writer thread ends once the channel completes and drains. No
-            // thread-pool involvement anywhere.
+            // console's channel. ConPTY is synchronous-only: closing our pipe end does
+            // NOT unblock the reader's pending ReadFile, so abort it explicitly via
+            // CancelSynchronousIo (otherwise the zombie reader keeps its handle slot and
+            // the next session reusing that value would lose its bytes). The writer
+            // thread ends once the channel completes and drains. No thread-pool
+            // involvement anywhere.
             pseudoConsole.Dispose();
+            AbortBlockedReader();
             WindowsPty.FreeAttributeList(attributeListPtr);
             attributeListPtr = IntPtr.Zero;
             writeChannel.Writer.TryComplete();
@@ -244,6 +256,32 @@ public sealed partial class PtyStream
     }
 
     // ---------------------------------------------------------------- read plumbing
+
+    /// <summary>Aborts the reader thread's blocked ReadFile via CancelSynchronousIo.</summary>
+    private void AbortBlockedReader()
+    {
+        var tid = readerThreadId;
+        if (tid == 0)
+            return; // reader never started (constructor raced dispose)
+        var threadHandle = OpenThread(ThreadAccessRights.THREAD_TERMINATE, false, tid);
+        if (threadHandle.IsInvalid)
+            return; // reader already exited and closed its thread
+        try
+        {
+            CancelSynchronousIo(threadHandle);
+        }
+        catch
+        {
+            // Best-effort: if the read already completed (data arrived exactly at
+            // dispose), cancellation fails harmlessly; closing the handle below then
+            // makes the next ReadFile fail with ERROR_INVALID_HANDLE and the reader
+            // exits with EOF.
+        }
+        finally
+        {
+            threadHandle.Dispose();
+        }
+    }
 
     private sealed class ReadOperation
     {
@@ -265,6 +303,11 @@ public sealed partial class PtyStream
 
     private void ReadLoop()
     {
+        // Record this thread's OS id so Dispose can CancelSynchronousIo it (aborting the
+        // blocked ReadFile) instead of leaving a zombie blocked on a reused handle slot.
+        readerThreadId = GetCurrentThreadId();
+        readerStarted.Set();
+
         var temp = new byte[PipeBufferSize];
         while (!disposed)
         {
@@ -279,7 +322,6 @@ public sealed partial class PtyStream
             }
             if (!ok || read == 0)
             {
-                WindowsPty.Diag($"reader ReadFile ok={ok} read={read} err={(!ok ? new Win32Exception().NativeErrorCode : 0)} outRead={(long)outputRead.DangerousGetHandle()}");
                 // ERROR_BROKEN_PIPE / ERROR_NO_DATA / ERROR_INVALID_HANDLE (or a clean 0-byte
                 // read) all mean the channel is gone: the child exited and the pseudo console
                 // closed, or the stream was disposed. That is EOF — the same 0 the Unix half
@@ -292,7 +334,6 @@ public sealed partial class PtyStream
                 }
                 return;
             }
-            WindowsPty.Diag($"reader ReadFile ok={ok} read={read} outRead={(long)outputRead.DangerousGetHandle()}");
 
             lock (gate)
             {
