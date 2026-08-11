@@ -22,8 +22,14 @@ namespace dotnet_pty;
 /// The master fd is non-blocking (opened via <c>posix_openpt(O_NONBLOCK)</c>) and all
 /// I/O is driven by poll(2) through <see cref="PtyIoEngine"/>, so no operation ever
 /// blocks a thread-pool thread and cancellation is immediate.
+///
+/// The process-control surface is async-capable too: <see cref="WaitForExitAsync(CancellationToken)"/>
+/// waits without occupying a thread, <see cref="DisposeAsync"/> mirrors
+/// <see cref="Dispose()"/>, and <see cref="Exited"/> fires once the child is reaped.
+/// Reaping (waitpid) is owned by a process-wide background reaper, so exit results
+/// are deterministic across concurrent waiters.
 /// </remarks>
-public sealed class PtyProcess : IDisposable
+public sealed class PtyProcess : IDisposable, IAsyncDisposable
 {
     private const int ReadBufferSize = 4096;
 
@@ -38,10 +44,32 @@ public sealed class PtyProcess : IDisposable
     /// <summary>OS process id of the child.</summary>
     public int Pid { get; }
 
-    /// <summary>Exit code, set once the child has been reaped via <see cref="WaitForExit"/> or dispose.</summary>
-    public int? ExitCode { get; private set; }
+    // Reaped exit code. int.MinValue means "not reaped yet"; afterwards it is 0..255,
+    // 128 + signal, or -1 when the status could not be determined. Written by the
+    // process-wide reaper thread, read from any thread: Volatile keeps it visible.
+    private int exitCode = int.MinValue;
+
+    /// <summary>Exit code, set once the child has been reaped by the process-wide reaper.</summary>
+    public int? ExitCode
+    {
+        get
+        {
+            var value = Volatile.Read(ref exitCode);
+            return value == int.MinValue ? null : value;
+        }
+    }
 
     public bool HasExited => ExitCode is not null;
+
+    /// <summary>
+    /// Raised on the process-wide reaper thread once the child has been reaped.
+    /// By then <see cref="ExitCode"/> is set and <see cref="HasExited"/> is true. The
+    /// handler runs on the shared reaper thread and must not block (a blocking handler
+    /// would stall reaping for every other session); exceptions it throws are swallowed.
+    /// May fire after <see cref="Dispose"/> returned, when the child was still alive at
+    /// dispose time and exited only after the bounded reap wait elapsed.
+    /// </summary>
+    public event EventHandler? Exited;
 
     /// <summary>
     /// The raw byte stream over the pty master — the single source of bytes for both
@@ -73,6 +101,9 @@ public sealed class PtyProcess : IDisposable
         };
         StandardOutput = new StreamReader(stream, outputEncoding ?? Encoding.UTF8);
         Pid = pid;
+        // The process-wide reaper owns waitpid for this child: it sets ExitCode and
+        // raises Exited, and every WaitForExit/Dispose path just observes the result.
+        PtyReaper.Watch(this);
     }
 
     /// <summary>
@@ -249,6 +280,10 @@ public sealed class PtyProcess : IDisposable
     /// <see cref="BaseStream"/> is not safe while waiting — the drained bytes are
     /// discarded, so capture output you need before or concurrently with this call.
     /// Pass <see cref="Timeout.InfiniteTimeSpan"/> to wait indefinitely.
+    ///
+    /// Reaping happens on the process-wide reaper thread; this method only observes
+    /// <see cref="ExitCode"/> (set by the reaper), so it never races waitpid(2).
+    /// For an asynchronous, thread-free equivalent see <see cref="WaitForExitAsync(CancellationToken)"/>.
     /// </summary>
     public bool WaitForExit(TimeSpan timeout)
     {
@@ -261,7 +296,7 @@ public sealed class PtyProcess : IDisposable
             {
                 ObjectDisposedException.ThrowIf(disposed, this);
                 DrainOutput(); // keep the pty buffer flowing while we wait
-                if (TryReap())
+                if (HasExited)
                     return true;
             }
             finally
@@ -271,7 +306,7 @@ public sealed class PtyProcess : IDisposable
 
             if (!infinite && DateTime.UtcNow >= deadline)
                 return false;
-            Thread.Sleep(10);
+            Thread.Sleep(WaitStepMs(deadline, infinite));
         }
     }
 
@@ -281,6 +316,53 @@ public sealed class PtyProcess : IDisposable
     /// wait only returns once the child has been reaped.
     /// </summary>
     public void WaitForExit() => WaitForExit(Timeout.InfiniteTimeSpan);
+
+    /// <summary>
+    /// Waits until the child exits and has been reaped, like
+    /// <see cref="System.Diagnostics.Process.WaitForExitAsync()"/>, without blocking a
+    /// thread: the wait is a <see cref="Task.Delay"/> loop, so a pending wait holds no
+    /// thread-pool thread. While waiting, output is drained continuously (same caveat
+    /// as <see cref="WaitForExit(TimeSpan)"/>: concurrent consumption of the output
+    /// facades is not safe during the wait).
+    /// </summary>
+    public Task WaitForExitAsync(CancellationToken ct = default) => WaitForExitCoreAsync(Timeout.InfiniteTimeSpan, ct);
+
+    /// <summary>
+    /// Waits until the child exits and has been reaped, or until <paramref name="timeout"/>
+    /// elapses; returns false on timeout. Non-blocking and cancellable (see
+    /// <see cref="WaitForExitAsync(CancellationToken)"/>): the wait throws
+    /// <see cref="OperationCanceledException"/> when <paramref name="ct"/> is canceled.
+    /// </summary>
+    public Task<bool> WaitForExitAsync(TimeSpan timeout, CancellationToken ct = default) => WaitForExitCoreAsync(timeout, ct);
+
+    private async Task<bool> WaitForExitCoreAsync(TimeSpan timeout, CancellationToken ct)
+    {
+        var infinite = timeout == Timeout.InfiniteTimeSpan;
+        var deadline = infinite ? DateTime.MaxValue : DateTime.UtcNow + timeout;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (HasExited)
+                return true;
+
+            await gate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                ObjectDisposedException.ThrowIf(disposed, this);
+                DrainOutput(); // keep the pty buffer flowing while we wait
+                if (HasExited)
+                    return true;
+            }
+            finally
+            {
+                gate.Release();
+            }
+
+            if (!infinite && DateTime.UtcNow >= deadline)
+                return false;
+            await Task.Delay(WaitStepMs(deadline, infinite), ct).ConfigureAwait(false);
+        }
+    }
 
     /// <summary>
     /// Terminates the child with SIGKILL immediately, without giving it a chance to
@@ -313,9 +395,12 @@ public sealed class PtyProcess : IDisposable
             // no fd is ever closed while still being polled).
             BaseStream.Dispose();
 
-            // Reap the child so it does not linger as a zombie.
+            // Bounded wait for the reaper to collect the child. If it has not exited by
+            // the deadline, the process-wide reaper keeps watching in the background, so
+            // the child cannot linger as a zombie — only the reap completion is deferred
+            // past dispose (see <see cref="Exited"/>).
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
-            while (!TryReap() && DateTime.UtcNow < deadline)
+            while (!HasExited && DateTime.UtcNow < deadline)
                 Thread.Sleep(10);
         }
         finally
@@ -324,7 +409,55 @@ public sealed class PtyProcess : IDisposable
         }
     }
 
+    /// <summary>
+    /// Asynchronous counterpart of <see cref="Dispose()"/>: the exact same flow
+    /// (SIGHUP → close the master → bounded reap wait) without blocking a thread while
+    /// waiting. Safe to await from async code paths.
+    /// </summary>
+    public async ValueTask DisposeAsync()
+    {
+        await gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (disposed)
+                return;
+            disposed = true;
+
+            if (!HasExited)
+                NativeMethods.kill(Pid, NativeMethods.Signals.Hup);
+
+            BaseStream.Dispose();
+
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+            while (!HasExited && DateTime.UtcNow < deadline)
+                await Task.Delay(10).ConfigureAwait(false);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
     // --- internals ---------------------------------------------------------
+
+    /// <summary>
+    /// Called by the process-wide reaper once waitpid(2) collected this child: records
+    /// the exit code and raises <see cref="Exited"/>. Runs on the shared reaper thread;
+    /// handler exceptions are swallowed so one misbehaving handler cannot stall reaping
+    /// for every other session.
+    /// </summary>
+    internal void OnReaped(int code)
+    {
+        Volatile.Write(ref exitCode, code);
+        try
+        {
+            Exited?.Invoke(this, EventArgs.Empty);
+        }
+        catch
+        {
+            // A handler that throws must not kill the shared reaper thread.
+        }
+    }
 
     /// <summary>A snapshot of the parent's environment, for launches with no explicit <see cref="PtyStartInfo.Environment"/>.</summary>
     private static IDictionary<string, string?> ParentEnvironment() => PtyStartInfo.SnapshotParentEnvironment();
@@ -374,39 +507,21 @@ public sealed class PtyProcess : IDisposable
         }
     }
 
-    private bool TryReap()
-    {
-        if (ExitCode is not null)
-            return true;
-
-        var r = NativeMethods.waitpid(Pid, out var status, NativeMethods.WaitOptions.Wnohang);
-        switch (r)
-        {
-            case 0:
-                return false; // still running
-            case < 0:
-            {
-                var err = Marshal.GetLastPInvokeError();
-                switch (err)
-                {
-                    case NativeMethods.Eintr:
-                        return false;
-                    case NativeMethods.Echild:
-                        ExitCode = -1; // already reaped elsewhere
-                        return true;
-                    default:
-                        throw new IOException($"waitpid failed: errno={err}");
-                }
-            }
-            default:
-                ExitCode = ExtractExitCode(status);
-                return true;
-        }
-    }
-
-    private static int ExtractExitCode(int status)
+    /// <summary>Decodes a waitpid(2) status into an exit code: 0..255, or 128 + signal when killed.</summary>
+    internal static int ExtractExitCode(int status)
     {
         var signal = status & 0x7F;
         return signal == 0 ? (status >> 8) & 0xFF : 128 + signal;
+    }
+
+    /// <summary>
+    /// Poll interval for the exit-wait loops: a fixed 10 ms, but bounded by the remaining
+    /// timeout so a wait never overshoots its deadline by more than one poll tick.
+    /// </summary>
+    private static int WaitStepMs(DateTime deadline, bool infinite)
+    {
+        if (infinite)
+            return 10;
+        return (int)Math.Clamp((deadline - DateTime.UtcNow).TotalMilliseconds, 0, 10);
     }
 }
