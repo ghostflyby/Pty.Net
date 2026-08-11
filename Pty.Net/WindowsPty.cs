@@ -93,10 +93,11 @@ internal static partial class WindowsPty
             if (hr.Failed)
                 throw new Win32Exception(hr.Value, $"CreatePseudoConsole failed: {hr}");
 
-            // The pseudo console now owns these ends; keeping them open on our side causes
-            // input/output buffering issues.
-            inPipeConPtySide.Dispose();
-            outPipeConPtySide.Dispose();
+            // The pseudo console owns these ends, but we must NOT close them before the
+            // child is spawned: the ConPTY channel is still being wired up and closing a
+            // handle early disconnects the channel (later sessions then produce no output
+            // at all). Porta.Pty closes them only after CreateProcess returns. We defer
+            // the closes to right after the successful CreateProcessW below.
 
             // STARTUPINFOEX with the pseudoconsole attribute. Get the required size with a
             // first call, allocate, then initialize.
