@@ -38,6 +38,7 @@ public sealed partial class PtyStream
     private readonly SafeFileHandle inputWrite;
     private readonly SafeFileHandle outputRead;
     private readonly ClosePseudoConsoleSafeHandle pseudoConsole;
+    private IntPtr attributeListPtr; // deferred from WindowsPty.Start; freed in Dispose
 
     private readonly object gate = new();
     private readonly byte[] buffer = new byte[PipeBufferSize]; // internal buffer for sync reads
@@ -52,11 +53,12 @@ public sealed partial class PtyStream
     private volatile bool disposed;
 
     /// <summary>Takes ownership of the ConPTY pipe ends and the pseudo console.</summary>
-    internal PtyStream(SafeFileHandle inputWrite, SafeFileHandle outputRead, ClosePseudoConsoleSafeHandle pseudoConsole)
+    internal PtyStream(SafeFileHandle inputWrite, SafeFileHandle outputRead, ClosePseudoConsoleSafeHandle pseudoConsole, IntPtr attributeListPtr)
     {
         this.inputWrite = inputWrite;
         this.outputRead = outputRead;
         this.pseudoConsole = pseudoConsole;
+        this.attributeListPtr = attributeListPtr;
         writeChannel = Channel.CreateUnbounded<WriteOperation>(new UnboundedChannelOptions
         {
             SingleReader = true,
@@ -232,6 +234,8 @@ public sealed partial class PtyStream
             // The writer thread ends once the channel completes and drains. No
             // thread-pool involvement anywhere.
             pseudoConsole.Dispose();
+            WindowsPty.FreeAttributeList(attributeListPtr);
+            attributeListPtr = IntPtr.Zero;
             writeChannel.Writer.TryComplete();
             inputWrite.Dispose();
             outputRead.Dispose();

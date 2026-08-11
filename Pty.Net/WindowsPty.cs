@@ -17,7 +17,8 @@ internal sealed record WindowsPtyResult(
     SafeFileHandle OutputRead,      // read the child's merged stdout+stderr
     ClosePseudoConsoleSafeHandle PseudoConsole,
     SafeProcessHandle ProcessHandle,
-    int Pid);
+    int Pid,
+    IntPtr AttributeListPtr);       // freed by the stream's Dispose (see WindowsPty.FreeAttributeList)
 
 /// <summary>
 /// Windows/ConPTY launch path. ConPTY (<c>CreatePseudoConsole</c>) creates a virtual console
@@ -156,22 +157,26 @@ internal static partial class WindowsPty
             }
             finally
             {
-                // The attribute list is only needed during CreateProcess; the child has
-                // already inherited what it needs.
-                if (!startupInfo.lpAttributeList.IsNull)
-                    DeleteProcThreadAttributeList(startupInfo.lpAttributeList);
-                if (attrListPtr != IntPtr.Zero)
-                    Marshal.FreeHGlobal(attrListPtr);
+                // NOTE: the attribute list must stay valid for the child's initialization —
+                // the kernel may still be reading it after CreateProcess returns (the child
+                // process has not necessarily consumed the pseudoconsole attribute yet).
+                // Ownership moves to the returned WindowsPtyResult and is freed by
+                // WindowsPty.FreeAttributeList once the stream is disposed (the child is
+                // gone by then). MiniTerm (the reference implementation) does the same.
             }
 
             if (!success)
+            {
+                DeleteProcThreadAttributeList(startupInfo.lpAttributeList);
+                Marshal.FreeHGlobal(attrListPtr);
                 throw new Win32Exception($"CreateProcessW failed for '{file}'");
+            }
 
             processHandle = new SafeProcessHandle(processInfo.hProcess, ownsHandle: true);
             if (processInfo.hThread != 0)
                 new SafeFileHandle(processInfo.hThread, ownsHandle: true).Dispose();
 
-            return new WindowsPtyResult(inPipeOurSide, outPipeOurSide, pseudoConsole, processHandle, (int)processInfo.dwProcessId);
+            return new WindowsPtyResult(inPipeOurSide, outPipeOurSide, pseudoConsole, processHandle, (int)processInfo.dwProcessId, attrListPtr);
         }
         catch
         {
@@ -181,6 +186,16 @@ internal static partial class WindowsPty
             outPipeConPtySide.Dispose();
             pseudoConsole?.Dispose();
             throw;
+        }
+    }
+
+    /// <summary>Releases the deferred thread attribute list (see Start's ownership note).</summary>
+    internal static void FreeAttributeList(IntPtr attrListPtr)
+    {
+        if (attrListPtr != IntPtr.Zero)
+        {
+            DeleteProcThreadAttributeList(new LPPROC_THREAD_ATTRIBUTE_LIST(attrListPtr));
+            Marshal.FreeHGlobal(attrListPtr);
         }
     }
 

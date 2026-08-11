@@ -148,7 +148,7 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
         // no signals, no waitpid — the pipe ends carry the I/O and the process handle
         // drives waiting/termination.
         var result = WindowsPty.Start(file, arguments, workingDirectory, environment ?? ParentEnvironment());
-        var winStream = new PtyStream(result.InputWrite, result.OutputRead, result.PseudoConsole);
+        var winStream = new PtyStream(result.InputWrite, result.OutputRead, result.PseudoConsole, result.AttributeListPtr);
         return new PtyProcess(winStream, result.Pid, inputEncoding, outputEncoding, result.ProcessHandle);
 #else
         // Everything is prepared in the parent; posix_spawn performs the exec natively.
