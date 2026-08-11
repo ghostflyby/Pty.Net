@@ -1,5 +1,6 @@
 namespace Ghostflyby.Pty.Tests;
 
+using System.Globalization;
 using System.Text;
 
 /// <summary>
@@ -11,6 +12,18 @@ using System.Text;
 /// </summary>
 internal static class TestBash
 {
+    /// <summary>Path to an interactive bash: /bin/bash on Unix, Git Bash's bash.exe on Windows.</summary>
+    public static string BashPath { get; } = ResolveBashPath();
+
+    private static string ResolveBashPath()
+    {
+#if WINDOWS
+        return ResolveBash();
+#else
+        return "/bin/bash";
+#endif
+    }
+
     /// <summary>
     /// Starts an interactive bash. Runs with <c>--noprofile --norc --noediting -i</c> so
     /// the session is deterministic and does not pick up the user's rc files.
@@ -23,13 +36,7 @@ internal static class TestBash
         var args = arguments is { Length: > 0 }
             ? arguments
             : ["--noprofile", "--norc", "--noediting", "-i"];
-#if WINDOWS
-        // Windows runs the suite against Git Bash (installed on the CI runner); resolve
-        // bash.exe from the standard install locations or PATH.
-        return PtyProcess.Start(ResolveBash(), args, workingDirectory);
-#else
-        return PtyProcess.Start("/bin/bash", args, workingDirectory);
-#endif
+        return PtyProcess.Start(BashPath, args, workingDirectory);
     }
 
 #if WINDOWS
@@ -55,6 +62,36 @@ internal static class TestBash
             "Git Bash (bash.exe) was not found; the Windows test suite drives interactive bash sessions.");
     }
 #endif
+
+    /// <summary>File + args for a process that sleeps for <paramref name="seconds"/> without exiting on its own.</summary>
+    public static (string File, string[] Args) SleepProcess(double seconds)
+    {
+#if WINDOWS
+        return ("powershell.exe", ["-Command", $"Start-Sleep -Seconds {seconds:0.##}"]);
+#else
+        return ("/bin/sleep", [seconds.ToString(CultureInfo.InvariantCulture)]);
+#endif
+    }
+
+    /// <summary>File + args for a process that runs forever (busy child, used by dispose/exit tests).</summary>
+    public static (string File, string[] Args) BusyProcess()
+    {
+#if WINDOWS
+        return ("powershell.exe", ["-Command", "while($true){Start-Sleep -Milliseconds 100}"]);
+#else
+        return ("/bin/sh", ["-c", "cat < /dev/zero"]);
+#endif
+    }
+
+    /// <summary>File + args for a short-lived child that exits on its own (~0.3 s).</summary>
+    public static (string File, string[] Args) ShortLivedProcess()
+    {
+#if WINDOWS
+        return ("powershell.exe", ["-Command", "Start-Sleep -Milliseconds 300"]);
+#else
+        return ("/bin/sh", ["-c", "sleep 0.3"]);
+#endif
+    }
 
     /// <summary>
     /// Reads from <paramref name="reader"/> until <paramref name="marker"/> appears in the

@@ -89,7 +89,13 @@ public class PtyProcessTests : IDisposable
             bash.StandardInput.WriteLine("stty -echo");
             TestBash.Drain(bash.StandardOutput, TimeSpan.FromMilliseconds(200));
 
+#if WINDOWS
+            // MSYS bash prints POSIX-style paths (/c/...) for pwd; cygpath -w converts
+            // back to the Windows path the test compares against.
+            bash.StandardInput.WriteLine($"cygpath -w \"$(pwd)\"; echo {Done}");
+#else
             bash.StandardInput.WriteLine($"pwd; echo {Done}");
+#endif
             var output = TestBash.ReadUntil(bash.StandardOutput, Done, Timeout);
 
             Assert.Contains(dir, output);
@@ -150,14 +156,20 @@ public class PtyProcessTests : IDisposable
     public void Kill_TerminatesChildWithSignal()
     {
         // A bare `sleep` has no reason to exit on its own; Kill must bring it down.
-        using var p = PtyProcess.Start("/bin/sleep", ["100"]);
+        var (file, args) = TestBash.SleepProcess(100);
+        using var p = PtyProcess.Start(file, args);
 
         Assert.False(p.HasExited);
         p.Kill();
 
         Assert.True(p.WaitForExit(Timeout));
+#if WINDOWS
+        // ConPTY has no signals: Kill is TerminateProcess (exit code 1), not 128+SIGKILL.
+        Assert.Equal(1, p.ExitCode);
+#else
         // Killed by SIGKILL (9): exit code is 128 + 9.
         Assert.Equal(137, p.ExitCode);
+#endif
     }
 
     [Fact]
@@ -181,7 +193,7 @@ public class PtyProcessTests : IDisposable
         var latin1 = Encoding.Latin1; // ISO-8859-1
         using var p = PtyProcess.Start(new PtyStartInfo
         {
-            FileName = "/bin/bash",
+            FileName = TestBash.BashPath,
             ArgumentList = { "--noprofile", "--norc", "--noediting", "-i" },
             StandardInputEncoding = latin1,
             StandardOutputEncoding = latin1,

@@ -18,7 +18,8 @@ public class PtyProcessAsyncTests
     [Fact]
     public async Task WaitForExitAsync_TimeoutReturnsFalse()
     {
-        using var p = PtyProcess.Start("/bin/sleep", ["1000"]);
+        var (file, args) = TestBash.SleepProcess(1000);
+        using var p = PtyProcess.Start(file, args);
 
         var sw = Stopwatch.StartNew();
         var exited = await p.WaitForExitAsync(TimeSpan.FromMilliseconds(200)).WaitAsync(Timeout);
@@ -43,7 +44,8 @@ public class PtyProcessAsyncTests
     [Fact]
     public async Task WaitForExitAsync_CompletesOnExternalExit()
     {
-        using var p = PtyProcess.Start("/bin/sh", ["-c", "sleep 0.3"]);
+        var (file, args) = TestBash.ShortLivedProcess();
+        using var p = PtyProcess.Start(file, args);
 
         Assert.True(await p.WaitForExitAsync(Timeout).WaitAsync(Timeout));
         Assert.Equal(0, p.ExitCode);
@@ -52,7 +54,8 @@ public class PtyProcessAsyncTests
     [Fact]
     public async Task WaitForExitAsync_Cancellation_ThrowsOce()
     {
-        using var p = PtyProcess.Start("/bin/sleep", ["1000"]);
+        var (file, args) = TestBash.SleepProcess(1000);
+        using var p = PtyProcess.Start(file, args);
         using var cts = new CancellationTokenSource();
 
         var wait = p.WaitForExitAsync(System.Threading.Timeout.InfiniteTimeSpan, cts.Token);
@@ -75,7 +78,8 @@ public class PtyProcessAsyncTests
         ThreadPool.GetAvailableThreads(out var workersBefore, out _);
         for (var i = 0; i < sessions; i++)
         {
-            all[i] = PtyProcess.Start("/bin/sleep", ["1000"]);
+            var (file, args) = TestBash.SleepProcess(1000);
+            all[i] = PtyProcess.Start(file, args);
             _ = all[i].WaitForExitAsync(System.Threading.Timeout.InfiniteTimeSpan);
         }
 
@@ -113,7 +117,8 @@ public class PtyProcessAsyncTests
     [Fact]
     public async Task DisposeAsync_BusyChild_Completes()
     {
-        var p = PtyProcess.Start("/bin/sh", ["-c", "cat < /dev/zero"]);
+        var (file, args) = TestBash.BusyProcess();
+        var p = PtyProcess.Start(file, args);
 
         var sw = Stopwatch.StartNew();
         await p.DisposeAsync();
@@ -139,7 +144,8 @@ public class PtyProcessAsyncTests
     [Fact]
     public async Task Exited_FiresOnExternalDeath()
     {
-        using var p = PtyProcess.Start("/bin/sh", ["-c", "sleep 0.3"]);
+        var (file, args) = TestBash.ShortLivedProcess();
+        using var p = PtyProcess.Start(file, args);
         var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
         p.Exited += (_, _) => tcs.TrySetResult(p.ExitCode ?? -1);
 
@@ -150,8 +156,9 @@ public class PtyProcessAsyncTests
     [Fact]
     public async Task Exited_HandlerException_DoesNotAffectOtherSessions()
     {
-        var p1 = PtyProcess.Start("/bin/sh", ["-c", "sleep 0.2"]);
-        var p2 = PtyProcess.Start("/bin/sh", ["-c", "sleep 0.2"]);
+        var (file, args) = TestBash.ShortLivedProcess();
+        var p1 = PtyProcess.Start(file, args);
+        var p2 = PtyProcess.Start(file, args);
         var tcs2 = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         p1.Exited += (_, _) => throw new InvalidOperationException("boom");
@@ -172,7 +179,8 @@ public class PtyProcessAsyncTests
     [Fact]
     public async Task ExitCode_IsSetByReaper_WithoutExplicitWait()
     {
-        using var p = PtyProcess.Start("/bin/sh", ["-c", "sleep 0.3"]);
+        var (file, args) = TestBash.ShortLivedProcess();
+        using var p = PtyProcess.Start(file, args);
 
         // The only wait here is for the observable outcome (ExitCode), which the
         // process-wide reaper produces by itself.

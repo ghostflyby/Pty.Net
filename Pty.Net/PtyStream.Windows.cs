@@ -273,20 +273,12 @@ public sealed partial class PtyStream
                     ok = ReadFile((HANDLE)outputRead.DangerousGetHandle(), p, PipeBufferSize, &read, null);
                 }
             }
-            if (!ok)
+            if (!ok || read == 0)
             {
-                // ERROR_BROKEN_PIPE / ERROR_NO_DATA / ERROR_INVALID_HANDLE all mean the
-                // channel is gone (child closed the terminal, or the stream was disposed).
-                lock (gate)
-                {
-                    readerEof = true;
-                    dataAvailable.Set();
-                    FailAllWaiters(new IOException($"pty read failed: {new Win32Exception().Message}"));
-                }
-                return;
-            }
-            if (read == 0)
-            {
+                // ERROR_BROKEN_PIPE / ERROR_NO_DATA / ERROR_INVALID_HANDLE (or a clean 0-byte
+                // read) all mean the channel is gone: the child exited and the pseudo console
+                // closed, or the stream was disposed. That is EOF — the same 0 the Unix half
+                // reports — so pending reads complete with 0 and sync reads see eof=true.
                 lock (gate)
                 {
                     readerEof = true;
@@ -378,20 +370,6 @@ public sealed partial class PtyStream
             {
                 waiter.Completed = true;
                 waiter.Tcs.TrySetResult(waiter.Offset);
-            }
-        }
-    }
-
-    private void FailAllWaiters(Exception ex)
-    {
-        for (var i = readWaiters.Count - 1; i >= 0; i--)
-        {
-            var waiter = readWaiters[i];
-            readWaiters.RemoveAt(i);
-            if (!waiter.Completed)
-            {
-                waiter.Completed = true;
-                waiter.Tcs.TrySetException(ex);
             }
         }
     }
