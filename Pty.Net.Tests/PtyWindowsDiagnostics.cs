@@ -11,37 +11,38 @@ public class PtyWindowsDiagnostics
     public PtyWindowsDiagnostics(ITestOutputHelper output) => this.output = output;
 
     [Fact]
-    public void DumpLaunchAndIoState()
+    public async Task DumpLaunchAndIoState()
     {
         output.WriteLine("=== diagnostic start ===");
         using var p = PtyProcess.Start("cmd.exe", ["/c", "echo HELLO-MARKER"]);
         output.WriteLine($"pid={p.Pid} hasExited={p.HasExited}");
 
-        // Wait a moment, then try synchronous reads with progress reporting.
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(4);
-        var total = 0;
-        while (DateTime.UtcNow < deadline)
+        // Timed async reads so we never block forever.
+        for (var i = 0; i < 3; i++)
         {
-            var buf = new byte[256];
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            var buf = new byte[512];
             try
             {
-                var n = p.BaseStream.Read(buf, 0, buf.Length);
-                output.WriteLine($"read: n={n} bytes=[{System.Text.Encoding.UTF8.GetString(buf, 0, Math.Max(0, n))}]");
+                var n = await p.BaseStream.ReadAsync(buf, cts.Token);
+                output.WriteLine($"read#{i}: n={n} bytes=[{System.Text.Encoding.UTF8.GetString(buf, 0, n)}]");
                 if (n == 0)
                 {
                     output.WriteLine("EOF reached");
                     break;
                 }
-                total += n;
+            }
+            catch (OperationCanceledException)
+            {
+                output.WriteLine($"read#{i}: TIMED OUT (no data, no EOF)");
             }
             catch (Exception ex)
             {
-                output.WriteLine($"read threw: {ex}");
-                break;
+                output.WriteLine($"read#{i}: threw {ex}");
             }
         }
-        output.WriteLine($"total bytes read: {total}");
-        output.WriteLine($"WaitForExit(2s)={p.WaitForExit(TimeSpan.FromSeconds(2))} exitCode={p.ExitCode}");
+
+        output.WriteLine($"WaitForExit(3s)={p.WaitForExit(TimeSpan.FromSeconds(3))} exitCode={p.ExitCode}");
         output.WriteLine("=== diagnostic end ===");
     }
 }
