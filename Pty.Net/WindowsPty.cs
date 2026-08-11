@@ -79,6 +79,7 @@ internal static partial class WindowsPty
             inPipeOurSide.Dispose();
             throw new Win32Exception("CreatePipe (output) failed");
         }
+        Diagnostic($"pipes created: inputRead={(long)inPipeConPtySide.DangerousGetHandle()} inputWrite={(long)inPipeOurSide.DangerousGetHandle()} outputRead={(long)outPipeOurSide.DangerousGetHandle()} outputWrite={(long)outPipeConPtySide.DangerousGetHandle()}");
 
         ClosePseudoConsoleSafeHandle? pseudoConsole = null;
         var attrListPtr = IntPtr.Zero;
@@ -92,6 +93,7 @@ internal static partial class WindowsPty
                 out pseudoConsole);
             if (hr.Failed)
                 throw new Win32Exception(hr.Value, $"CreatePseudoConsole failed: {hr}");
+            Diagnostic($"CreatePseudoConsole ok, hPc={(long)pseudoConsole.DangerousGetHandle()}");
 
             // The pseudo console now owns these ends; keeping them open on our side causes
             // input/output buffering issues.
@@ -107,11 +109,13 @@ internal static partial class WindowsPty
             nuint size = 0;
             if (InitializeProcThreadAttributeList(default, attributeCount, ref size) || size == 0)
                 throw new Win32Exception("InitializeProcThreadAttributeList (size query) failed");
+            Diagnostic($"attr list size query ok, size={size}");
 
             attrListPtr = Marshal.AllocHGlobal((int)size);
             startupInfo.lpAttributeList = new LPPROC_THREAD_ATTRIBUTE_LIST(attrListPtr);
             if (!InitializeProcThreadAttributeList(startupInfo.lpAttributeList, attributeCount, ref size))
                 throw new Win32Exception("InitializeProcThreadAttributeList failed");
+            Diagnostic($"InitializeProcThreadAttributeList ok, attrPtr={(long)attrListPtr}");
 
             if (!UpdateProcThreadAttribute(
                     startupInfo.lpAttributeList,
@@ -122,6 +126,7 @@ internal static partial class WindowsPty
                     null,
                     null))
                 throw new Win32Exception("UpdateProcThreadAttribute failed");
+            Diagnostic("UpdateProcThreadAttribute ok");
 
             // Command line: "app" + arguments. CreateProcessW takes a single mutable
             // Unicode string; arguments arrive already split, so they are joined with
@@ -171,6 +176,7 @@ internal static partial class WindowsPty
                 Marshal.FreeHGlobal(attrListPtr);
                 throw new Win32Exception($"CreateProcessW failed for '{file}'");
             }
+            Diagnostic($"CreateProcessW ok, pid={processInfo.dwProcessId}");
 
             processHandle = new SafeProcessHandle(processInfo.hProcess, ownsHandle: true);
             if (processInfo.hThread != 0)
@@ -198,6 +204,9 @@ internal static partial class WindowsPty
             Marshal.FreeHGlobal(attrListPtr);
         }
     }
+
+    // TEMPORARY diagnostic: removed once the zero-output issue is resolved.
+    private static void Diagnostic(string message) => Console.Error.WriteLine($"[WinPty] {message}");
 
     /// <summary>Terminates the child (ConPTY has no signals; ClosePseudoConsole would also terminate the tree).</summary>
     internal static void Terminate(SafeProcessHandle processHandle)
