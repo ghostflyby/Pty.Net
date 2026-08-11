@@ -20,7 +20,7 @@ public class AaaPtyWindowsDiagnostics
             var sr = new StreamReader(p.BaseStream, Encoding.UTF8);
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             var buf = new char[512];
-            var n = await sr.ReadAsync(buf, cts.Token).WaitAsync(TimeSpan.FromSeconds(6));
+            var n = await sr.ReadAsync(buf.AsMemory(), cts.Token).AsTask().WaitAsync(TimeSpan.FromSeconds(6));
             sb.AppendLine($"single StreamReader: n={n} text=[{new string(buf, 0, n)}]");
             p.WaitForExit(TimeSpan.FromSeconds(3));
         }
