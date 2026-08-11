@@ -4,50 +4,39 @@ using Ghostflyby.Pty;
 
 namespace Ghostflyby.Pty.Tests;
 
-/// <summary>Temporary diagnostic: is disposal of session A what breaks session B?</summary>
+/// <summary>Temporary diagnostic: full lifecycle trace of A vs B sessions.</summary>
 public class AaaPtyWindowsDiagnostics
 {
     [Fact]
-    public async Task DoesDisposalOfAbreakB()
+    public async Task TraceAB()
     {
         var sb = new StringBuilder();
-        sb.AppendLine("=== does-disposal-of-A-break-B start ===");
+        sb.AppendLine("=== trace-AB start ===");
 
-        // A: start + read (leave ALIVE, do not dispose).
         PtyProcess? pA = null;
         try
         {
             pA = PtyProcess.Start("cmd.exe", ["/c", "echo AAA-OK"]);
             var a = await ReadAllText(pA).WaitAsync(TimeSpan.FromSeconds(8));
-            sb.AppendLine($"A: got={a.Contains("AAA-OK")} len={a.Length}");
+            sb.AppendLine($"A: got={a.Contains("AAA-OK")} len={a.Length} exited={pA.HasExited}");
         }
         catch (Exception ex) { sb.AppendLine($"A threw {ex.GetType().Name}: {ex.Message}"); }
 
-        // B: start while A is alive (not disposed).
         PtyProcess? pB = null;
         try
         {
             pB = PtyProcess.Start("cmd.exe", ["/c", "echo BBB-OK"]);
             var b = await ReadAllText(pB).WaitAsync(TimeSpan.FromSeconds(8));
-            sb.AppendLine($"B (A alive): got={b.Contains("BBB-OK")} len={b.Length}");
+            sb.AppendLine($"B: got={b.Contains("BBB-OK")} len={b.Length}");
+            sb.AppendLine($"B WaitForExit(2s)={pB.WaitForExit(TimeSpan.FromSeconds(2))} exitCode={pB.ExitCode}");
         }
         catch (Exception ex) { sb.AppendLine($"B threw {ex.GetType().Name}: {ex.Message}"); }
 
-        // Dispose A, then C.
-        PtyProcess? pC = null;
-        try
-        {
-            pA?.Dispose();
-            pA = null;
-            pC = PtyProcess.Start("cmd.exe", ["/c", "echo CCC-OK"]);
-            var c = await ReadAllText(pC).WaitAsync(TimeSpan.FromSeconds(8));
-            sb.AppendLine($"C (after A disposed): got={c.Contains("CCC-OK")} len={c.Length}");
-        }
-        catch (Exception ex) { sb.AppendLine($"C threw {ex.GetType().Name}: {ex.Message}"); }
-
+        pA?.Dispose();
         pB?.Dispose();
-        pC?.Dispose();
 
+        sb.AppendLine("--- trace ---");
+        sb.AppendLine(WindowsPty.GetDebugLog());
         sb.AppendLine("=== end ===");
         throw new Exception(sb.ToString());
     }
