@@ -15,7 +15,10 @@ jobs:
       # Report failures on every OS instead of letting one cancel the rest.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # windows-latest drives the suite against Git Bash (bundled with Git for Windows);
+        # TestHelpers resolves bash.exe and the ConPTY paths are covered by
+        # Pty.WindowsTests.cs plus the portable bash-driven tests.
+        os: [windows-latest, ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
 

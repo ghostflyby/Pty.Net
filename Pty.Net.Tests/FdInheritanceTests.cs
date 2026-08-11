@@ -3,6 +3,7 @@ using Ghostflyby.Pty;
 using Microsoft.Win32.SafeHandles;
 
 namespace Ghostflyby.Pty.Tests;
+#if !WINDOWS
 
 // Demonstrates that posix_spawn, unless told otherwise, inherits ALL parent fds
 // into the child (same hole fork has, minus the lock deadlock). macOS
@@ -81,3 +82,5 @@ public partial class FdInheritanceTests
         internal static partial int open(string path, OpenFlags flags, UnixPermissions mode);
     }
 }
+
+#endif

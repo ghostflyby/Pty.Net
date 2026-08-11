@@ -17,10 +17,24 @@
              full AOT publish smoke test. -->
         <IsAotCompatible>true</IsAotCompatible>
 
-        <!-- Platform symbol used by #if in NativeMethods.cs / PtyProcess.cs. The SDK
-             may define OSX/LINUX automatically from the build host, but be explicit. -->
+        <!-- Platform symbol used by #if in NativeMethods.cs / PtyProcess.cs / PtyReaper.cs.
+             The SDK may define OSX/LINUX/WINDOWS automatically from the build host, but be
+             explicit (the macOS/Linux builds never compile the Windows branch and vice versa). -->
         <DefineConstants Condition="$([MSBuild]::IsOSPlatform('OSX'))">$(DefineConstants);OSX</DefineConstants>
         <DefineConstants Condition="$([MSBuild]::IsOSPlatform('Linux'))">$(DefineConstants);LINUX</DefineConstants>
+        <DefineConstants Condition="$([MSBuild]::IsOSPlatform('Windows'))">$(DefineConstants);WINDOWS</DefineConstants>
+
+        <!-- CsWin32 build-task mode makes it emit [LibraryImport] externs (the plain
+             source-generator mode emits [DllImport], which would trip the IL20xx
+             diagnostics under IsAotCompatible). Windows-only. -->
+        <CsWin32RunAsBuildTask Condition="$([MSBuild]::IsOSPlatform('Windows'))">true</CsWin32RunAsBuildTask>
     </PropertyGroup>
+
+    <!-- Windows-only: CsWin32 source-generates the ConPTY interop (CreatePseudoConsole +
+         CreateProcessW + attribute list) into our existing partial NativeMethods class.
+         PrivateAssets keeps it out of consumers. -->
+    <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+        <PackageReference Include="Microsoft.Windows.CsWin32" Version="0.3.298" PrivateAssets="all" />
+    </ItemGroup>
 
 </Project>

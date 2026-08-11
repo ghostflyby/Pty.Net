@@ -72,8 +72,11 @@ internal static partial class NativeMethods
         // automatically, glibc does not).
         Setsigdef = 0x0004,
         Setsid = 0x0080,
+#elif WINDOWS
+        // ConPTY has no POSIX spawn flags; the child is created with CreateProcessW and
+        // gets its stdio via PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE. Nothing to define here.
 #else
-#error "Pty.Net supports macOS (define OSX) and Linux (define LINUX) only."
+#error "Pty.Net supports Windows (define WINDOWS), macOS (define OSX) or Linux (define LINUX) only."
 #endif
     }
 
@@ -86,8 +89,10 @@ internal static partial class NativeMethods
     internal const int Eagain = 35;
 #elif LINUX
     internal const int Eagain = 11;
+#elif WINDOWS
+    // No POSIX errno values on Windows; error reporting goes through GetLastWin32Error.
 #else
-#error "Pty.Net supports macOS (define OSX) and Linux (define LINUX) only."
+#error "Pty.Net supports Windows (define WINDOWS), macOS (define OSX) or Linux (define LINUX) only."
 #endif
 
     // open(2) / posix_openpt(2) flag bits. O_RDWR is identical; O_NONBLOCK and
@@ -100,8 +105,10 @@ internal static partial class NativeMethods
 #elif LINUX
     internal const int ONonblock = 0x0800;
     internal const int ONoctty = 0x00100;
+#elif WINDOWS
+    // ConPTY channels are pipe handles, not fds; no open(2) flags apply.
 #else
-#error "Pty.Net supports macOS (define OSX) and Linux (define LINUX) only."
+#error "Pty.Net supports Windows (define WINDOWS), macOS (define OSX) or Linux (define LINUX) only."
 #endif
     internal const int ORdwr = 0x0002;
 

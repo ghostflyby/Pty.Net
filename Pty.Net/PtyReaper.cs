@@ -3,17 +3,18 @@ using System.Runtime.InteropServices;
 namespace Ghostflyby.Pty;
 
 /// <summary>
-/// Process-wide reaper: the single owner of waitpid(2) for every <see cref="PtyProcess"/>.
-/// One background thread scans the registered processes every 10 ms and calls
-/// waitpid(WNOHANG); once a child is reaped it sets <see cref="PtyProcess.ExitCode"/>,
-/// raises <see cref="PtyProcess.Exited"/> and unregisters.
+/// Process-wide reaper: the single owner of the exit wait for every <see cref="PtyProcess"/>.
+/// One background thread scans the registered processes every 10 ms — waitpid(WNOHANG) on
+/// Unix, WaitForSingleObject(0) on Windows; once a child is collected it sets
+/// <see cref="PtyProcess.ExitCode"/>, raises <see cref="PtyProcess.Exited"/> and unregisters.
 ///
-/// Single-owner matters: if WaitForExit/Dispose each called waitpid directly, two
-/// callers would race for the same child — the first reap wins and the loser would see
-/// ECHILD and overwrite the ExitCode with -1. Funneling every waitpid through this
-/// thread makes the exit result deterministic: other paths only observe ExitCode.
+/// Single-owner matters: if WaitForExit/Dispose each waited directly, two callers would
+/// race for the same child — on Unix the first reap wins and the loser would see ECHILD
+/// and overwrite the ExitCode with -1 (on Windows a single owned process handle makes
+/// that impossible, but funneling the wait through one thread keeps the result
+/// deterministic all the same). Other paths only observe ExitCode.
 ///
-/// Signal safety: no SIGCHLD handler is installed (.NET's runtime installs its own
+/// Signal safety (Unix): no SIGCHLD handler is installed (.NET's runtime installs its own
 /// SIGCHLD on Unix; overlaying it is risky), so reaping is polled; a pidfd-based
 /// event-driven reap is a future optimization on Linux. The reaper thread only polls
 /// while at least one process is registered — with none, it idles on a monitor wait
@@ -85,20 +86,21 @@ internal static class PtyReaper
         }
 
         /// <summary>
-        /// Calls waitpid(WNOHANG) once, retrying on EINTR. Returns true once the child
-        /// has been reaped (or is unreachable), at which point the process's ExitCode
-        /// is set and <see cref="PtyProcess.Exited"/> raised.
+        /// Polls the child once (non-blocking) for exit: waitpid(WNOHANG) on Unix,
+        /// WaitForSingleObject(0) on Windows. Returns true once the child has exited
+        /// (or is unreachable), at which point the process's ExitCode is set and
+        /// <see cref="PtyProcess.Exited"/> raised.
         /// </summary>
         private static bool TryReap(PtyProcess p)
         {
+#if WINDOWS
+            return WindowsPty.TryReap(p.ProcessHandle!, out var code) && MarkReaped(p, code);
+#else
             while (true)
             {
                 var r = NativeMethods.waitpid(p.Pid, out var status, NativeMethods.WaitOptions.Wnohang);
                 if (r > 0)
-                {
-                    p.OnReaped(PtyProcess.ExtractExitCode(status));
-                    return true;
-                }
+                    return MarkReaped(p, PtyProcess.ExtractExitCode(status));
 
                 if (r == 0)
                     return false; // still running
@@ -110,9 +112,15 @@ internal static class PtyReaper
                 // ECHILD (reaped elsewhere / not our child) or an unexpected error:
                 // record the exit code as unknown instead of throwing here, which would
                 // kill the shared reaper thread and leave every other session unreaped.
-                p.OnReaped(-1);
-                return true;
+                return MarkReaped(p, -1);
             }
+#endif
+        }
+
+        private static bool MarkReaped(PtyProcess p, int code)
+        {
+            p.OnReaped(code);
+            return true;
         }
     }
 }

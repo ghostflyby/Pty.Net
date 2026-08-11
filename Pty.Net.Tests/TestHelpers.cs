@@ -23,8 +23,38 @@ internal static class TestBash
         var args = arguments is { Length: > 0 }
             ? arguments
             : ["--noprofile", "--norc", "--noediting", "-i"];
+#if WINDOWS
+        // Windows runs the suite against Git Bash (installed on the CI runner); resolve
+        // bash.exe from the standard install locations or PATH.
+        return PtyProcess.Start(ResolveBash(), args, workingDirectory);
+#else
         return PtyProcess.Start("/bin/bash", args, workingDirectory);
+#endif
     }
+
+#if WINDOWS
+    /// <summary>Locates Git Bash's bash.exe (standard install paths first, then PATH).</summary>
+    private static string ResolveBash()
+    {
+        var candidates = new List<string>
+        {
+            @"C:\Program Files\Git\bin\bash.exe",
+            @"C:\Program Files (x86)\Git\bin\bash.exe",
+        };
+        foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? string.Empty).Split(Path.PathSeparator))
+        {
+            if (dir.Length > 0)
+                candidates.Add(Path.Combine(dir.Trim('"'), "bash.exe"));
+        }
+        foreach (var candidate in candidates)
+        {
+            if (File.Exists(candidate))
+                return candidate;
+        }
+        throw new FileNotFoundException(
+            "Git Bash (bash.exe) was not found; the Windows test suite drives interactive bash sessions.");
+    }
+#endif
 
     /// <summary>
     /// Reads from <paramref name="reader"/> until <paramref name="marker"/> appears in the

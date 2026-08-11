@@ -5,11 +5,11 @@ using Microsoft.Win32.SafeHandles;
 namespace Ghostflyby.Pty;
 
 /// <summary>
-/// A child process attached to a pseudo-terminal (PTY), created via
-/// <c>posix_openpt(3)</c> + <c>posix_spawn(2)</c>.
-/// Use it to drive an interactive shell (e.g. bash): write commands to
-/// <see cref="StandardInput"/>, read back the terminal output from
-/// <see cref="StandardOutput"/>.
+/// A child process attached to a pseudo-terminal (PTY): on macOS/Linux created via
+/// <c>posix_openpt(3)</c> + <c>posix_spawn(2)</c>, on Windows via ConPTY
+/// (<c>CreatePseudoConsole</c> + <c>CreateProcessW</c>).
+/// Use it to drive an interactive shell: write commands to <see cref="StandardInput"/>,
+/// read back the terminal output from <see cref="StandardOutput"/>.
 /// </summary>
 /// <remarks>
 /// I/O is exposed the way <see cref="System.Diagnostics.Process"/> does it:
@@ -19,15 +19,17 @@ namespace Ghostflyby.Pty;
 /// wrap). A pty is a single bidirectional device — the child's stdout and stderr are
 /// merged into the one master stream, and there is no separate stderr channel.
 ///
-/// The master fd is non-blocking (opened via <c>posix_openpt(O_NONBLOCK)</c>) and all
-/// I/O is driven by poll(2) through <see cref="PtyIoEngine"/>, so no operation ever
-/// blocks a thread-pool thread and cancellation is immediate.
+/// On Unix the master fd is non-blocking and all I/O is driven by poll(2) through
+/// <see cref="PtyIoEngine"/>, so no operation ever blocks a thread-pool thread and
+/// cancellation is immediate. On Windows the ConPTY channels run on per-stream
+/// background threads (ConPTY does not support overlapped I/O), keeping the same
+/// no-thread-pool-starvation property.
 ///
 /// The process-control surface is async-capable too: <see cref="WaitForExitAsync(CancellationToken)"/>
 /// waits without occupying a thread, <see cref="DisposeAsync"/> mirrors
 /// <see cref="Dispose()"/>, and <see cref="Exited"/> fires once the child is reaped.
-/// Reaping (waitpid) is owned by a process-wide background reaper, so exit results
-/// are deterministic across concurrent waiters.
+/// Reaping is owned by a process-wide background reaper (waitpid on Unix, the process
+/// handle on Windows), so exit results are deterministic across concurrent waiters.
 /// </remarks>
 public sealed class PtyProcess : IDisposable, IAsyncDisposable
 {
@@ -43,6 +45,13 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
 
     /// <summary>OS process id of the child.</summary>
     public int Pid { get; }
+
+    /// <summary>
+    /// Child process handle. Non-null only on Windows (ConPTY path), where the reaper
+    /// waits on it and <see cref="Kill"/> terminates through it — waitpid(2) does not
+    /// exist there. Owned by this process and disposed with it.
+    /// </summary>
+    internal SafeProcessHandle? ProcessHandle { get; }
 
     // Reaped exit code. int.MinValue means "not reaped yet"; afterwards it is 0..255,
     // 128 + signal, or -1 when the status could not be determined. Written by the
@@ -89,10 +98,10 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
     /// </summary>
     public StreamReader StandardOutput { get; }
 
-    private PtyProcess(PtyStream stream, int pid, Encoding? inputEncoding, Encoding? outputEncoding)
+    private PtyProcess(PtyStream stream, int pid, Encoding? inputEncoding, Encoding? outputEncoding, SafeProcessHandle? processHandle)
     {
         BaseStream = stream;
-        // Null encoding means UTF-8 — the terminal default on both macOS and Linux.
+        // Null encoding means UTF-8 — the terminal default on macOS, Linux and Windows.
         // The reader's read-ahead buffer is fine: this text facade owns the stream until
         // the caller switches to BaseStream (never mix — like Process's StandardOutput).
         StandardInput = new StreamWriter(stream, inputEncoding ?? new UTF8Encoding(encoderShouldEmitUTF8Identifier: false))
@@ -101,17 +110,19 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
         };
         StandardOutput = new StreamReader(stream, outputEncoding ?? Encoding.UTF8);
         Pid = pid;
-        // The process-wide reaper owns waitpid for this child: it sets ExitCode and
+        ProcessHandle = processHandle;
+        // The process-wide reaper owns the exit wait for this child: it sets ExitCode and
         // raises Exited, and every WaitForExit/Dispose path just observes the result.
         PtyReaper.Watch(this);
     }
 
     /// <summary>
     /// Launches <paramref name="info"/> in a new PTY session (child process attached to a
-    /// pseudo-terminal). Uses <c>posix_openpt(3)</c> + <c>posix_spawn(2)</c>: posix_spawn
-    /// avoids <c>fork(2)</c>, so launching stays safe even when other threads are
-    /// concurrently allocating memory (fork in a multithreaded process can deadlock the
-    /// child on inherited malloc locks). A <see cref="System.Diagnostics.ProcessStartInfo"/>
+    /// pseudo-terminal). On Unix this uses <c>posix_openpt(3)</c> + <c>posix_spawn(2)</c>:
+    /// posix_spawn avoids <c>fork(2)</c>, so launching stays safe even when other threads
+    /// are concurrently allocating memory (fork in a multithreaded process can deadlock
+    /// the child on inherited malloc locks). On Windows it uses ConPTY
+    /// (<c>CreatePseudoConsole</c>). A <see cref="System.Diagnostics.ProcessStartInfo"/>
     /// can be passed via <see cref="PtyStartInfo(ProcessStartInfo)"/>.
     /// </summary>
     public static PtyProcess Start(PtyStartInfo info)
@@ -131,6 +142,15 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
     private static PtyProcess StartCore(string file, string[] arguments, string? workingDirectory,
         IDictionary<string, string?>? environment, Encoding? inputEncoding, Encoding? outputEncoding)
     {
+#if WINDOWS
+        // ConPTY path: CreatePseudoConsole + CreateProcessW (see WindowsPty.cs). The child
+        // attaches to the pseudo console via PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE; no fd,
+        // no signals, no waitpid — the pipe ends carry the I/O and the process handle
+        // drives waiting/termination.
+        var result = WindowsPty.Start(file, arguments, workingDirectory, environment ?? ParentEnvironment());
+        var winStream = new PtyStream(result.InputWrite, result.OutputRead, result.PseudoConsole);
+        return new PtyProcess(winStream, result.Pid, inputEncoding, outputEncoding, result.ProcessHandle);
+#else
         // Everything is prepared in the parent; posix_spawn performs the exec natively.
         var env = environment ?? ParentEnvironment();
         var envp = ToNative(BuildEnvironment(env));
@@ -257,7 +277,7 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
                 throw new IOException($"posix_spawn failed: errno={spawnRc}");
 
             spawned = true;
-            return new PtyProcess(stream, pid, inputEncoding, outputEncoding);
+            return new PtyProcess(stream, pid, inputEncoding, outputEncoding, processHandle: null);
         }
         finally
         {
@@ -281,6 +301,7 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
                     NativeMethods.close(masterFd);
             }
         }
+#endif
     }
 
     /// <summary>
@@ -382,7 +403,16 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
     /// the shell exit normally. The child is not reaped here; call
     /// <see cref="WaitForExit()"/> or <see cref="Dispose"/> afterwards.
     /// </summary>
-    public void Kill() => NativeMethods.kill(Pid, NativeMethods.Signals.Kill);
+    public void Kill()
+    {
+#if WINDOWS
+        // ConPTY has no POSIX signals; terminating the process handle is the Windows
+        // analog of SIGKILL. The pseudo console (and its tree) is closed on Dispose.
+        WindowsPty.Terminate(ProcessHandle!);
+#else
+        NativeMethods.kill(Pid, NativeMethods.Signals.Kill);
+#endif
+    }
 
     public void Dispose()
     {
@@ -393,6 +423,7 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
                 return;
             disposed = true;
 
+#if !WINDOWS
             if (!HasExited)
             {
                 // The child was spawned with posix_spawn + SETSID, so it has no controlling
@@ -400,6 +431,11 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
                 // it explicitly, then close the master so its output writes fail cleanly.
                 NativeMethods.kill(Pid, NativeMethods.Signals.Hup);
             }
+#else
+            // ConPTY has no signals; closing the pseudo console (inside BaseStream.Dispose
+            // below) terminates the attached process tree — the Windows analog of the
+            // SIGHUP-then-close sequence on Unix.
+#endif
 
             // Disposing the stream aborts any in-flight async operations and closes the
             // master fd (the engine defers the close until its last ref is released, so
@@ -413,6 +449,11 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
             while (!HasExited && DateTime.UtcNow < deadline)
                 Thread.Sleep(10);
+
+            // The reaper may still be watching an unexited child; only release the process
+            // handle once the wait is over, or the reaper would lose its wait target.
+            if (HasExited)
+                ProcessHandle?.Dispose();
         }
         finally
         {
@@ -434,14 +475,19 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
                 return;
             disposed = true;
 
+#if !WINDOWS
             if (!HasExited)
                 NativeMethods.kill(Pid, NativeMethods.Signals.Hup);
+#endif
 
             BaseStream.Dispose();
 
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
             while (!HasExited && DateTime.UtcNow < deadline)
                 await Task.Delay(10).ConfigureAwait(false);
+
+            if (HasExited)
+                ProcessHandle?.Dispose();
         }
         finally
         {
