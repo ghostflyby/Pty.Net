@@ -1,11 +1,13 @@
-using System.Runtime.InteropServices;
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Ghostflyby.Pty;
 
 /// <summary>
 /// Process-wide reaper: the single owner of the exit wait for every <see cref="PtyProcess"/>.
 /// One background thread scans the registered processes every 10 ms — waitpid(WNOHANG) on
-/// Unix, WaitForSingleObject(0) on Windows; once a child is collected it sets
+/// Unix, WaitForSingleObject(0) on Windows — delegating each non-blocking attempt to the
+/// process itself (<see cref="PtyProcess.TryReap"/>); once a child is collected it sets
 /// <see cref="PtyProcess.ExitCode"/>, raises <see cref="PtyProcess.Exited"/> and unregisters.
 ///
 /// Single-owner matters: if WaitForExit/Dispose each waited directly, two callers would
@@ -21,6 +23,9 @@ namespace Ghostflyby.Pty;
 /// and is woken by the first registration. The same thread also makes the dispose-time
 /// "wait up to 2 s" window non-fatal: even if it elapses while the child is still
 /// alive, this reaper keeps watching, so a child can never be left as a zombie.
+///
+/// The per-process attempt is a partial method implemented in PtyProcess.Start.Windows.cs
+/// / PtyProcess.Start.Unix.cs, so this file carries no platform conditionals.
 /// </summary>
 internal static class PtyReaper
 {
@@ -30,7 +35,7 @@ internal static class PtyReaper
         new(() => new ReaperThread(), LazyThreadSafetyMode.ExecutionAndPublication);
 
     /// <summary>Registers a <see cref="PtyProcess"/> for reaping; removed once it is reaped.</summary>
-    public static void Watch(PtyProcess process) => Reaper.Value.Watch(process);
+    public static void Watch(PtyProcess process) => Reaper.Value.WatchProcess(process);
 
     private sealed class ReaperThread
     {
@@ -43,7 +48,7 @@ internal static class PtyReaper
             thread.Start();
         }
 
-        public void Watch(PtyProcess process)
+        public void WatchProcess(PtyProcess process)
         {
             lock (sync)
             {
@@ -52,6 +57,7 @@ internal static class PtyReaper
             }
         }
 
+        [DoesNotReturn]
         private void Loop()
         {
             while (true)
@@ -72,55 +78,16 @@ internal static class PtyReaper
 
                 foreach (var p in snapshot)
                 {
-                    if (TryReap(p))
+                    if (!p.TryReap(out var code)) continue;
+                    p.OnReaped(code);
+                    lock (sync)
                     {
-                        lock (sync)
-                        {
-                            watched.Remove(p);
-                        }
+                        watched.Remove(p);
                     }
                 }
 
                 Thread.Sleep(PollIntervalMs);
             }
-        }
-
-        /// <summary>
-        /// Polls the child once (non-blocking) for exit: waitpid(WNOHANG) on Unix,
-        /// WaitForSingleObject(0) on Windows. Returns true once the child has exited
-        /// (or is unreachable), at which point the process's ExitCode is set and
-        /// <see cref="PtyProcess.Exited"/> raised.
-        /// </summary>
-        private static bool TryReap(PtyProcess p)
-        {
-#if WINDOWS
-            return WindowsPty.TryReap(p.ProcessHandle!, out var code) && MarkReaped(p, code);
-#else
-            while (true)
-            {
-                var r = NativeMethods.waitpid(p.Pid, out var status, NativeMethods.WaitOptions.Wnohang);
-                if (r > 0)
-                    return MarkReaped(p, PtyProcess.ExtractExitCode(status));
-
-                if (r == 0)
-                    return false; // still running
-
-                var err = Marshal.GetLastPInvokeError();
-                if (err == NativeMethods.Eintr)
-                    continue;
-
-                // ECHILD (reaped elsewhere / not our child) or an unexpected error:
-                // record the exit code as unknown instead of throwing here, which would
-                // kill the shared reaper thread and leave every other session unreaped.
-                return MarkReaped(p, -1);
-            }
-#endif
-        }
-
-        private static bool MarkReaped(PtyProcess p, int code)
-        {
-            p.OnReaped(code);
-            return true;
         }
     }
 }

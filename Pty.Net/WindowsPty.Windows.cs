@@ -1,4 +1,3 @@
-#if WINDOWS
 using System.ComponentModel;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
@@ -23,6 +22,7 @@ internal sealed record WindowsPtyResult(
 /// <summary>
 /// Windows/ConPTY launch path. CsWin32 supplies only the ConPTY and process-control APIs;
 /// <see cref="System.IO.Pipes"/> creates and owns the byte channels used for parent-side I/O.
+/// Windows-only: compiled only by the Windows target (see csproj).
 /// </summary>
 internal static partial class WindowsPty
 {
@@ -275,4 +275,3 @@ internal static partial class WindowsPty
         return Encoding.Unicode.GetBytes(sb.ToString());
     }
 }
-#endif

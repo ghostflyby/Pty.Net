@@ -17,18 +17,30 @@
              full AOT publish smoke test. -->
         <IsAotCompatible>true</IsAotCompatible>
 
-        <!-- Platform symbol used by #if in NativeMethods.cs / PtyProcess.cs / PtyReaper.cs.
-             The SDK may define OSX/LINUX/WINDOWS automatically from the build host, but be
-             explicit (the macOS/Linux builds never compile the Windows branch and vice versa). -->
+        <!-- Platform symbol used by #if in NativeMethods.Unix.cs / PtyProcess.Start.Unix.cs.
+             The SDK may define OSX/LINUX automatically from the build host, but be explicit.
+             Windows needs no define: the Windows files are compiled via file globs below. -->
         <DefineConstants Condition="$([MSBuild]::IsOSPlatform('OSX'))">$(DefineConstants);OSX</DefineConstants>
         <DefineConstants Condition="$([MSBuild]::IsOSPlatform('Linux'))">$(DefineConstants);LINUX</DefineConstants>
-        <DefineConstants Condition="$([MSBuild]::IsOSPlatform('Windows'))">$(DefineConstants);WINDOWS</DefineConstants>
 
         <!-- CsWin32 build-task mode makes it emit [LibraryImport] externs (the plain
              source-generator mode emits [DllImport], which would trip the IL20xx
              diagnostics under IsAotCompatible). Windows-only. -->
         <CsWin32RunAsBuildTask Condition="$([MSBuild]::IsOSPlatform('Windows'))">true</CsWin32RunAsBuildTask>
     </PropertyGroup>
+
+    <!-- Platform split by file globs instead of inline #if: PtyProcess.cs and PtyReaper.cs
+         are platform-free and reach platform code through partial methods; each platform
+         half lives in a .Windows.cs / .Unix.cs file compiled only on its platform.
+         The .Unix.cs set also carries the macOS/Linux (#if OSX/LINUX) differences. -->
+    <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+        <Compile Remove="**/*.Unix.cs" />
+        <Compile Update="PtyProcess.Start.Windows.cs;PtyStream.Windows.cs;WindowsPty.cs" />
+    </ItemGroup>
+    <ItemGroup Condition="!$([MSBuild]::IsOSPlatform('Windows'))">
+        <Compile Remove="**/*.Windows.cs" />
+        <Compile Update="NativeMethods.Unix.cs;PtyIoEngine.cs;PtyProcess.Start.Unix.cs;PtyStream.Unix.cs" />
+    </ItemGroup>
 
     <!-- Windows-only: CsWin32 source-generates the ConPTY interop (CreatePseudoConsole +
          CreateProcessW + attribute list) under Windows.Win32.PInvoke. PrivateAssets

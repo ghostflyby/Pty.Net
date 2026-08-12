@@ -8,17 +8,20 @@ namespace Ghostflyby.Pty;
 /// and run an interactive shell in it. Uses <c>posix_openpt(3)</c> + <c>posix_spawn(2)</c>
 /// (not fork+exec) so spawning stays safe in a multi-threaded process.
 ///
-/// pty setup returns raw fds (posix_openpt/grantpt/unlockpt/ptsname are non-variadic,
-/// so they work on Apple arm64 where the variadic fcntl mis-delivers its third argument);
-/// the caller wraps the master in a <see cref="SafeFileHandle"/> for <see cref="PtyStream"/>.
-/// Byte transfer goes through raw read(2)/write(2) on the non-blocking master fd,
-/// driven by <see cref="PtyStream"/> / <see cref="PtyIoEngine"/> (see <see cref="PtyProcess"/>).
+/// Unix-only: this file is compiled only by the non-Windows target (see csproj), so
+/// Windows-specific constants and branches are absent. pty setup returns raw fds
+/// (posix_openpt/grantpt/unlockpt/ptsname are non-variadic, so they work on Apple arm64
+/// where the variadic fcntl mis-delivers its third argument); the caller wraps the master
+/// in a <see cref="SafeFileHandle"/> for <see cref="PtyStream"/>. Byte transfer goes
+/// through raw read(2)/write(2) on the non-blocking master fd, driven by
+/// <see cref="PtyStream"/> / <see cref="PtyIoEngine"/> (see <see cref="PtyProcess"/>).
 ///
 /// Constants are split per platform: macOS (OSX) and Linux glibc differ in the
 /// POSIX_SPAWN_SETSID value and the fd-closing mechanism.
 /// </summary>
 // ReSharper disable IdentifierTypo
 // ReSharper disable CommentTypo
+// ReSharper disable InconsistentNaming
 internal static partial class NativeMethods
 {
     // poll(2) event bits (identical values on macOS and Linux).
@@ -72,11 +75,8 @@ internal static partial class NativeMethods
         // automatically, glibc does not).
         Setsigdef = 0x0004,
         Setsid = 0x0080,
-#elif WINDOWS
-        // ConPTY has no POSIX spawn flags; the child is created with CreateProcessW and
-        // gets its stdio via PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE. Nothing to define here.
 #else
-#error "Pty.Net supports Windows (define WINDOWS), macOS (define OSX) or Linux (define LINUX) only."
+#error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
 #endif
     }
 
@@ -89,10 +89,8 @@ internal static partial class NativeMethods
     internal const int Eagain = 35;
 #elif LINUX
     internal const int Eagain = 11;
-#elif WINDOWS
-    // No POSIX errno values on Windows; error reporting goes through GetLastWin32Error.
 #else
-#error "Pty.Net supports Windows (define WINDOWS), macOS (define OSX) or Linux (define LINUX) only."
+#error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
 #endif
 
     // open(2) / posix_openpt(2) flag bits. O_RDWR is identical; O_NONBLOCK and
@@ -105,10 +103,8 @@ internal static partial class NativeMethods
 #elif LINUX
     internal const int ONonblock = 0x0800;
     internal const int ONoctty = 0x00100;
-#elif WINDOWS
-    // ConPTY channels are pipe handles, not fds; no open(2) flags apply.
 #else
-#error "Pty.Net supports Windows (define WINDOWS), macOS (define OSX) or Linux (define LINUX) only."
+#error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
 #endif
     internal const int ORdwr = 0x0002;
 

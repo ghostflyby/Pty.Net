@@ -1,4 +1,3 @@
-#if !WINDOWS
 using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -39,6 +38,9 @@ namespace Ghostflyby.Pty;
 /// SafeHandle.Dispose() also defers the actual close until these refs are released, so
 /// PtyStream.Dispose can never close an fd that is still in the poll set (which would
 /// let a reused fd number be polled for the wrong file).
+///
+/// Unix-only: compiled only by the non-Windows target (see csproj); Windows uses BCL
+/// pipe I/O through IOCP instead.
 /// </summary>
 internal static class PtyIoEngine
 {
@@ -657,4 +659,3 @@ internal static class PtyIoEngine
         }
     }
 }
-#endif

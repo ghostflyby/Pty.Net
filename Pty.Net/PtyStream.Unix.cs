@@ -1,4 +1,3 @@
-#if !WINDOWS
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
@@ -25,6 +24,8 @@ namespace Ghostflyby.Pty;
 ///
 ///  * <b>Prompt EOF.</b> When the child's slave side goes away, poll reports HUP and a
 ///    subsequent read returns 0 (EOF) instead of blocking forever.
+///
+/// Unix-only: compiled only by the non-Windows target (see csproj).
 /// </summary>
 public sealed partial class PtyStream
 {
@@ -240,4 +241,3 @@ public sealed partial class PtyStream
         }
     }
 }
-#endif

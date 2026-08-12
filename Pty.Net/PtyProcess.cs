@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+using System.Diagnostics;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 
@@ -31,7 +31,12 @@ namespace Ghostflyby.Pty;
 /// Reaping is owned by a process-wide background reaper (waitpid on Unix, the process
 /// handle on Windows), so exit results are deterministic across concurrent waiters.
 /// </remarks>
-public sealed class PtyProcess : IDisposable, IAsyncDisposable
+/// <remarks>
+/// Platform code lives in the partial files <c>PtyProcess.Start.Windows.cs</c> /
+/// <c>PtyProcess.Start.Unix.cs</c> (see the csproj file globs); this file is
+/// platform-free and the only per-platform hooks are partial methods.
+/// </remarks>
+public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
 {
     private const int ReadBufferSize = 4096;
 
@@ -51,10 +56,12 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
     /// waits on it and <see cref="Kill"/> terminates through it — waitpid(2) does not
     /// exist there. Owned by this process and disposed with it.
     /// </summary>
-    internal SafeProcessHandle? ProcessHandle { get; }
+    private SafeProcessHandle? ProcessHandle { get; }
 
-    // Reaped exit code. int.MinValue means "not reaped yet"; afterwards it is 0..255,
-    // 128 + signal, or -1 when the status could not be determined. Written by the
+    // Reaped exit code.
+    // int.MinValue means "not reaped yet"; afterward it is 0..255,
+    // 128 + signal, or -1 when the status could not be determined.
+    // Written by the
     // process-wide reaper thread, read from any thread: Volatile keeps it visible.
     private int exitCode = int.MinValue;
 
@@ -107,18 +114,9 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
         // the caller switches to BaseStream (never mix — like Process's StandardOutput).
         var effectiveInputEncoding = inputEncoding ?? new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
         var effectiveOutputEncoding = outputEncoding ?? Encoding.UTF8;
-#if WINDOWS
-        // ConPTY always transports UTF-8 bytes. These directional facade streams expose
-        // the caller-selected encodings on their outer side while BaseStream remains the
-        // untouched raw UTF-8 transport.
-        var inputFacadeStream = Encoding.CreateTranscodingStream(
-            stream, Encoding.UTF8, effectiveInputEncoding, leaveOpen: true);
-        var outputFacadeStream = Encoding.CreateTranscodingStream(
-            stream, Encoding.UTF8, effectiveOutputEncoding, leaveOpen: true);
-#else
-        Stream inputFacadeStream = stream;
-        Stream outputFacadeStream = stream;
-#endif
+        // Platform hook: Windows wraps the raw stream in transcoding facades (ConPTY
+        // transports UTF-8 bytes); Unix uses the stream directly.
+        CreateFacades(effectiveInputEncoding, effectiveOutputEncoding, out var inputFacadeStream, out var outputFacadeStream);
         StandardInput = new StreamWriter(inputFacadeStream, effectiveInputEncoding)
         {
             AutoFlush = true,
@@ -157,166 +155,10 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
     private static PtyProcess StartCore(string file, string[] arguments, string? workingDirectory,
         IDictionary<string, string?>? environment, Encoding? inputEncoding, Encoding? outputEncoding)
     {
-#if WINDOWS
-        // ConPTY path: CreatePseudoConsole + CreateProcessW (see WindowsPty.cs). The child
-        // attaches to the pseudo console via PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE; no fd,
-        // no signals, no waitpid — BCL named-pipe clients carry the parent-side I/O and
-        // the process handle drives waiting/termination.
-        var result = WindowsPty.Start(file, arguments, workingDirectory, environment ?? ParentEnvironment());
-        var winStream = new PtyStream(result.InputWrite, result.OutputRead, result.PseudoConsole);
-        return new PtyProcess(winStream, result.Pid, inputEncoding, outputEncoding, result.ProcessHandle);
-#else
-        // Everything is prepared in the parent; posix_spawn performs the exec natively.
-        var env = environment ?? ParentEnvironment();
-        var envp = ToNative(BuildEnvironment(env));
-        var argv = ToNative([Path.GetFileName(file), .. arguments]);
-        var path = Marshal.StringToHGlobalAnsi(file);
-
-        // Create the pty via posix_openpt(O_NONBLOCK) + grantpt/unlockpt/ptsname/open:
-        // all non-variadic, so they work on Apple arm64 (where the variadic fcntl call
-        // mis-delivers its third argument and could never set O_NONBLOCK). The master
-        // fd is non-blocking from birth — the foundation of PtyStream's poll-driven I/O.
-        PtyStream? stream = null;
-        var masterFd = NativeMethods.posix_openpt(NativeMethods.ORdwr | NativeMethods.ONonblock);
-        if (masterFd < 0 ||
-            NativeMethods.grantpt(masterFd) != 0 ||
-            NativeMethods.unlockpt(masterFd) != 0)
-        {
-            var err = Marshal.GetLastPInvokeError();
-            FreeNative(envp);
-            FreeNative(argv);
-            Marshal.FreeHGlobal(path);
-            if (masterFd >= 0)
-                NativeMethods.close(masterFd);
-            throw new IOException($"posix_openpt/grantpt/unlockpt failed: errno={err}");
-        }
-
-        var slavePath = Marshal.PtrToStringUTF8(NativeMethods.ptsname(masterFd)) ?? string.Empty;
-        var slaveFd = NativeMethods.open(slavePath, NativeMethods.ORdwr | NativeMethods.ONoctty);
-        if (slaveFd < 0)
-        {
-            var err = Marshal.GetLastPInvokeError();
-            FreeNative(envp);
-            FreeNative(argv);
-            Marshal.FreeHGlobal(path);
-            NativeMethods.close(masterFd);
-            throw new IOException($"open slave '{slavePath}' failed: errno={err}");
-        }
-
-        var fileActions = Marshal.AllocHGlobal(NativeMethods.PosixSpawnFileActionsSize);
-        var attr = Marshal.AllocHGlobal(NativeMethods.PosixSpawnAttrSize);
-        var spawned = false;
-        try
-        {
-            // PtyStream takes over the non-blocking master fd. Reads/writes are
-            // poll-gated, so no thread-pool thread is ever blocked on the pty.
-            stream = new PtyStream(new SafeFileHandle(new IntPtr(masterFd), ownsHandle: true));
-
-            if (NativeMethods.posix_spawn_file_actions_init(fileActions) != 0 ||
-                NativeMethods.posix_spawnattr_init(attr) != 0)
-                throw new IOException($"posix_spawn init failed: errno={Marshal.GetLastPInvokeError()}");
-
-#if OSX
-            // macOS: SETSID + close-on-exec-everything so runtime fds do not leak into the shell.
-            var flagsRc = NativeMethods.posix_spawnattr_setflags(
-                attr,
-                NativeMethods.PosixSpawnFlags.Setsid | NativeMethods.PosixSpawnFlags.CloexecDefault);
-            if (flagsRc != 0)
-                throw new IOException($"posix_spawnattr_setflags failed: errno={flagsRc}");
-#elif LINUX
-            var flagsRc = NativeMethods.posix_spawnattr_setflags(
-                attr,
-                NativeMethods.PosixSpawnFlags.Setsid | NativeMethods.PosixSpawnFlags.Setsigdef);
-            if (flagsRc != 0)
-                throw new IOException($"posix_spawnattr_setflags failed: errno={flagsRc}");
-
-            // POSIX spawn inherits SIG_IGN dispositions from the parent (macOS resets
-            // them automatically, glibc does not). The .NET runtime ignores SIGPIPE and
-            // friends, so reset the common ones to their defaults for a clean shell.
-            var sigdefRc = NativeMethods.posix_spawnattr_setsigdefault(
-                attr,
-                NativeMethods.SignalSet(
-                    NativeMethods.Signals.Hup,
-                    NativeMethods.Signals.Int,
-                    NativeMethods.Signals.Quit,
-                    NativeMethods.Signals.Pipe,
-                    NativeMethods.Signals.Term));
-            if (sigdefRc != 0)
-                throw new IOException($"posix_spawnattr_setsigdefault failed: errno={sigdefRc}");
-#else
-#error "Pty.Net supports macOS (define OSX) and Linux (define LINUX) only."
-#endif
-
-            // Wire the pty slave to the child's stdio and drop our copy of it. These take
-            // the exact fd numbers (referenced by the file actions inside the child), so
-            // raw handle values are passed rather than SafeHandles.
-            // Failures are theoretically impossible (the slave fd was just opened and
-            // 0/1/2 are always valid), but checked for consistency with the other steps:
-            // a silently broken stdio wiring would surface as a child with no output.
-            foreach (var target in new[] { 0, 1, 2 })
-            {
-                if (NativeMethods.posix_spawn_file_actions_adddup2(fileActions, slaveFd, target) != 0)
-                    throw new IOException($"posix_spawn adddup2({target}) failed: errno={Marshal.GetLastPInvokeError()}");
-            }
-            if (NativeMethods.posix_spawn_file_actions_addclose(fileActions, slaveFd) != 0)
-                throw new IOException($"posix_spawn addclose failed: errno={Marshal.GetLastPInvokeError()}");
-
-#if LINUX
-            // Linux equivalent of macOS POSIX_SPAWN_CLOEXEC_DEFAULT: close every inherited
-            // fd >= 3 in the child (the .NET runtime's sockets/pipes/files) so the shell
-            // starts with a clean fd table. glibc's addclosefrom_np would do this in one
-            // call, but musl does not export it — a loop of the standard addclose file
-            // action works on both. Bound the loop by the current soft fd limit (glibc
-            // rejects addclose for fds >= it with EBADF), capped so huge limits do not
-            // turn every spawn into a million-iteration loop.
-            var maxFd = NativeMethods.FdIsolationCap;
-            if (NativeMethods.getrlimit(NativeMethods.RlimitNofile, out var rlim) == 0 &&
-                rlim.Cur < (nuint)maxFd)
-                maxFd = (int)rlim.Cur;
-            for (var fd = 3; fd < maxFd; fd++)
-            {
-                if (NativeMethods.posix_spawn_file_actions_addclose(fileActions, fd) != 0)
-                    throw new IOException($"posix_spawn addclose({fd}) failed: errno={Marshal.GetLastPInvokeError()}");
-            }
-#endif
-
-            if (workingDirectory is not null)
-            {
-                var chdirRc = NativeMethods.posix_spawn_file_actions_addchdir_np(fileActions, workingDirectory);
-                if (chdirRc != 0)
-                    throw new IOException($"posix_spawn addchdir failed: errno={chdirRc}");
-            }
-
-            var spawnRc = NativeMethods.posix_spawn(out var pid, path, fileActions, attr, argv, envp);
-            if (spawnRc != 0)
-                throw new IOException($"posix_spawn failed: errno={spawnRc}");
-
-            spawned = true;
-            return new PtyProcess(stream, pid, inputEncoding, outputEncoding, processHandle: null);
-        }
-        finally
-        {
-            NativeMethods.posix_spawn_file_actions_destroy(fileActions);
-            NativeMethods.posix_spawnattr_destroy(attr);
-            Marshal.FreeHGlobal(fileActions);
-            Marshal.FreeHGlobal(attr);
-            NativeMethods.close(slaveFd); // parent's copy of the slave is no longer needed
-            FreeNative(envp);
-            FreeNative(argv);
-            Marshal.FreeHGlobal(path);
-            if (!spawned)
-            {
-                // The PtyStream owns the master fd (SafeFileHandle, ownsHandle: true):
-                // disposing it closes the fd. Only fall back to a raw close if the
-                // stream was never constructed — never close an already-closed fd, as
-                // the OS may have reused the number for a concurrent open.
-                if (stream is not null)
-                    stream.Dispose();
-                else
-                    NativeMethods.close(masterFd);
-            }
-        }
-#endif
+        // Platform hook: posix_spawn on Unix, ConPTY (CreatePseudoConsole +
+        // CreateProcessW) on Windows.
+        return StartPlatform(file, arguments, workingDirectory, environment ?? ParentEnvironment(),
+            inputEncoding, outputEncoding);
     }
 
     /// <summary>
@@ -335,13 +177,6 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
     /// </summary>
     public bool WaitForExit(TimeSpan timeout)
     {
-#if WINDOWS
-        // Exit may be blocked behind more than the pump's normal bounded buffer. Lift
-        // that bound for an explicit wait, preserving all bytes for later user reads.
-        BaseStream.EnterExitWait();
-        try
-        {
-#endif
         var infinite = timeout == Timeout.InfiniteTimeSpan;
         var deadline = infinite ? DateTime.MaxValue : DateTime.UtcNow + timeout;
         while (true)
@@ -363,13 +198,6 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
                 return false;
             Thread.Sleep(WaitStepMs(deadline, infinite));
         }
-#if WINDOWS
-        }
-        finally
-        {
-            BaseStream.ExitExitWait();
-        }
-#endif
     }
 
     /// <summary>
@@ -381,8 +209,8 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
 
     /// <summary>
     /// Waits until the child exits and has been reaped, like
-    /// <see cref="System.Diagnostics.Process.WaitForExitAsync()"/>, without blocking a
-    /// thread: the wait is a <see cref="Task.Delay"/> loop, so a pending wait holds no
+    /// <see cref="System.Diagnostics.Process.WaitForExitAsync"/>, without blocking a
+    /// thread: the wait is a <see cref="Task.Delay(int)"/> loop, so a pending wait holds no
     /// thread-pool thread. While waiting, output is drained continuously (same caveat
     /// as <see cref="WaitForExit(TimeSpan)"/>: concurrent consumption of the output
     /// facades is not safe during the wait).
@@ -399,11 +227,6 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
 
     private async Task<bool> WaitForExitCoreAsync(TimeSpan timeout, CancellationToken ct)
     {
-#if WINDOWS
-        BaseStream.EnterExitWait();
-        try
-        {
-#endif
         var infinite = timeout == Timeout.InfiniteTimeSpan;
         var deadline = infinite ? DateTime.MaxValue : DateTime.UtcNow + timeout;
         while (true)
@@ -429,13 +252,6 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
                 return false;
             await Task.Delay(WaitStepMs(deadline, infinite), ct).ConfigureAwait(false);
         }
-#if WINDOWS
-        }
-        finally
-        {
-            BaseStream.ExitExitWait();
-        }
-#endif
     }
 
     /// <summary>
@@ -447,13 +263,8 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
     /// </summary>
     public void Kill()
     {
-#if WINDOWS
-        // ConPTY has no POSIX signals; terminating the process handle is the Windows
-        // analog of SIGKILL. The pseudo console (and its tree) is closed on Dispose.
-        WindowsPty.Terminate(ProcessHandle!);
-#else
-        NativeMethods.kill(Pid, NativeMethods.Signals.Kill);
-#endif
+        // Platform hook: SIGKILL on Unix, TerminateProcess on Windows.
+        KillPlatform();
     }
 
     public void Dispose()
@@ -465,25 +276,10 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
                 return;
             disposed = true;
 
-#if !WINDOWS
-            if (!HasExited)
-            {
-                // The child was spawned with posix_spawn + SETSID, so it has no controlling
-                // terminal: closing the pty master alone does not deliver a hangup. Signal
-                // it explicitly, then close the master so its output writes fail cleanly.
-                NativeMethods.kill(Pid, NativeMethods.Signals.Hup);
-            }
-#else
-            // ConPTY has no signals. ClosePseudoConsole (inside BaseStream.Dispose below)
-            // sends CTRL_CLOSE_EVENT and — on Windows before 11 24H2 — waits indefinitely
-            // for the attached clients to disconnect and drain. A still-alive child (an
-            // interactive shell the caller never exited) would block that close forever,
-            // so terminate it first: the client disconnects and the close plus final-frame
-            // drain complete promptly. Exited children are left alone so their final
-            // output is preserved.
-            if (!HasExited && ProcessHandle is not null)
-                WindowsPty.Terminate(ProcessHandle);
-#endif
+            // Platform hook: SIGHUP the still-alive child on Unix; on Windows terminate
+            // it so ClosePseudoConsole does not wait indefinitely (exited children are
+            // left alone so their final output is preserved).
+            TerminateChildIfAlive();
 
             // Disposing the stream aborts in-flight I/O and releases the terminal channels.
             // On Windows it keeps an async output drain active while ClosePseudoConsole
@@ -524,15 +320,7 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
                 return;
             disposed = true;
 
-#if !WINDOWS
-            if (!HasExited)
-                NativeMethods.kill(Pid, NativeMethods.Signals.Hup);
-#else
-            // See Dispose: a live child would block ClosePseudoConsole's indefinite wait,
-            // so terminate it before closing the stream.
-            if (!HasExited && ProcessHandle is not null)
-                WindowsPty.Terminate(ProcessHandle);
-#endif
+            TerminateChildIfAlive();
 
             BaseStream.Dispose();
 
@@ -552,18 +340,16 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
     // --- internals ---------------------------------------------------------
 
     /// <summary>
-    /// Called by the process-wide reaper once waitpid(2) collected this child: records
+    /// Called by the process-wide reaper once the child has been collected: records
     /// the exit code and raises <see cref="Exited"/>. Runs on the shared reaper thread;
     /// handler exceptions are swallowed so one misbehaving handler cannot stall reaping
     /// for every other session.
     /// </summary>
     internal void OnReaped(int code)
     {
-#if WINDOWS
-        // ClosePseudoConsole can wait for a final output frame to drain. PtyStream queues
-        // that work away from this shared reaper thread and publishes EOF when done.
-        BaseStream.NotifyProcessExited();
-#endif
+        // Platform hook: Windows queues the pseudo-console close + final-frame drain
+        // away from this shared reaper thread; Unix has no teardown work.
+        OnReapedPlatform();
         Volatile.Write(ref exitCode, code);
         try
         {
@@ -575,60 +361,11 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
         }
     }
 
+    /// <summary>Single non-blocking reap attempt for this child; true when collected, with the exit code.</summary>
+    internal bool TryReap(out int exitCode) => TryReapPlatform(out exitCode);
+
     /// <summary>A snapshot of the parent's environment, for launches with no explicit <see cref="PtyStartInfo.Environment"/>.</summary>
     private static IDictionary<string, string?> ParentEnvironment() => PtyStartInfo.SnapshotParentEnvironment();
-
-    /// <summary>Flattens the environment dictionary into the <c>KEY=VALUE</c> array posix_spawn expects, dropping null values.</summary>
-    private static string[] BuildEnvironment(IDictionary<string, string?> env)
-    {
-        var result = env
-            .Where(kv => kv.Value is not null)
-            .Select(kv => $"{kv.Key}={kv.Value}")
-            .ToList();
-        // Without a TERM the shell may fall back to dumb/unknown; set a sane default.
-        if (!result.Any(e => e.StartsWith("TERM=", StringComparison.Ordinal)))
-            result.Add("TERM=xterm-256color");
-        return [.. result];
-    }
-
-    private static IntPtr[] ToNative(string[] strs)
-    {
-        var result = new IntPtr[strs.Length + 1];
-        for (var i = 0; i < strs.Length; i++)
-            result[i] = Marshal.StringToHGlobalAnsi(strs[i]);
-        result[strs.Length] = IntPtr.Zero;
-        return result;
-    }
-
-    private static void FreeNative(IntPtr[] arr)
-    {
-        foreach (var p in arr)
-            if (p != IntPtr.Zero)
-                Marshal.FreeHGlobal(p);
-    }
-
-    /// <summary>
-    /// Non-blocking drain: reads whatever output is currently available and discards it.
-    /// Used by <see cref="WaitForExit"/> so the child never blocks on a full pty buffer
-    /// while nobody is reading.
-    /// </summary>
-    private void DrainOutput()
-    {
-#if WINDOWS
-        // The Windows output pump continuously drains the native ConPTY pipe into its
-        // managed queue. Do not consume that queue here: all bytes remain visible to the
-        // caller through BaseStream / StandardOutput.
-        return;
-#else
-        while (true)
-        {
-            // 0ms timeout: only drain what is already there, never wait.
-            var n = BaseStream.Read(drainBuf, 0, out _);
-            if (n <= 0)
-                return; // nothing available right now, or EOF
-        }
-#endif
-    }
 
     /// <summary>Decodes a waitpid(2) status into an exit code: 0..255, or 128 + signal when killed.</summary>
     internal static int ExtractExitCode(int status)
@@ -647,4 +384,30 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
             return 10;
         return (int)Math.Clamp((deadline - DateTime.UtcNow).TotalMilliseconds, 0, 10);
     }
+
+    // --- platform partial hooks ---------------------------------------------
+    // Each has exactly one implementing part: PtyProcess.Start.Windows.cs or
+    // PtyProcess.Start.Unix.cs (only the matching file is compiled per platform).
+
+    /// <summary>Creates the facade streams the text facades wrap; Windows transcodes to/from UTF-8.</summary>
+    private partial void CreateFacades(
+        Encoding inputEncoding, Encoding outputEncoding,
+        out Stream inputFacadeStream, out Stream outputFacadeStream);
+
+    /// <summary>Launches the child attached to a pty and returns the new <see cref="PtyProcess"/>.</summary>
+    private static partial PtyProcess StartPlatform(
+        string file, string[] arguments, string? workingDirectory,
+        IDictionary<string, string?> environment, Encoding? inputEncoding, Encoding? outputEncoding);
+
+    /// <summary>Terminates the child: SIGKILL on Unix, TerminateProcess on Windows.</summary>
+    private partial void KillPlatform();
+
+    /// <summary>Non-blocking reap attempt for the child; true when collected, with the exit code.</summary>
+    private partial bool TryReapPlatform(out int exitCode);
+
+    /// <summary>Platform teardown that must run off the shared reaper thread (Windows only).</summary>
+    private partial void OnReapedPlatform();
+
+    /// <summary>Drains available output without consuming it for the caller (Unix discards it).</summary>
+    private partial void DrainOutput();
 }

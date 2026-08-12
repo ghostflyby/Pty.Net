@@ -1,4 +1,3 @@
-#if WINDOWS
 using System.IO.Pipes;
 using Windows.Win32;
 
@@ -8,6 +7,7 @@ namespace Ghostflyby.Pty;
 /// Windows half of <see cref="PtyStream"/>. A single overlapped BCL read pump owns the
 /// ConPTY output pipe and publishes bytes into a bounded managed buffer. User reads consume
 /// only that buffer, so final-frame draining never races or steals bytes from callers.
+/// Windows-only: compiled only by the Windows target (see csproj).
 /// </summary>
 public sealed partial class PtyStream
 {
@@ -435,4 +435,3 @@ public sealed partial class PtyStream
         internal int Remaining => Data.Length - Offset;
     }
 }
-#endif
