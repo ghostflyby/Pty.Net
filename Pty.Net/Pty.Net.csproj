@@ -35,11 +35,11 @@
          The .Unix.cs set also carries the macOS/Linux (#if OSX/LINUX) differences. -->
     <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
         <Compile Remove="**/*.Unix.cs" />
-        <Compile Update="PtyProcess.Start.Windows.cs;PtyStream.Windows.cs;WindowsPty.cs" />
+        <Compile Update="PtyProcess.Start.Windows.cs;PtyStream.Windows.cs;WindowsPty.Windows.cs" />
     </ItemGroup>
     <ItemGroup Condition="!$([MSBuild]::IsOSPlatform('Windows'))">
         <Compile Remove="**/*.Windows.cs" />
-        <Compile Update="NativeMethods.Unix.cs;PtyIoEngine.cs;PtyProcess.Start.Unix.cs;PtyStream.Unix.cs" />
+        <Compile Update="NativeMethods.Unix.cs;PtyIoEngine.Unix.cs;PtyProcess.Start.Unix.cs;PtyStream.Unix.cs" />
     </ItemGroup>
 
     <!-- Windows-only: CsWin32 source-generates the ConPTY interop (CreatePseudoConsole +
