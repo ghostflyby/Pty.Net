@@ -81,7 +81,7 @@ internal static class PtyIoEngine
         // leak a process-lifetime background thread.
         if (!Thread.IsValueCreated)
             return;
-        Thread.Value.Post(new Control { Kind = ControlKind.CancelHandle, Handle = handle });
+        Thread.Value.Post(new Control(ControlKind.CancelHandle, handle: handle));
     }
     private static void EnsureStarted() => _ = Thread.Value;
 
@@ -99,7 +99,7 @@ internal static class PtyIoEngine
             Count = buffer.Length,
             Token = ct,
         };
-        Thread.Value.Post(new Control { Kind = ControlKind.Register, Op = op });
+        Thread.Value.Post(new Control(ControlKind.Register, op));
         return op.Tcs.Task;
     }
 
@@ -123,11 +123,23 @@ internal static class PtyIoEngine
         Canceled,
     }
 
-    private sealed class Control
+    /// <summary>
+    /// Transport message for the engine's inbox. A value type: the message is written
+    /// once, read once, and never aliased or identity-compared, so storing it by value
+    /// in the channel (no boxing) avoids a heap allocation per async operation.
+    /// </summary>
+    private readonly struct Control
     {
-        public ControlKind Kind;
-        public Operation? Op;
-        public SafeFileHandle? Handle;
+        public readonly ControlKind Kind;
+        public readonly Operation? Op;
+        public readonly SafeFileHandle? Handle;
+
+        public Control(ControlKind kind, Operation? op = null, SafeFileHandle? handle = null)
+        {
+            Kind = kind;
+            Op = op;
+            Handle = handle;
+        }
     }
 
     /// <summary>
@@ -228,7 +240,7 @@ internal static class PtyIoEngine
             Wake();
         }
 
-        internal void PostCancel(Operation op) => Post(new Control { Kind = ControlKind.Cancel, Op = op });
+        internal void PostCancel(Operation op) => Post(new Control(ControlKind.Cancel, op));
 
         /// <summary>
         /// Writes one byte to the wake pipe. The write is gated by poll(POLLOUT) and the
