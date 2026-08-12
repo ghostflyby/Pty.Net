@@ -163,7 +163,12 @@ public class PtyStreamTests : IDisposable
         bash.StandardInput.WriteLine("exit");
         bash.WaitForExit(Timeout);
 
+        // Like the async variant, partial reads may surface leftover output first
+        // (the exit echo; on Windows the exit-wait drain preserves those bytes for
+        // the reader). Keep reading until EOF (0).
         var n = Stream.Read(new byte[16]);
+        while (n > 0)
+            n = Stream.Read(new byte[16]);
         Assert.Equal(0, n);
     }
 
