@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using Ghostflyby.Pty;
 using Microsoft.Win32.SafeHandles;
 
 namespace Ghostflyby.Pty.Tests;

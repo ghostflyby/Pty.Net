@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using Ghostflyby.Pty;
 
 namespace Ghostflyby.Pty.Tests;
 
@@ -45,7 +44,7 @@ public class PtyProcessAsyncTests
     public async Task WaitForExitAsync_CompletesOnExternalExit()
     {
         var (file, args) = TestBash.ShortLivedProcess();
-        using var p = PtyProcess.Start(file, args);
+        await using var p = PtyProcess.Start(file, args);
 
         Assert.True(await p.WaitForExitAsync(Timeout).WaitAsync(Timeout));
         Assert.Equal(0, p.ExitCode);
@@ -55,7 +54,7 @@ public class PtyProcessAsyncTests
     public async Task WaitForExitAsync_Cancellation_ThrowsOce()
     {
         var (file, args) = TestBash.SleepProcess(1000);
-        using var p = PtyProcess.Start(file, args);
+        await using var p = PtyProcess.Start(file, args);
         using var cts = new CancellationTokenSource();
 
         var wait = p.WaitForExitAsync(System.Threading.Timeout.InfiniteTimeSpan, cts.Token);

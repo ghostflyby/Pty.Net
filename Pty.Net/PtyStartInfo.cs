@@ -35,7 +35,7 @@ public sealed record PtyStartInfo
     /// Encoding used to decode text read from <see cref="PtyProcess.StandardOutput"/>.
     /// <para>Defaults to UTF-8.</para>
     /// </summary>
-    public Encoding? StandardOutputEncoding { get; init; } = Encoding.UTF8;
+    public Encoding StandardOutputEncoding { get; init; } = Encoding.UTF8;
 
     /// <summary>
     /// Environment variables passed to the child.

@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using Ghostflyby.Pty;
 
 namespace Ghostflyby.Pty.Tests;
 

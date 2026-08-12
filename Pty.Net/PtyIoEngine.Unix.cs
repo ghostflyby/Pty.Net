@@ -23,8 +23,8 @@ namespace Ghostflyby.Pty;
 /// removed and the task completes canceled. Either way the outcome is deterministic.
 ///
 /// The master fds are non-blocking (opened via <c>posix_openpt(O_NONBLOCK)</c>), so a
-/// syscall never blocks: a read returns EAGAIN when no data is available and we simply
-/// stay registered; a write returns EAGAIN when the pty buffer is full and we resume on
+/// syscall never blocks: a read returns EAGAIN when no data is available, and we simply
+/// stay registered; a write returns EAGAIN when the pty buffer is full, and we resume on
 /// the next POLLOUT. The engine poll uses a finite timeout as a safety net so a lost
 /// wakeup can never deadlock the loop.
 ///
@@ -485,39 +485,38 @@ internal static class PtyIoEngine
             while (true)
             {
                 var r = NativeMethods.read(op.Fd, op.Pointer, (nuint)op.Count);
-                if (r > 0)
+                switch (r)
                 {
-                    Complete(op, OpStatus.Succeeded, (int)r, null);
-                    return;
-                }
-
-                if (r == 0)
-                {
-                    Complete(op, OpStatus.Succeeded, 0, null); // EOF
-                    return;
+                    case > 0:
+                        Complete(op, OpStatus.Succeeded, (int)r, null);
+                        return;
+                    case 0:
+                        Complete(op, OpStatus.Succeeded, 0, null); // EOF
+                        return;
                 }
 
                 var err = Marshal.GetLastPInvokeError();
-                if (err == Eintr)
-                    continue;
-                if (err == Eagain)
+                switch (err)
                 {
-                    // Spurious wakeup: the data was consumed before this read ran (e.g.
-                    // by a concurrent read on the same stream), or the readiness state
-                    // changed. Stay registered for the next POLLIN — not an error. If the
-                    // fd also reports hangup/error, the slave is gone: that is EOF.
-                    if ((revents & (NativeMethods.PollEvents.Pollhup | NativeMethods.PollEvents.Pollerr)) != 0)
-                        Complete(op, OpStatus.Succeeded, 0, null);
-                    return;
+                    case Eintr:
+                        continue;
+                    case Eagain:
+                    {
+                        // Spurious wakeup: the data was consumed before this read ran (e.g.
+                        // by a concurrent read on the same stream), or the readiness state
+                        // changed. Stay registered for the next POLLIN — not an error. If the
+                        // fd also reports hangup/error, the slave is gone: that is EOF.
+                        if ((revents & (NativeMethods.PollEvents.Pollhup | NativeMethods.PollEvents.Pollerr)) != 0)
+                            Complete(op, OpStatus.Succeeded, 0, null);
+                        return;
+                    }
+                    case Eio:
+                        Complete(op, OpStatus.Succeeded, 0, null); // slave closed: EOF on both platforms
+                        return;
+                    default:
+                        Complete(op, OpStatus.Failed, 0, new IOException($"pty read failed: errno={err}"));
+                        return;
                 }
-                if (err == Eio)
-                {
-                    Complete(op, OpStatus.Succeeded, 0, null); // slave closed: EOF on both platforms
-                    return;
-                }
-
-                Complete(op, OpStatus.Failed, 0, new IOException($"pty read failed: errno={err}"));
-                return;
             }
         }
 
@@ -529,38 +528,38 @@ internal static class PtyIoEngine
                 // Non-blocking fd: the write accepts what it can; when the pty buffer is
                 // full it returns EAGAIN and we stay registered for the next POLLOUT.
                 var r = NativeMethods.write(op.Fd, op.Pointer + op.Offset, (nuint)(total - op.Offset));
-                if (r > 0)
+                switch (r)
                 {
-                    op.Offset += (int)r;
-                    continue;
+                    case > 0:
+                        op.Offset += (int)r;
+                        continue;
+                    case 0:
+                        return; // degenerate zero-length write; wait for the next POLLOUT
                 }
-
-                if (r == 0)
-                    return; // degenerate zero-length write; wait for the next POLLOUT
 
                 var err = Marshal.GetLastPInvokeError();
-                if (err == Eintr)
-                    continue;
-                if (err == Eagain)
+                switch (err)
                 {
-                    // The pty buffer is full for now; resume on the next POLLOUT. If the
-                    // slave is gone (HUP/ERR), the remaining bytes can never be written.
-                    if ((revents & (NativeMethods.PollEvents.Pollhup | NativeMethods.PollEvents.Pollerr |
-                                    NativeMethods.PollEvents.Pollnval)) != 0)
+                    case Eintr:
+                        continue;
+                    case Eagain:
+                    {
+                        // The pty buffer is full for now; resume on the next POLLOUT. If the
+                        // slave is gone (HUP/ERR), the remaining bytes can never be written.
+                        if ((revents & (NativeMethods.PollEvents.Pollhup | NativeMethods.PollEvents.Pollerr |
+                                        NativeMethods.PollEvents.Pollnval)) != 0)
+                            Complete(op, OpStatus.Failed, 0,
+                                new IOException("pty write failed: the child closed the terminal"));
+                        return;
+                    }
+                    case Eio:
                         Complete(op, OpStatus.Failed, 0,
-                            new IOException("pty write failed: the child closed the terminal"));
-                    return;
+                            new IOException("pty write failed: the child closed the terminal (EIO)"));
+                        return;
+                    default:
+                        Complete(op, OpStatus.Failed, 0, new IOException($"pty write failed: errno={err}"));
+                        return;
                 }
-
-                if (err == Eio)
-                {
-                    Complete(op, OpStatus.Failed, 0,
-                        new IOException("pty write failed: the child closed the terminal (EIO)"));
-                    return;
-                }
-
-                Complete(op, OpStatus.Failed, 0, new IOException($"pty write failed: errno={err}"));
-                return;
             }
 
             Complete(op, OpStatus.Succeeded, total, null);
@@ -606,6 +605,8 @@ internal static class PtyIoEngine
                 case OpStatus.Canceled:
                     op.Tcs.TrySetCanceled();
                     break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(status), status, null);
             }
         }
 

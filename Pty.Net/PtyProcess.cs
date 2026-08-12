@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 
@@ -153,7 +152,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// <summary>
     /// Blocks until the child exits or <paramref name="timeout"/> elapses.
     /// <para>While waiting, output is drained continuously so the child never blocks
-    /// writing to a full pty buffer; the drained bytes remain readable afterwards.
+    /// writing to a full pty buffer; the drained bytes remain readable afterward.
     /// Concurrent consumption of <see cref="StandardOutput"/> / <see cref="BaseStream"/>
     /// during the wait is not portable, so consume output before or after it.</para>
     /// <para>Reaping happens on the process-wide reaper thread; this method only observes
@@ -311,7 +310,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
             while (!HasExited && DateTime.UtcNow < deadline)
                 Thread.Sleep(10);
 
-            // The reaper may still be watching an unexited child; only release the process
+            // The reaper may still be watching an un-exited child; only release the process
             // handle once the wait is over, or the reaper would lose its wait target.
             if (HasExited)
                 ProcessHandle?.Dispose();
@@ -381,10 +380,10 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     internal bool TryReap(out int exitCode) => TryReapPlatform(out exitCode);
 
     /// <summary>A snapshot of the parent's environment, for launches with no explicit <see cref="PtyStartInfo.Environment"/>.</summary>
-    private static IDictionary<string, string?> ParentEnvironment() => PtyStartInfo.SnapshotParentEnvironment();
+    private static Dictionary<string, string?> ParentEnvironment() => PtyStartInfo.SnapshotParentEnvironment();
 
     /// <summary>Decodes a waitpid(2) status into an exit code: 0..255, or 128 + signal when killed.</summary>
-    internal static int ExtractExitCode(int status)
+    private static int ExtractExitCode(int status)
     {
         var signal = status & 0x7F;
         return signal == 0 ? (status >> 8) & 0xFF : 128 + signal;

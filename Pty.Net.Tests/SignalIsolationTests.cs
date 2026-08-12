@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using Ghostflyby.Pty;
 
 namespace Ghostflyby.Pty.Tests;
 #if !WINDOWS

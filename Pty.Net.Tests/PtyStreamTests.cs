@@ -182,7 +182,7 @@ public class PtyStreamTests : IDisposable
 
         using var cts = new CancellationTokenSource();
         await bash.StandardInput.WriteAsync("hello-async-write\n".AsMemory(), cts.Token).WaitAsync(Timeout);
-        await bash.StandardInput.WriteAsync("\x04".AsMemory(), default); // EOT ends cat
+        await bash.StandardInput.WriteAsync("\x04".AsMemory(), CancellationToken.None); // EOT ends cat
 
         var output = TestBash.ReadUntil(bash.StandardOutput, Done, Timeout);
         Assert.Contains("hello-async-write", output);
@@ -231,7 +231,7 @@ public class PtyStreamTests : IDisposable
         DisableEcho();
         // 8 overlapping reads, 64 bytes each; the child then produces enough output for all.
         var reads = Enumerable.Range(0, 8)
-            .Select(_ => Stream.ReadAsync(new byte[64], default).AsTask())
+            .Select(_ => Stream.ReadAsync(new byte[64], CancellationToken.None).AsTask())
             .ToArray();
         await Task.Delay(200); // let them all register before output flows
 
@@ -257,7 +257,7 @@ public class PtyStreamTests : IDisposable
         Task<int> read;
         while (true)
         {
-            read = Stream.ReadAsync(readBuf, default).AsTask();
+            read = Stream.ReadAsync(readBuf, CancellationToken.None).AsTask();
             await Task.Delay(100); // let it register as the pending operation
             if (!read.IsCompleted)
                 break;
@@ -265,7 +265,7 @@ public class PtyStreamTests : IDisposable
         }
 
         // Now write: must dispatch on POLLOUT even while the read is pending.
-        var write = Stream.WriteAsync(Encoding.UTF8.GetBytes("echo I-GOT-THIS\n"), default).AsTask();
+        var write = Stream.WriteAsync(Encoding.UTF8.GetBytes("echo I-GOT-THIS\n"), CancellationToken.None).AsTask();
 
         // The deadlock this guards against would hang both forever; WaitAsync turns it
         // into a prompt failure.
