@@ -73,6 +73,28 @@ public class PtyWindowsTests
         Assert.True(output.Count(c => c == 'x') >= payloadLength, "final output must contain the full payload");
     }
 
+    /// <summary>
+    /// The initial size from <see cref="PtyStartInfo"/> (default 120x30) is applied when
+    /// the pseudo console is created, and <see cref="PtyProcess.Resize"/> propagates
+    /// through ResizePseudoConsole: the child's console API sees both sizes.
+    /// </summary>
+    [Fact]
+    public void Resize_PropagatesThroughConPty()
+    {
+        using var p = PtyProcess.Start(
+            "powershell.exe",
+            ["-NoProfile", "-Command",
+             "$h=[Console]::WindowHeight; $w=[Console]::WindowWidth; [Console]::Out.Write($w.ToString()+','+$h.ToString()+'|A'); Start-Sleep -Seconds 5; $h=[Console]::WindowHeight; $w=[Console]::WindowWidth; [Console]::Out.Write($w.ToString()+','+$h.ToString()+'|B')"]);
+
+        var first = TestBash.ReadUntil(p.StandardOutput, "|A", Timeout);
+        Assert.Matches(@"\b120,30\|A", first);
+
+        p.Resize(80, 24);
+
+        var second = TestBash.ReadUntil(p.StandardOutput, "|B", Timeout);
+        Assert.Matches(@"\b80,24\|B", second);
+    }
+
     /// <summary>Configured Latin-1 facades transcode to/from ConPTY's UTF-8 transport.</summary>
     [Fact]
     public void ConfiguredLatin1_TranscodesBothDirections()

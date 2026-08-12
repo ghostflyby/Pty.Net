@@ -38,8 +38,6 @@ internal static partial class WindowsPty
     // PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = 22 | PROC_THREAD_ATTRIBUTE_INPUT (0x20000).
     private const uint ProcThreadAttributePseudoConsole = 0x20016;
     private const int PipeBufferSize = 128 * 1024;
-    private const short DefaultCols = 120;
-    private const short DefaultRows = 30;
 
     /// <summary>True when the OS exports ConPTY (Windows 10 1809 / build 17763 or later).</summary>
     internal static bool IsSupported { get; } = DetectConPty();
@@ -56,7 +54,7 @@ internal static partial class WindowsPty
     /// </summary>
     internal static unsafe WindowsPtyResult Start(
         string file, string[] arguments, string? workingDirectory,
-        IDictionary<string, string?> environment)
+        IDictionary<string, string?> environment, int columns, int rows)
     {
         if (!IsSupported)
             throw new PlatformNotSupportedException(
@@ -92,7 +90,7 @@ internal static partial class WindowsPty
             outputServer.WaitForConnection();
 
             var hr = CreatePseudoConsole(
-                new COORD { X = DefaultCols, Y = DefaultRows },
+                new COORD { X = (short)columns, Y = (short)rows },
                 inputServer.SafePipeHandle,
                 outputServer.SafePipeHandle,
                 0,

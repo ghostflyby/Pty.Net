@@ -37,6 +37,12 @@ public sealed record PtyStartInfo
     /// </summary>
     public Encoding StandardOutputEncoding { get; init; } = Encoding.UTF8;
 
+    /// <summary>Initial terminal width in character columns. Defaults to 120.</summary>
+    public int InitialCols { get; init; } = 120;
+
+    /// <summary>Initial terminal height in character rows. Defaults to 30.</summary>
+    public int InitialRows { get; init; } = 30;
+
     /// <summary>
     /// Environment variables passed to the child.
     /// <para>Defaults to a copy of the parent's environment.</para>

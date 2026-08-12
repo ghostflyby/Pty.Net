@@ -1,6 +1,8 @@
 using System.Buffers;
+using System.ComponentModel;
 using System.IO.Pipes;
 using Windows.Win32;
+using Windows.Win32.System.Console;
 
 namespace Ghostflyby.Pty;
 
@@ -212,6 +214,27 @@ public sealed partial class PtyStream
         return source.IsEmpty
             ? ValueTask.CompletedTask
             : inputWrite.WriteAsync(source, cancellationToken);
+    }
+
+    // ------------------------------------------------------------ window size
+
+    /// <summary>
+    /// Sets the pseudo console's window size in character cells. ConPTY propagates the
+    /// new size to the attached client, which re-layouts its screen buffer.
+    /// </summary>
+    /// <param name="columns">Number of character columns.</param>
+    /// <param name="rows">Number of character rows.</param>
+    /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
+    /// <exception cref="Win32Exception">ResizePseudoConsole failed.</exception>
+    internal void SetWindowSize(int columns, int rows)
+    {
+        ThrowIfDisposed();
+        // The CsWin32 friendly overload keeps the SafeHandle add-ref'd for the call;
+        // COORD fields are short, so values are validated as ushort-range by the caller.
+        var hr = PInvoke.ResizePseudoConsole(
+            pseudoConsole, new COORD { X = (short)columns, Y = (short)rows });
+        if (hr.Failed)
+            throw new Win32Exception(hr.Value, $"ResizePseudoConsole failed: {hr}");
     }
 
     /// <summary>

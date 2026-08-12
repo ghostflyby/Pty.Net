@@ -212,6 +212,38 @@ public sealed partial class PtyStream
         return new ValueTask(PtyIoEngine.WriteAsync(handle, buffer, cancellationToken));
     }
 
+    // ------------------------------------------------------------ window size
+
+    /// <summary>
+    /// Sets the terminal window size in character cells. The kernel propagates the new
+    /// size to the child's foreground process group by sending SIGWINCH, so interactive
+    /// programs (vim, htop, readline) re-layout automatically.
+    /// </summary>
+    /// <param name="columns">Number of character columns.</param>
+    /// <param name="rows">Number of character rows.</param>
+    /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
+    /// <exception cref="IOException">The ioctl failed.</exception>
+    internal void SetWindowSize(int columns, int rows)
+    {
+        ObjectDisposedException.ThrowIf(handle.IsClosed, this);
+        var fd = (int)handle.DangerousGetHandle();
+
+        // Stack-allocated winsize, pinned for the ioctl. IoCtl selects the arm64
+        // pad-register calling form that the variadic ABI requires (see the declaration).
+        Span<NativeMethods.Winsize> winsize = stackalloc NativeMethods.Winsize[1];
+        winsize[0] = new NativeMethods.Winsize { Row = (ushort)rows, Col = (ushort)columns };
+        int rc;
+        unsafe
+        {
+            fixed (NativeMethods.Winsize* p = winsize)
+            {
+                rc = NativeMethods.IoCtl(fd, NativeMethods.Tiocswinsz, (IntPtr)p);
+            }
+        }
+        if (rc != 0)
+            throw new IOException($"pty resize failed: errno={Marshal.GetLastPInvokeError()}");
+    }
+
     // ------------------------------------------------------------------ dispose
 
     /// <summary>Releases the stream's pty handle, aborting any in-flight operations first.</summary>

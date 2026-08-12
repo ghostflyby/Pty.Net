@@ -108,6 +108,17 @@ internal static partial class NativeMethods
 #endif
     internal const int ORdwr = 0x0002;
 
+    // TIOCSWINSZ: the ioctl request that sets the terminal window size in characters.
+    // macOS 0x80087467 (_IOW('t', 104, winsize), C-verified), Linux 0x5414
+    // (asm-generic/ioctls.h).
+#if OSX
+    internal const nuint Tiocswinsz = 0x80087467;
+#elif LINUX
+    internal const nuint Tiocswinsz = 0x5414;
+#else
+#error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
+#endif
+
     // Buffer sizes for the opaque spawn types: both are well under this on macOS.
     internal const int PosixSpawnFileActionsSize = 512;
     internal const int PosixSpawnAttrSize = 512;
@@ -123,6 +134,17 @@ internal static partial class NativeMethods
         internal int Fd;
         internal PollEvents Events;
         internal PollEvents Revents;
+    }
+
+    // struct winsize (sys/ioctl.h): identical layout on macOS and Linux — row and
+    // column counts in characters, then pixel dimensions (unused by TIOCSWINSZ, kept 0).
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct Winsize
+    {
+        internal ushort Row;
+        internal ushort Col;
+        internal ushort Xpixel;
+        internal ushort Ypixel;
     }
 
     // posix_openpt(3) + grantpt/unlockpt/ptsname/open(2) replace openpty(3): all are
@@ -154,6 +176,31 @@ internal static partial class NativeMethods
 
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int close(int fd);
+
+    // ioctl(2) is variadic (int ioctl(int, unsigned long, ...)) and .NET has no
+    // varargs interop (__arglist throws InvalidProgramException on non-Windows), so a
+    // fixed signature must substitute. That works on x86-64 SysV (the callee reads the
+    // fixed arguments from registers), but on arm64 — macOS and Linux — the AAPCS64
+    // variadic ABI makes the callee re-read its arguments from the register save area
+    // on the stack, which a fixed-signature caller never populates: the pointer arrives
+    // garbage and the call fails or crashes. The proven workaround (IronPython's fcntl
+    // module, dotnet/runtime#48796) pads the six remaining general-purpose registers
+    // (x2-x7) with dummy arguments so the real pointer lands in the stack argument area
+    // where the variadic callee looks for it.
+    [LibraryImport("libc", SetLastError = true, EntryPoint = "ioctl")]
+    internal static partial int ioctl(int fd, nuint request, IntPtr arg);
+
+    [LibraryImport("libc", SetLastError = true, EntryPoint = "ioctl")]
+    internal static partial int ioctlArm64(int fd, nuint request,
+        nint r2, nint r3, nint r4, nint r5, nint r6, nint r7, IntPtr arg);
+
+    /// <summary>Calls ioctl(fd, request, arg), selecting the arm64 pad-register form where required.</summary>
+    internal static int IoCtl(int fd, nuint request, IntPtr arg)
+    {
+        return RuntimeInformation.ProcessArchitecture == Architecture.Arm64
+            ? ioctlArm64(fd, request, 0, 0, 0, 0, 0, 0, arg)
+            : ioctl(fd, request, arg);
+    }
 
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int posix_spawn(

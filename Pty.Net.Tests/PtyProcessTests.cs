@@ -129,6 +129,56 @@ public class PtyProcessTests : IDisposable
         Assert.Contains("sleep 0.5", jobs);
     }
 
+    // --- window size -------------------------------------------------------
+
+    /// <summary>
+    /// The initial size from <see cref="PtyStartInfo"/> (default 120x30) is applied before
+    /// the child starts, and <see cref="PtyProcess.Resize"/> propagates to the child:
+    /// bash reads the pty's size and `stty size` reports it back.
+    /// </summary>
+    [Fact]
+    public void Resize_ChildSeesNewWindowSize()
+    {
+        DisableEcho();
+
+        bash.StandardInput.WriteLine($"stty size; echo {Done}");
+        var initial = TestBash.ReadUntil(bash.StandardOutput, Done, Timeout);
+        // "rows cols" — the StartInfo default is 120 columns x 30 rows.
+        Assert.Matches(@"\b30\s+120\b", initial);
+
+        bash.Resize(80, 24);
+
+        bash.StandardInput.WriteLine($"stty size; echo {Done}");
+        var resized = TestBash.ReadUntil(bash.StandardOutput, Done, Timeout);
+        Assert.Matches(@"\b24\s+80\b", resized);
+    }
+
+#if !WINDOWS
+    /// <summary>
+    /// Resize on Unix is TIOCSWINSZ, which also delivers SIGWINCH to the child's
+    /// foreground process group: a trap fires without the child having to read anything.
+    /// Windows has no SIGWINCH (ConPTY propagates size through its own mechanism).
+    /// </summary>
+    [Fact]
+    public void Resize_SendsSigwinch()
+    {
+        DisableEcho();
+
+        // Ready marker proves the trap is installed before we resize.
+        bash.StandardInput.WriteLine($"trap 'echo WINCH-AAAA' WINCH; echo ready-BBBB; echo {Done}");
+        TestBash.ReadUntil(bash.StandardOutput, Done, Timeout);
+
+        bash.Resize(100, 40);
+
+        // The trap fires asynchronously; wait for its marker, then confirm the size too.
+        var output = TestBash.ReadUntil(bash.StandardOutput, "WINCH-AAAA", Timeout);
+        Assert.Contains("WINCH-AAAA", output);
+
+        bash.StandardInput.WriteLine($"stty size; echo {Done}");
+        Assert.Matches(@"\b40\s+100\b", TestBash.ReadUntil(bash.StandardOutput, Done, Timeout));
+    }
+#endif
+
     // --- async surface -----------------------------------------------------
 
     [Fact]

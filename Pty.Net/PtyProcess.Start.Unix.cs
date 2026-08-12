@@ -17,7 +17,8 @@ public sealed partial class PtyProcess
 
     private static partial PtyProcess StartPlatform(
         string file, string[] arguments, string? workingDirectory,
-        IDictionary<string, string?> environment, Encoding? inputEncoding, Encoding? outputEncoding)
+        IDictionary<string, string?> environment, Encoding? inputEncoding, Encoding? outputEncoding,
+        int initialCols, int initialRows)
     {
         // Everything is prepared in the parent; posix_spawn performs the exec natively.
         var envp = ToNative(BuildEnvironment(environment));
@@ -53,6 +54,31 @@ public sealed partial class PtyProcess
             Marshal.FreeHGlobal(path);
             NativeMethods.close(masterFd);
             throw new IOException($"open slave '{slavePath}' failed: errno={err}");
+        }
+
+        // Apply the requested initial size before the child starts, so interactive
+        // programs see the caller's dimensions (the default 120x30) from the first
+        // prompt. The kernel also delivers SIGWINCH to the child's foreground process
+        // group, but nothing has exec'd yet — the size is simply inherited.
+        Span<NativeMethods.Winsize> winsize = stackalloc NativeMethods.Winsize[1];
+        winsize[0] = new NativeMethods.Winsize { Row = (ushort)initialRows, Col = (ushort)initialCols };
+        int resizeRc;
+        unsafe
+        {
+            fixed (NativeMethods.Winsize* p = winsize)
+            {
+                resizeRc = NativeMethods.IoCtl(masterFd, NativeMethods.Tiocswinsz, (IntPtr)p);
+            }
+        }
+        if (resizeRc != 0)
+        {
+            var err = Marshal.GetLastPInvokeError();
+            FreeNative(envp);
+            FreeNative(argv);
+            Marshal.FreeHGlobal(path);
+            NativeMethods.close(masterFd);
+            NativeMethods.close(slaveFd);
+            throw new IOException($"pty resize failed: errno={err}");
         }
 
         var fileActions = Marshal.AllocHGlobal(NativeMethods.PosixSpawnFileActionsSize);

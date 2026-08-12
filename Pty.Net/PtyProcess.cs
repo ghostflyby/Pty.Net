@@ -122,7 +122,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(info);
         return StartCore(info.FileName, info.ResolveArguments(), info.WorkingDirectory, info.Environment,
-            info.StandardInputEncoding, info.StandardOutputEncoding);
+            info.StandardInputEncoding, info.StandardOutputEncoding, info.InitialCols, info.InitialRows);
     }
 
     /// <summary>
@@ -137,16 +137,17 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     public static PtyProcess Start(string file, string[] arguments, string? workingDirectory = null)
     {
         return StartCore(file, arguments, workingDirectory, environment: null,
-            inputEncoding: null, outputEncoding: null);
+            inputEncoding: null, outputEncoding: null, initialCols: 120, initialRows: 30);
     }
 
     private static PtyProcess StartCore(string file, string[] arguments, string? workingDirectory,
-        IDictionary<string, string?>? environment, Encoding? inputEncoding, Encoding? outputEncoding)
+        IDictionary<string, string?>? environment, Encoding? inputEncoding, Encoding? outputEncoding,
+        int initialCols, int initialRows)
     {
         // Platform hook: posix_spawn on Unix, ConPTY (CreatePseudoConsole +
         // CreateProcessW) on Windows.
         return StartPlatform(file, arguments, workingDirectory, environment ?? ParentEnvironment(),
-            inputEncoding, outputEncoding);
+            inputEncoding, outputEncoding, initialCols, initialRows);
     }
 
     /// <summary>
@@ -271,6 +272,28 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     {
         // Platform hook: SIGKILL on Unix, TerminateProcess on Windows.
         KillPlatform();
+    }
+
+    /// <summary>
+    /// Resizes the terminal to <paramref name="columns"/> × <paramref name="rows"/>
+    /// character cells.
+    /// <para>On Unix the kernel delivers SIGWINCH to the child's foreground process
+    /// group, so full-screen programs (vim, htop, readline) re-layout immediately; on
+    /// Windows ConPTY propagates the new size to the attached client.</para>
+    /// </summary>
+    /// <param name="columns">Number of character columns.</param>
+    /// <param name="rows">Number of character rows.</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="columns"/> or <paramref name="rows"/> is less than 1 or exceeds the platform's 16-bit range.</exception>
+    /// <exception cref="ObjectDisposedException">The process is disposed.</exception>
+    /// <exception cref="IOException">The terminal could not be resized.</exception>
+    public void Resize(int columns, int rows)
+    {
+        // Both platforms carry the size in 16-bit fields (ushort winsize / short COORD).
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(columns, nameof(columns));
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(rows, nameof(rows));
+        if (columns > ushort.MaxValue || rows > ushort.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(columns), "Terminal dimensions are limited to 16 bits per axis.");
+        BaseStream.SetWindowSize(columns, rows);
     }
 
     /// <summary>
@@ -412,7 +435,8 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// <summary>Launches the child attached to a pty and returns the new <see cref="PtyProcess"/>.</summary>
     private static partial PtyProcess StartPlatform(
         string file, string[] arguments, string? workingDirectory,
-        IDictionary<string, string?> environment, Encoding? inputEncoding, Encoding? outputEncoding);
+        IDictionary<string, string?> environment, Encoding? inputEncoding, Encoding? outputEncoding,
+        int initialCols, int initialRows);
 
     /// <summary>Terminates the child: SIGKILL on Unix, TerminateProcess on Windows.</summary>
     private partial void KillPlatform();

@@ -12,13 +12,14 @@ public sealed partial class PtyProcess
 {
     private static partial PtyProcess StartPlatform(
         string file, string[] arguments, string? workingDirectory,
-        IDictionary<string, string?> environment, Encoding? inputEncoding, Encoding? outputEncoding)
+        IDictionary<string, string?> environment, Encoding? inputEncoding, Encoding? outputEncoding,
+        int initialCols, int initialRows)
     {
         // ConPTY path: CreatePseudoConsole + CreateProcessW (see WindowsPty.cs). The child
         // attaches to the pseudo console via PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE; no fd,
         // no signals, no waitpid — BCL named-pipe clients carry the parent-side I/O and
         // the process handle drives waiting/termination.
-        var result = WindowsPty.Start(file, arguments, workingDirectory, environment);
+        var result = WindowsPty.Start(file, arguments, workingDirectory, environment, initialCols, initialRows);
         var winStream = new PtyStream(result.InputWrite, result.OutputRead, result.PseudoConsole);
         return new PtyProcess(winStream, result.Pid, inputEncoding, outputEncoding, result.ProcessHandle);
     }

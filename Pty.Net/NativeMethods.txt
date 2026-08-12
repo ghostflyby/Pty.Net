@@ -9,6 +9,7 @@
 # Pseudo console lifecycle
 CreatePseudoConsole
 ClosePseudoConsole
+ResizePseudoConsole
 
 # Process spawn with the pseudoconsole attribute attached
 CreateProcessW
