@@ -34,7 +34,10 @@ jobs:
         run: dotnet build Pty.Net.slnx -c Release --no-restore --nologo
 
       - name: Test
-        run: dotnet test Pty.Net.slnx -c Release --no-build --no-restore --nologo
+        # The blame-hang collector is only meaningful on Windows, where ClosePseudoConsole
+        # can block indefinitely (see PtyProcess.Dispose); if a test ever hangs again it
+        # produces a hang report naming the test instead of a silent 30-minute timeout.
+        run: dotnet test Pty.Net.slnx -c Release --no-build --no-restore --nologo ${{ matrix.os == 'windows-latest' && '--blame-hang --blame-hang-timeout 3m' || '' }}
 
   # Linux 上的 libc 差异由容器矩阵覆盖：同一套 #if LINUX 代码路径要分别在 glibc
   # (sdk:10.0，基于 Ubuntu) 与 musl (sdk:10.0-alpine，基于 Alpine) 上验证。

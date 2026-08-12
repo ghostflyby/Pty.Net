@@ -474,9 +474,15 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
                 NativeMethods.kill(Pid, NativeMethods.Signals.Hup);
             }
 #else
-            // ConPTY has no signals; closing the pseudo console (inside BaseStream.Dispose
-            // below) terminates the attached process tree — the Windows analog of the
-            // SIGHUP-then-close sequence on Unix.
+            // ConPTY has no signals. ClosePseudoConsole (inside BaseStream.Dispose below)
+            // sends CTRL_CLOSE_EVENT and — on Windows before 11 24H2 — waits indefinitely
+            // for the attached clients to disconnect and drain. A still-alive child (an
+            // interactive shell the caller never exited) would block that close forever,
+            // so terminate it first: the client disconnects and the close plus final-frame
+            // drain complete promptly. Exited children are left alone so their final
+            // output is preserved.
+            if (!HasExited && ProcessHandle is not null)
+                WindowsPty.Terminate(ProcessHandle);
 #endif
 
             // Disposing the stream aborts in-flight I/O and releases the terminal channels.
@@ -506,8 +512,8 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
 
     /// <summary>
     /// Asynchronous counterpart of <see cref="Dispose()"/>: the exact same flow
-    /// (SIGHUP → close the master → bounded reap wait) without blocking a thread while
-    /// waiting. Safe to await from async code paths.
+    /// (SIGHUP / terminate the live child → close the terminal → bounded reap wait)
+    /// without blocking a thread while waiting. Safe to await from async code paths.
     /// </summary>
     public async ValueTask DisposeAsync()
     {
@@ -521,6 +527,11 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
 #if !WINDOWS
             if (!HasExited)
                 NativeMethods.kill(Pid, NativeMethods.Signals.Hup);
+#else
+            // See Dispose: a live child would block ClosePseudoConsole's indefinite wait,
+            // so terminate it before closing the stream.
+            if (!HasExited && ProcessHandle is not null)
+                WindowsPty.Terminate(ProcessHandle);
 #endif
 
             BaseStream.Dispose();
