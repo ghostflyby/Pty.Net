@@ -33,10 +33,8 @@ jobs:
       - name: Build
         run: dotnet build Pty.Net.slnx -c Release --no-restore --nologo
 
-      # TEMPORARY: run only the side-by-side ConPTY diagnostic until the zero-output
-      # issue is resolved; then restore the full suite below.
-      - name: Test (diagnostic only — temporary)
-        run: dotnet test Pty.Net.slnx -c Release --no-build --no-restore --nologo --filter "FullyQualifiedName~AaaPtyWindowsDiagnostics"
+      - name: Test
+        run: dotnet test Pty.Net.slnx -c Release --no-build --no-restore --nologo
 
   # Linux 上的 libc 差异由容器矩阵覆盖：同一套 #if LINUX 代码路径要分别在 glibc
   # (sdk:10.0，基于 Ubuntu) 与 musl (sdk:10.0-alpine，基于 Alpine) 上验证。

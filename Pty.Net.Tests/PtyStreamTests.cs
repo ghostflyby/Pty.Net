@@ -188,10 +188,8 @@ public class PtyStreamTests : IDisposable
     /// canceling it throws immediately (a partial advance is acceptable).
     /// The pty is put into non-canonical mode first, because canonical mode discards excess
     /// input instead of applying backpressure, which would let the write complete.
-    /// Unix-only: it relies on stty termios (non-canonical mode) and on cancellation being
-    /// able to interrupt a blocked write. ConPTY supports only synchronous I/O — a blocked
-    /// WriteFile cannot be aborted, and its input queue is not termios-controlled — so the
-    /// scenario does not hold on Windows.
+    /// Unix-only: it relies on stty termios (non-canonical mode). ConPTY's input queue is
+    /// not termios-controlled, so this particular backpressure setup does not hold there.
     /// </summary>
 #if !WINDOWS
     [Fact]

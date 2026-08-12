@@ -1,5 +1,6 @@
 #if WINDOWS
 using System.ComponentModel;
+using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
@@ -11,54 +12,38 @@ using static Windows.Win32.PInvoke;
 
 namespace Ghostflyby.Pty;
 
-/// <summary>Result of a ConPTY-backed spawn: the pipe ends the library owns and the child's process handle/pid.</summary>
+/// <summary>Result of a ConPTY-backed spawn and the resources transferred to the process wrapper.</summary>
 internal sealed record WindowsPtyResult(
-    SafeFileHandle InputWrite,      // write user input to the child's stdin
-    SafeFileHandle OutputRead,      // read the child's merged stdout+stderr
+    NamedPipeClientStream InputWrite,
+    NamedPipeClientStream OutputRead,
     ClosePseudoConsoleSafeHandle PseudoConsole,
     SafeProcessHandle ProcessHandle,
     int Pid);
 
 /// <summary>
-/// Windows/ConPTY launch path. ConPTY (<c>CreatePseudoConsole</c>) creates a virtual console
-/// the child attaches to via <c>PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE</c> in its STARTUPINFOEX;
-/// two anonymous pipes carry the input/output between the parent and the console.
-///
-/// This is the only file that touches CsWin32-generated interop; PtyProcess/PtyStream/PtyReaper
-/// reach Windows behavior through the small helpers here so the generated API surface stays
-/// contained. All interop is generated as [LibraryImport] (build-task mode), so the AOT
-/// analyzers stay clean.
+/// Windows/ConPTY launch path. CsWin32 supplies only the ConPTY and process-control APIs;
+/// <see cref="System.IO.Pipes"/> creates and owns the byte channels used for parent-side I/O.
 /// </summary>
 internal static partial class WindowsPty
 {
-    // PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = 22 (attribute number) | PROC_THREAD_ATTRIBUTE_INPUT (0x20000).
-    // Not present in the CsWin32 metadata, so defined here — same value Microsoft's ConPTY
-    // samples use. Using the wrong value makes CreateProcess silently ignore the attribute
-    // and the child ends up with no console.
+    // PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = 22 | PROC_THREAD_ATTRIBUTE_INPUT (0x20000).
     private const uint ProcThreadAttributePseudoConsole = 0x20016;
-
+    private const int PipeBufferSize = 128 * 1024;
     private const short DefaultCols = 120;
     private const short DefaultRows = 30;
 
-    /// <summary>
-    /// True when the OS provides ConPTY (Windows 10 1809 / build 17763 or later). Guarded by
-    /// a load-time probe rather than an OS-version check so the library stays usable on
-    /// older builds with a clear error instead of an EntryPointNotFoundException.
-    /// </summary>
+    /// <summary>True when the OS exports ConPTY (Windows 10 1809 / build 17763 or later).</summary>
     internal static bool IsSupported { get; } = DetectConPty();
 
     private static bool DetectConPty()
     {
-        var kernel32 = LoadLibrary("kernel32.dll");
-        if (kernel32.IsInvalid)
-            return false;
-        return GetProcAddress(kernel32, "CreatePseudoConsole") != IntPtr.Zero;
+        using var kernel32 = LoadLibrary("kernel32.dll");
+        return !kernel32.IsInvalid && GetProcAddress(kernel32, "CreatePseudoConsole") != IntPtr.Zero;
     }
 
     /// <summary>
-    /// Creates a pseudo console, spawns <paramref name="file"/> attached to it, and returns
-    /// the retained pipe ends plus the child's process handle. Ownership of the returned
-    /// handles transfers to the caller.
+    /// Creates a pseudo console, spawns <paramref name="file"/> attached to it, and transfers
+    /// ownership of the parent pipe ends, pseudo console, and process handle to the caller.
     /// </summary>
     internal static unsafe WindowsPtyResult Start(
         string file, string[] arguments, string? workingDirectory,
@@ -68,136 +53,99 @@ internal static partial class WindowsPty
             throw new PlatformNotSupportedException(
                 "ConPTY (CreatePseudoConsole) requires Windows 10 version 1809 (build 17763) or later.");
 
-        // Two named pipe pairs (node-pty style). Anonymous pipes (CreatePipe) leave the
-        // second-and-later ConPTY session in a process silently producing no output on
-        // Windows Server / CI runners; node-pty's named pipes with 128KB buffers are
-        // reliable for many sessions. The ConPTY gets the server ends; we read/write
-        // through the client ends (CreateFileW).
-        const uint pipeBufferSize = 128 * 1024;
-        const uint pipeOpenMode = 0x0003; // PIPE_ACCESS_INBOUND | PIPE_ACCESS_OUTBOUND
-        const uint pipeMode = 0x0000;     // PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT
-        const uint openExisting = 3;
-
-        var inName = @"\\.\pipe\pty-in-" + Guid.NewGuid().ToString("N");
-        var outName = @"\\.\pipe\pty-out-" + Guid.NewGuid().ToString("N");
-
-        var inServer = CreateNamedPipeW(inName, pipeOpenMode, pipeMode, 1, pipeBufferSize, pipeBufferSize, 30000, null);
-        if (inServer.IsNull)
-            throw new Win32Exception("CreateNamedPipeW (input) failed");
-        var outServer = CreateNamedPipeW(outName, pipeOpenMode, pipeMode, 1, pipeBufferSize, pipeBufferSize, 30000, null);
-        if (outServer.IsNull)
-        {
-            CloseHandle(inServer);
-            throw new Win32Exception("CreateNamedPipeW (output) failed");
-        }
-
-        // Client ends for our I/O; CreateFileW blocks until ConnectNamedPipe pairs up.
-        using var connectIn = Task.Run(() => ConnectNamedPipe(inServer, null));
-        using var connectOut = Task.Run(() => ConnectNamedPipe(outServer, null));
-        var inClient = CreateFileW(inName, 0x40000000 /* GENERIC_WRITE */, 0, null, openExisting, 0, default);
-        if (inClient.IsInvalid)
-        {
-            CloseHandle(inServer);
-            CloseHandle(outServer);
-            throw new Win32Exception("CreateFileW (input client) failed");
-        }
-        var outClient = CreateFileW(outName, 0x80000000 /* GENERIC_READ */, 0, null, openExisting, 0, default);
-        if (outClient.IsInvalid)
-        {
-            CloseHandle(inServer);
-            CloseHandle(outServer);
-            inClient.Dispose();
-            throw new Win32Exception("CreateFileW (output client) failed");
-        }
-        try
-        {
-            if (!connectIn.Wait(TimeSpan.FromSeconds(5)) || !connectOut.Wait(TimeSpan.FromSeconds(5)))
-                throw new Win32Exception("ConnectNamedPipe timed out");
-        }
-        catch (AggregateException ex) when (ex.InnerException is not null)
-        {
-            CloseHandle(inServer);
-            CloseHandle(outServer);
-            inClient.Dispose();
-            outClient.Dispose();
-            throw new Win32Exception($"ConnectNamedPipe failed: {ex.InnerException.Message}");
-        }
-        Trace($"Start: inServer={(long)inServer.Value} outServer={(long)outServer.Value} inClient={(long)inClient.DangerousGetHandle()} outClient={(long)outClient.DangerousGetHandle()}");
-
+        NamedPipeServerStream? inputServer = null;
+        NamedPipeServerStream? outputServer = null;
+        NamedPipeClientStream? inputWrite = null;
+        NamedPipeClientStream? outputRead = null;
         ClosePseudoConsoleSafeHandle? pseudoConsole = null;
-        var attrListPtr = IntPtr.Zero;
+        SafeProcessHandle? processHandle = null;
+
         try
         {
+            // The server handles are synchronous because CreatePseudoConsole does not accept
+            // overlapped handles. Only the parent-side clients perform I/O, so those handles are
+            // asynchronous and PipeStream can use IOCP without dedicated reader/writer threads.
+            var inputName = "pty-in-" + Guid.NewGuid().ToString("N");
+            inputServer = CreateServer(inputName, PipeDirection.In);
+            inputWrite = new NamedPipeClientStream(
+                ".", inputName, PipeDirection.Out, PipeOptions.Asynchronous);
+
+            var outputName = "pty-out-" + Guid.NewGuid().ToString("N");
+            outputServer = CreateServer(outputName, PipeDirection.Out);
+            outputRead = new NamedPipeClientStream(
+                ".", outputName, PipeDirection.In, PipeOptions.Asynchronous);
+
+            // A local client can connect before WaitForConnection is entered; the BCL
+            // explicitly supports that ordering, so no worker task is needed for setup.
+            inputWrite.Connect(5000);
+            inputServer.WaitForConnection();
+            outputRead.Connect(5000);
+            outputServer.WaitForConnection();
+
             var hr = CreatePseudoConsole(
                 new COORD { X = DefaultCols, Y = DefaultRows },
-                inServer,
-                outServer,
+                inputServer.SafePipeHandle,
+                outputServer.SafePipeHandle,
                 0,
                 out pseudoConsole);
             if (hr.Failed)
                 throw new Win32Exception(hr.Value, $"CreatePseudoConsole failed: {hr}");
-            Trace($"CreatePseudoConsole ok hPc={(long)pseudoConsole.DangerousGetHandle()}");
+            if (pseudoConsole is null || pseudoConsole.IsInvalid)
+                throw new Win32Exception("CreatePseudoConsole returned an invalid pseudo-console handle");
 
-            // The pseudo console owns the server ends; the client ends carry our I/O.
-            CloseHandle(inServer);
-            CloseHandle(outServer);
+            // CreatePseudoConsole has retained what it needs. Closing our copies ensures the
+            // client sides observe EOF when the pseudo console releases its copies.
+            inputServer.Dispose();
+            inputServer = null;
+            outputServer.Dispose();
+            outputServer = null;
 
-            // STARTUPINFOEX with the pseudoconsole attribute. Get the required size with a
-            // first call, allocate, then initialize.
             var startupInfo = new STARTUPINFOEXW();
             startupInfo.StartupInfo.cb = (uint)Marshal.SizeOf<STARTUPINFOEXW>();
-            // Both reference implementations (Microsoft MiniTerm, Porta.Pty) set
-            // STARTF_USESTDHANDLES; without it the child's stdio is not wired to the
-            // pseudoconsole pipes and the child's output never reaches them.
             startupInfo.StartupInfo.dwFlags = STARTUPINFOW_FLAGS.STARTF_USESTDHANDLES;
 
-            const uint attributeCount = 1;
-            nuint size = 0;
-            if (InitializeProcThreadAttributeList(default, attributeCount, ref size) || size == 0)
-                throw new Win32Exception("InitializeProcThreadAttributeList (size query) failed");
-
-            attrListPtr = Marshal.AllocHGlobal((int)size);
-            startupInfo.lpAttributeList = new LPPROC_THREAD_ATTRIBUTE_LIST(attrListPtr);
-            if (!InitializeProcThreadAttributeList(startupInfo.lpAttributeList, attributeCount, ref size))
-                throw new Win32Exception("InitializeProcThreadAttributeList failed");
-
-            if (!UpdateProcThreadAttribute(
-                    startupInfo.lpAttributeList,
-                    0,
-                    ProcThreadAttributePseudoConsole,
-                    (void*)pseudoConsole.DangerousGetHandle(),
-                    (nuint)Marshal.SizeOf<IntPtr>(),
-                    null,
-                    null))
-                throw new Win32Exception("UpdateProcThreadAttribute failed");
-
-            // Command line: "app" + arguments. CreateProcessW takes a single mutable
-            // Unicode string; arguments arrive already split, so they are joined with
-            // space separators (each already quoted by the caller where needed).
-            var commandLine = BuildCommandLine(file, arguments);
-
-            // Unicode environment block: KEY=VALUE\0 pairs, ends with an extra \0.
-            // TERM is injected (ConPTY child shells like bash in Git Bash use it).
-            var envBlock = BuildEnvironmentBlock(environment);
-
-            PROCESS_INFORMATION processInfo;
-            var processHandle = default(SafeProcessHandle);
+            var attrListPtr = IntPtr.Zero;
+            var attrListInitialized = false;
+            PROCESS_INFORMATION processInfo = default;
             var success = false;
             try
             {
+                const uint attributeCount = 1;
+                nuint size = 0;
+                if (InitializeProcThreadAttributeList(default, attributeCount, ref size) || size == 0)
+                    throw new Win32Exception("InitializeProcThreadAttributeList (size query) failed");
+
+                attrListPtr = Marshal.AllocHGlobal(checked((int)size));
+                startupInfo.lpAttributeList = new LPPROC_THREAD_ATTRIBUTE_LIST(attrListPtr);
+                if (!InitializeProcThreadAttributeList(startupInfo.lpAttributeList, attributeCount, ref size))
+                    throw new Win32Exception("InitializeProcThreadAttributeList failed");
+                attrListInitialized = true;
+
+                if (!UpdateProcThreadAttribute(
+                        startupInfo.lpAttributeList,
+                        0,
+                        ProcThreadAttributePseudoConsole,
+                        (void*)pseudoConsole.DangerousGetHandle(),
+                        (nuint)Marshal.SizeOf<IntPtr>(),
+                        null,
+                        null))
+                    throw new Win32Exception("UpdateProcThreadAttribute failed");
+
+                var commandLine = BuildCommandLine(file, arguments);
+                var envBlock = BuildEnvironmentBlock(environment);
                 fixed (char* cmdLinePtr = commandLine)
                 fixed (char* cwdPtr = workingDirectory)
                 fixed (byte* envPtr = envBlock)
                 {
                     success = CreateProcess(
-                        default,   // lpApplicationName (the command line carries the exe)
+                        default,
                         (PWSTR)cmdLinePtr,
-                        null,      // lpProcessAttributes
-                        null,      // lpThreadAttributes
-                        false,     // bInheritHandles — ConPTY wires the child's stdio itself
+                        null,
+                        null,
+                        false,
                         PROCESS_CREATION_FLAGS.EXTENDED_STARTUPINFO_PRESENT |
                         PROCESS_CREATION_FLAGS.CREATE_UNICODE_ENVIRONMENT,
-                        envPtr,    // lpEnvironment
+                        envPtr,
                         (PCWSTR)cwdPtr,
                         (STARTUPINFOW*)&startupInfo,
                         &processInfo);
@@ -205,9 +153,7 @@ internal static partial class WindowsPty
             }
             finally
             {
-                // The attribute list is consumed by the child during CreateProcess; free it
-                // immediately, matching Porta.Pty (the child duplicates what it needs).
-                if (!startupInfo.lpAttributeList.IsNull)
+                if (attrListInitialized)
                     DeleteProcThreadAttributeList(startupInfo.lpAttributeList);
                 if (attrListPtr != IntPtr.Zero)
                     Marshal.FreeHGlobal(attrListPtr);
@@ -220,41 +166,54 @@ internal static partial class WindowsPty
             if (processInfo.hThread != 0)
                 new SafeFileHandle(processInfo.hThread, ownsHandle: true).Dispose();
 
-            return new WindowsPtyResult(inClient, outClient, pseudoConsole, processHandle, (int)processInfo.dwProcessId);
+            var result = new WindowsPtyResult(
+                inputWrite!, outputRead!, pseudoConsole, processHandle, (int)processInfo.dwProcessId);
+
+            inputWrite = null;
+            outputRead = null;
+            pseudoConsole = null;
+            processHandle = null;
+            return result;
         }
-        catch
+        finally
         {
-            // Server ends are closed by the caller paths above on failure; here we only
-            // own the client ends and the pseudo console.
-            inClient.Dispose();
-            outClient.Dispose();
+            inputServer?.Dispose();
+            outputServer?.Dispose();
+            inputWrite?.Dispose();
+            outputRead?.Dispose();
             pseudoConsole?.Dispose();
-            throw;
+            processHandle?.Dispose();
         }
     }
 
-    /// <summary>Terminates the child (ConPTY has no signals; ClosePseudoConsole would also terminate the tree).</summary>
+    private static NamedPipeServerStream CreateServer(string name, PipeDirection direction)
+    {
+        return new NamedPipeServerStream(
+            name,
+            direction,
+            maxNumberOfServerInstances: 1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.None,
+            PipeBufferSize,
+            PipeBufferSize);
+    }
+
+    /// <summary>Terminates the child (ConPTY has no signals).</summary>
     internal static void Terminate(SafeProcessHandle processHandle)
     {
         if (!processHandle.IsInvalid)
             TerminateProcess(processHandle, 1);
     }
 
-    /// <summary>
-    /// Windows reaper step: non-blocking wait on the process handle; on exit, fetches the
-    /// real exit code (no wait-status/signal encoding on Windows).
-    /// </summary>
+    /// <summary>Non-blocking process-handle reap step with the real Windows exit code.</summary>
     internal static bool TryReap(SafeProcessHandle processHandle, out int exitCode)
     {
         exitCode = -1;
         if (processHandle.IsInvalid)
             return false;
-        if (WaitForSingleObject(processHandle, 0) != 0) // WAIT_OBJECT_0
+        if (WaitForSingleObject(processHandle, 0) != 0)
             return false;
-        if (!GetExitCodeProcess(processHandle, out var code))
-            exitCode = -1;
-        else
-            exitCode = (int)code;
+        exitCode = GetExitCodeProcess(processHandle, out var code) ? (int)code : -1;
         return true;
     }
 
@@ -270,8 +229,6 @@ internal static partial class WindowsPty
         return sb.ToString();
     }
 
-    // Quotes a command-line token per Windows rules: wrap in quotes if it contains spaces
-    // or quotes, escaping embedded quotes with backslashes (CreateProcessW parsing).
     private static void AppendQuoted(StringBuilder sb, string token)
     {
         if (!token.Any(c => c is ' ' or '\t' or '"'))
@@ -279,6 +236,7 @@ internal static partial class WindowsPty
             sb.Append(token);
             return;
         }
+
         sb.Append('"');
         var backslashes = 0;
         foreach (var c in token)
@@ -309,17 +267,11 @@ internal static partial class WindowsPty
         foreach (var kv in environment.OrderBy(k => k.Key, StringComparer.OrdinalIgnoreCase))
         {
             if (kv.Key.Contains('='))
-                continue; // invalid key
+                continue;
             sb.Append(kv.Key).Append('=').Append(kv.Value ?? string.Empty).Append('\0');
         }
-        sb.Append('\0'); // the block is terminated by a final empty string
+        sb.Append('\0');
         return Encoding.Unicode.GetBytes(sb.ToString());
     }
-
-    // TEMPORARY diagnostic helpers (removed once the multi-session issue is resolved).
-    private static readonly System.Collections.Concurrent.ConcurrentQueue<string> DebugLog = new();
-    private static void Trace(string message) => DebugLog.Enqueue(message);
-    internal static string GetDebugLog() => string.Join("\n", DebugLog);
-    internal static void Diag(string message) => DebugLog.Enqueue(message);
 }
 #endif

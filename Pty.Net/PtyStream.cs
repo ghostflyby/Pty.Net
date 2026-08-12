@@ -10,10 +10,9 @@ namespace Ghostflyby.Pty;
 ///    thread, cancellation never has to abort a blocked syscall, partial reads return
 ///    whatever is available once readable, and EOF is reported promptly when the slave
 ///    side goes away).
-///  * <c>PtyStream.Windows.cs</c> — two ConPTY pipe handles (input-write / output-read),
-///    synchronous I/O (ConPTY does not support overlapped I/O). A per-stream reader
-///    thread pumps data into pending async reads / the internal buffer; writes run on
-///    a per-stream writer thread. No thread-pool thread is ever parked.
+///  * <c>PtyStream.Windows.cs</c> — two parent-side named-pipe clients (input-write /
+///    output-read) opened for overlapped I/O. The BCL pipe streams provide cancellable
+///    sync and async operations through IOCP; no per-session I/O threads are needed.
 /// </summary>
 public sealed partial class PtyStream : Stream
 {

@@ -21,9 +21,9 @@ namespace Ghostflyby.Pty;
 ///
 /// On Unix the master fd is non-blocking and all I/O is driven by poll(2) through
 /// <see cref="PtyIoEngine"/>, so no operation ever blocks a thread-pool thread and
-/// cancellation is immediate. On Windows the ConPTY channels run on per-stream
-/// background threads (ConPTY does not support overlapped I/O), keeping the same
-/// no-thread-pool-starvation property.
+/// cancellation is immediate. On Windows, ConPTY receives synchronous named-pipe server
+/// handles while the parent uses asynchronous BCL pipe clients, so its I/O is driven by
+/// overlapped operations without per-session worker threads.
 ///
 /// The process-control surface is async-capable too: <see cref="WaitForExitAsync(CancellationToken)"/>
 /// waits without occupying a thread, <see cref="DisposeAsync"/> mirrors
@@ -145,8 +145,8 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
 #if WINDOWS
         // ConPTY path: CreatePseudoConsole + CreateProcessW (see WindowsPty.cs). The child
         // attaches to the pseudo console via PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE; no fd,
-        // no signals, no waitpid — the pipe ends carry the I/O and the process handle
-        // drives waiting/termination.
+        // no signals, no waitpid — BCL named-pipe clients carry the parent-side I/O and
+        // the process handle drives waiting/termination.
         var result = WindowsPty.Start(file, arguments, workingDirectory, environment ?? ParentEnvironment());
         var winStream = new PtyStream(result.InputWrite, result.OutputRead, result.PseudoConsole);
         return new PtyProcess(winStream, result.Pid, inputEncoding, outputEncoding, result.ProcessHandle);
@@ -437,9 +437,10 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
             // SIGHUP-then-close sequence on Unix.
 #endif
 
-            // Disposing the stream aborts any in-flight async operations and closes the
-            // master fd (the engine defers the close until its last ref is released, so
-            // no fd is ever closed while still being polled).
+            // Disposing the stream aborts in-flight I/O and releases the terminal channels.
+            // On Windows it keeps an async output drain active while ClosePseudoConsole
+            // emits its final frame; on Unix the engine defers fd close until its last
+            // operation reference is released.
             BaseStream.Dispose();
 
             // Bounded wait for the reaper to collect the child. If it has not exited by
