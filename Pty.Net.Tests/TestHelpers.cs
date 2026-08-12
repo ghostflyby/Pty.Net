@@ -67,7 +67,10 @@ internal static class TestBash
     public static (string File, string[] Args) SleepProcess(double seconds)
     {
 #if WINDOWS
-        return ("powershell.exe", ["-Command", $"Start-Sleep -Seconds {seconds:0.##}"]);
+        // A fresh powershell per session is heavy (and its startup churn perturbs the
+        // thread-pool accounting in the no-starvation tests); cmd + ping is much lighter.
+        // ping 127.0.0.1 replies roughly once a second, so n pings ≈ n seconds.
+        return ("cmd.exe", ["/c", $"ping -n {Math.Max(2, (int)seconds + 1)} 127.0.0.1 >nul"]);
 #else
         return ("/bin/sleep", [seconds.ToString(CultureInfo.InvariantCulture)]);
 #endif

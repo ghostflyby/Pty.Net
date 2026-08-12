@@ -83,7 +83,15 @@ public class PtyProcessAsyncTests
             _ = all[i].WaitForExitAsync(System.Threading.Timeout.InfiniteTimeSpan);
         }
 
+        // Windows launches one child process per session (cmd/ping — lighter than
+        // /bin/sleep's peer powershell, but still heavier than the Unix sleep), so let
+        // the startup churn settle before measuring; the sessions stay alive (sleep
+        // 1000 s) throughout, and the wait itself holds no thread.
+#if WINDOWS
+        await Task.Delay(1500);
+#else
         await Task.Delay(300);
+#endif
         ThreadPool.GetAvailableThreads(out var workersDuring, out _);
 
         foreach (var p in all)

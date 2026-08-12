@@ -315,7 +315,6 @@ public sealed partial class PtyStream
         try
         {
             pseudoConsole.Dispose();
-            ObservePump(pumpTask);
         }
         catch
         {
@@ -324,6 +323,13 @@ public sealed partial class PtyStream
         }
         finally
         {
+            // On Windows 11 24H2+ ClosePseudoConsole returns immediately and the output
+            // pipe is not guaranteed to deliver EOF on its own; cancel the pump so the
+            // close is deterministic instead of relying on pipe EOF timing. (On older
+            // Windows the final frame is drained inside the ClosePseudoConsole call above,
+            // so canceling afterwards cannot truncate it.)
+            pumpCancellation.Cancel();
+            ObservePump(pumpTask);
             consoleCloseCompletion.TrySetResult(true);
         }
     }
