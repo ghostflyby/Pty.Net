@@ -296,11 +296,17 @@ internal static partial class NativeMethods
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int kill(int pid, Signals sig);
 
+    internal static int poll(Span<PollFd> fds, int timeout)
+    {
+        return poll(fds, (nuint)fds.Length, timeout);
+    }
+
     // poll(2) takes a pointer so callers can pass a stackalloc'd PollFd span (pinned
     // with fixed): a PollFd[] overload would allocate a fresh one-element heap array
-    // on every sync read/write and every engine wake.
+    // on every sync read/write and every engine wake. The span is mutable because poll
+    // rewrites each entry's Revents in place.
     [LibraryImport("libc", SetLastError = true)]
-    internal static partial int poll(IntPtr fds, nuint nfds, int timeout);
+    private static partial int poll(Span<PollFd> fds, nuint nfds, int timeout);
 
     // Byte transfer for PtyStream: raw read(2)/write(2) on the non-blocking pty master
     // fd. Callers pin the buffer (MemoryHandle / fixed) and pass the raw pointer, so a

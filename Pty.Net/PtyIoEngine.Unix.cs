@@ -83,6 +83,7 @@ internal static class PtyIoEngine
             return;
         Thread.Value.Post(new Control(ControlKind.CancelHandle, handle: handle));
     }
+
     private static void EnsureStarted() => _ = Thread.Value;
 
     private static Task<int> Enqueue(SafeFileHandle handle, OperationKind kind, ReadOnlyMemory<byte> buffer,
@@ -128,18 +129,11 @@ internal static class PtyIoEngine
     /// once, read once, and never aliased or identity-compared, so storing it by value
     /// in the channel (no boxing) avoids a heap allocation per async operation.
     /// </summary>
-    private readonly struct Control
+    private readonly struct Control(ControlKind kind, Operation? op = null, SafeFileHandle? handle = null)
     {
-        public readonly ControlKind Kind;
-        public readonly Operation? Op;
-        public readonly SafeFileHandle? Handle;
-
-        public Control(ControlKind kind, Operation? op = null, SafeFileHandle? handle = null)
-        {
-            Kind = kind;
-            Op = op;
-            Handle = handle;
-        }
+        public readonly ControlKind Kind = kind;
+        public readonly Operation? Op = op;
+        public readonly SafeFileHandle? Handle = handle;
     }
 
     /// <summary>
@@ -249,21 +243,14 @@ internal static class PtyIoEngine
         /// </summary>
         private void Wake()
         {
-            // Stack-allocated one-element poll set: a fresh PollFd[] per wake would
-            // allocate for every async op enqueued and every cancellation.
-            Span<NativeMethods.PollFd> pollFds = stackalloc NativeMethods.PollFd[1];
-            pollFds[0] = new NativeMethods.PollFd { Fd = wakeWrite, Events = NativeMethods.PollEvents.Pollout };
+            // A collection expression is fine here: only the poll return value matters,
+            // the copied Revents is never read back.
+            var pollFd = new NativeMethods.PollFd { Fd = wakeWrite, Events = NativeMethods.PollEvents.Pollout };
             int r;
-            unsafe
+            do
             {
-                fixed (NativeMethods.PollFd* p = pollFds)
-                {
-                    do
-                    {
-                        r = NativeMethods.poll((IntPtr)p, 1, -1);
-                    } while (r < 0 && Marshal.GetLastPInvokeError() == Eintr);
-                }
-            }
+                r = NativeMethods.poll([pollFd], -1);
+            } while (r < 0 && Marshal.GetLastPInvokeError() == Eintr);
 
             if (r > 0)
                 _ = NativeMethods.write(wakeWrite, wakeBufPtr, 1);
@@ -286,17 +273,14 @@ internal static class PtyIoEngine
                 BuildPollSet();
 
                 int r;
-                unsafe
+                do
                 {
-                    // The poll set is a reused field; fixed pins it for the syscall.
-                    fixed (NativeMethods.PollFd* p = pollFds)
-                    {
-                        do
-                        {
-                            r = NativeMethods.poll((IntPtr)p, (nuint)pollCount, PollSafetyTimeoutMs);
-                        } while (r < 0 && Marshal.GetLastPInvokeError() == Eintr);
-                    }
-                }
+                    // The poll set is a reused field: BuildPollSet fills only
+                    // [0, pollCount), so poll exactly that range — passing the whole
+                    // array would poll stale entries left over from a larger previous
+                    // iteration (closed or reused fds), corrupting results and latency.
+                    r = NativeMethods.poll(pollFds.AsSpan(0, pollCount), PollSafetyTimeoutMs);
+                } while (r < 0 && Marshal.GetLastPInvokeError() == Eintr);
 
                 if (r < 0)
                     throw new IOException($"Pty.Net poll failed: errno={Marshal.GetLastPInvokeError()}");
@@ -316,7 +300,8 @@ internal static class PtyIoEngine
                     var kind = (pollFds[i].Events & NativeMethods.PollEvents.Pollin) != 0
                         ? OperationKind.Read
                         : OperationKind.Write;
-                    if (!slots.TryGetValue((pollFds[i].Fd, kind), out var slot) || slot.Current is not { Done: false } op)
+                    if (!slots.TryGetValue((pollFds[i].Fd, kind), out var slot) ||
+                        slot.Current is not { Done: false } op)
                         continue;
                     Dispatch(op, revents);
                 }
@@ -362,7 +347,8 @@ internal static class PtyIoEngine
                 // while other ops hold refs, so IsClosed alone cannot detect this.)
                 if (canceledHandles.TryGetValue(op.Handle, out _))
                 {
-                    Complete(op, OpStatus.Failed, 0, new ObjectDisposedException("PtyStream", "The pty stream was disposed."));
+                    Complete(op, OpStatus.Failed, 0,
+                        new ObjectDisposedException("PtyStream", "The pty stream was disposed."));
                     return;
                 }
 
@@ -483,7 +469,7 @@ internal static class PtyIoEngine
             canceledHandles.AddOrUpdate(handle, Sentinel.Value);
         }
 
-        private sealed class Sentinel
+        private static class Sentinel
         {
             internal static readonly object Value = new();
         }
@@ -664,22 +650,16 @@ internal static class PtyIoEngine
         /// <summary>Reads the wake pipe without ever blocking (poll(0) then read).</summary>
         private void DrainWakePipe()
         {
-            // Stack-allocated poll set, reused across the loop's iterations.
-            Span<NativeMethods.PollFd> pollFds = stackalloc NativeMethods.PollFd[1];
-            pollFds[0] = new NativeMethods.PollFd { Fd = wakeRead, Events = NativeMethods.PollEvents.Pollin };
+            // A collection expression is fine here: only the poll return value matters,
+            // the copied Revents is never read back.
+            var pollFd = new NativeMethods.PollFd { Fd = wakeRead, Events = NativeMethods.PollEvents.Pollin };
             while (true)
             {
                 int r;
-                unsafe
+                do
                 {
-                    fixed (NativeMethods.PollFd* p = pollFds)
-                    {
-                        do
-                        {
-                            r = NativeMethods.poll((IntPtr)p, 1, 0);
-                        } while (r < 0 && Marshal.GetLastPInvokeError() == Eintr);
-                    }
-                }
+                    r = NativeMethods.poll([pollFd], 0);
+                } while (r < 0 && Marshal.GetLastPInvokeError() == Eintr);
 
                 if (r <= 0)
                     return; // no (more) wake bytes

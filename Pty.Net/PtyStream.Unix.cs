@@ -240,6 +240,7 @@ public sealed partial class PtyStream
                 rc = NativeMethods.IoCtl(fd, NativeMethods.Tiocswinsz, (IntPtr)p);
             }
         }
+
         if (rc != 0)
             throw new IOException($"pty resize failed: errno={Marshal.GetLastPInvokeError()}");
     }
@@ -266,17 +267,16 @@ public sealed partial class PtyStream
     /// Returns true when the events fired; false on timeout. HUP/ERR are reported through
     /// <paramref name="revents"/> so callers can distinguish "slave gone" from plain EAGAIN.
     /// </summary>
-    private static bool WaitForPoll(int fd, NativeMethods.PollEvents events, int timeoutMs, out NativeMethods.PollEvents revents)
+    private static bool WaitForPoll(int fd, NativeMethods.PollEvents events, int timeoutMs,
+        out NativeMethods.PollEvents revents)
     {
         var deadline = timeoutMs < 0 ? DateTime.MaxValue : DateTime.UtcNow + TimeSpan.FromMilliseconds(timeoutMs);
 
-        // Stack-allocated one-element poll set: a fresh PollFd[] per call would
-        // allocate on every sync read/write. poll rewrites Revents in place, and the
-        // EINTR-retry loop below must observe that value. Typed stackalloc keeps the
-        // element naturally aligned (PollFd is int + 2 x short), so no manual
-        // alignment is needed.
-        Span<NativeMethods.PollFd> pollFds = stackalloc NativeMethods.PollFd[1];
-        pollFds[0] = new NativeMethods.PollFd { Fd = fd, Events = events };
+        // One-element span over the local (not a collection expression): poll rewrites
+        // Revents in place through the span, so the very struct below sees it. `[pollFd]`
+        // would copy the struct into a fresh span, losing the kernel's write.
+        var pollFd = new NativeMethods.PollFd { Fd = fd, Events = events };
+        Span<NativeMethods.PollFd> pollFds = new(ref pollFd);
 
         while (true)
         {
@@ -285,23 +285,17 @@ public sealed partial class PtyStream
                 : (int)Math.Max(0, Math.Min((deadline - DateTime.UtcNow).TotalMilliseconds, int.MaxValue));
 
             int r;
-            unsafe
+            do
             {
-                fixed (NativeMethods.PollFd* p = pollFds)
-                {
-                    do
-                    {
-                        r = NativeMethods.poll((IntPtr)p, 1, remainingMs);
-                    } while (r < 0 && Marshal.GetLastPInvokeError() == NativeMethods.Eintr);
-                }
-            }
+                r = NativeMethods.poll(pollFds, remainingMs);
+            } while (r < 0 && Marshal.GetLastPInvokeError() == NativeMethods.Eintr);
 
             switch (r)
             {
                 case < 0:
                     throw new IOException($"poll failed: errno={Marshal.GetLastPInvokeError()}");
                 case > 0:
-                    revents = pollFds[0].Revents;
+                    revents = pollFd.Revents;
                     return true;
             }
 
