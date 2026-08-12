@@ -9,6 +9,15 @@ using Windows.Win32.System.Console;
 using Windows.Win32.System.Threading;
 using static Windows.Win32.PInvoke;
 
+// CA1416 (platform compatibility) is a structural false positive here: the analyzer only
+// understands platform expressed via TFM/RID or [SupportedOSPlatform], not this repo's
+// single-TFM + file-glob splitting, so it flags these Windows-only P/Invoke calls as
+// "reachable on all platforms". The class below is compiled only on Windows (csproj
+// glob), and the [SupportedOSPlatform] route is unusable because partial classes share
+// annotations across files (public PtyProcess/PtyStream would become Windows-only).
+// Scoped to this one file; every other file keeps warnings-as-errors.
+#pragma warning disable CA1416
+
 namespace Ghostflyby.Pty;
 
 /// <summary>Result of a ConPTY-backed spawn and the resources transferred to the process wrapper.</summary>
