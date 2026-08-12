@@ -33,6 +33,31 @@ jobs:
       - name: Build
         run: dotnet build Pty.Net.slnx -c Release --no-restore --nologo
 
+      - name: Verify platform split in the built DLL (Windows)
+        # Ghostflyby.Pty.dll is a single-TFM artifact whose platform code is chosen at
+        # compile time by the csproj file globs (Pty.Net.csproj). Type names are plain
+        # UTF-8 in the metadata, so checking for their presence/absence proves this
+        # build did not mix — or silently strip — the Windows and Unix halves.
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $text = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes('Pty.Net/bin/Release/net10.0/Ghostflyby.Pty.dll'))
+          if (-not $text.Contains('WindowsPty')) { throw "Windows build is missing the ConPTY path" }
+          if ($text.Contains('PtyIoEngine'))     { throw "Windows build contains the Unix I/O engine" }
+
+      - name: Verify platform split in the built DLL (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          dll=Pty.Net/bin/Release/net10.0/Ghostflyby.Pty.dll
+          if grep -a -q 'WindowsPty' "$dll"; then
+            echo "error: Unix build contains the Windows ConPTY path"
+            exit 1
+          fi
+          if ! grep -a -q 'PtyIoEngine' "$dll"; then
+            echo "error: Unix build is missing the poll-driven I/O engine"
+            exit 1
+          fi
+
       - name: Test
         # The blame-hang collector is only meaningful on Windows, where ClosePseudoConsole
         # can block indefinitely (see PtyProcess.Dispose); if a test ever hangs again it
