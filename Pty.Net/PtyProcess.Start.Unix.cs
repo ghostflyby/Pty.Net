@@ -196,7 +196,7 @@ public sealed partial class PtyProcess
 
     /// <summary>
     /// Non-blocking drain: reads whatever output is currently available and discards it.
-    /// Used by <see cref="WaitForExit"/> so the child never blocks on a full pty buffer
+    /// Used by <see cref="WaitForExit(TimeSpan)"/> so the child never blocks on a full pty buffer
     /// while nobody is reading.
     /// </summary>
     private partial void DrainOutput()

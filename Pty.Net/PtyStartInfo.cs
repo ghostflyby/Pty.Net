@@ -6,46 +6,44 @@ using System.Text;
 namespace Ghostflyby.Pty;
 
 /// <summary>
-/// Describes how to launch a child process inside a pseudo-terminal. Mirrors the
-/// commonly used subset of <see cref="ProcessStartInfo"/> (which is sealed and cannot
-/// be extended); a <see cref="ProcessStartInfo"/> can be converted with
-/// <see cref="PtyStartInfo(ProcessStartInfo)"/>, so existing launch code ports by
-/// changing only the factory call. Everything the PTY launch does not map to
-/// (<c>RedirectStandardOutput</c>, <c>UseShellExecute</c>, …) is deliberately absent.
+/// Describes how to launch a child process inside a pseudo-terminal.
+/// <para>
+/// Mirrors the commonly used subset of <see cref="ProcessStartInfo"/> and accepts one
+/// directly via <see cref="PtyStartInfo(ProcessStartInfo)"/>, so existing launch code
+/// ports by changing only the factory call. Features that do not map to a pty launch
+/// (<c>RedirectStandardOutput</c>, <c>UseShellExecute</c>, …) are deliberately absent.
+/// </para>
 /// </summary>
 public sealed record PtyStartInfo
 {
-    /// <summary>The executable to run, e.g. <c>/bin/bash</c>.</summary>
+    /// <summary>The executable to run, e.g. <c>/bin/bash</c> or <c>cmd.exe</c>.</summary>
     public required string FileName { get; init; }
 
-    /// <summary>Explicit argument list.</summary>
+    /// <summary>Arguments passed to <see cref="FileName"/>.</summary>
     public IReadOnlyList<string> ArgumentList { get; init; } = ImmutableArray<string>.Empty;
 
-    /// <summary>Initial working directory of the child; the parent's when null.</summary>
+    /// <summary>Initial working directory of the child; defaults to the parent's current directory.</summary>
     public string WorkingDirectory { get; init; } = System.Environment.CurrentDirectory;
 
     /// <summary>
-    /// Encoding used to encode text written to <see cref="PtyProcess.StandardInput"/>,
-    /// like <see cref="ProcessStartInfo.StandardInputEncoding"/>. Null means UTF-8
-    /// (the terminal default on both macOS and Linux).
+    /// Encoding used to encode text written to <see cref="PtyProcess.StandardInput"/>.
+    /// <para>Defaults to UTF-8.</para>
     /// </summary>
     public Encoding StandardInputEncoding { get; init; } = Encoding.UTF8;
 
     /// <summary>
-    /// Encoding used to decode the child's output read from <see cref="PtyProcess.StandardOutput"/>,
-    /// like <see cref="ProcessStartInfo.StandardOutputEncoding"/>. Null means UTF-8.
-    /// (A pty merges stdout and stderr, so there is no separate stderr encoding.)
+    /// Encoding used to decode text read from <see cref="PtyProcess.StandardOutput"/>.
+    /// <para>Defaults to UTF-8.</para>
     /// </summary>
     public Encoding? StandardOutputEncoding { get; init; } = Encoding.UTF8;
 
-    private readonly Lazy<IDictionary<string, string?>> env = new(SnapshotParentEnvironment);
-
     /// <summary>
-    /// Environment of the child. Lazily initialized to a copy of the parent's
-    /// environment on first access (like <see cref="ProcessStartInfo.Environment"/>),
-    /// so an untouched info inherits the current environment.
+    /// Environment variables passed to the child.
+    /// <para>Defaults to a copy of the parent's environment.</para>
     /// </summary>
     public IDictionary<string, string?> Environment => env.Value;
+
+    private readonly Lazy<IDictionary<string, string?>> env = new(SnapshotParentEnvironment);
 
     /// <summary>A snapshot of the parent's environment, shared by <see cref="PtyProcess"/> for launches without an explicit one.</summary>
     internal static Dictionary<string, string?> SnapshotParentEnvironment()
@@ -56,11 +54,13 @@ public sealed record PtyStartInfo
         return env;
     }
 
-    /// <summary>An empty launch description (set <see cref="FileName"/> before starting).</summary>
+    /// <summary>Creates an empty launch description; set <see cref="FileName"/> before starting.</summary>
     public PtyStartInfo()
     {
     }
 
+    /// <summary>Creates a launch description for <paramref name="fileName"/>.</summary>
+    /// <param name="fileName">The executable to run (see <see cref="FileName"/>).</param>
     [SetsRequiredMembers]
     public PtyStartInfo(string fileName)
     {
@@ -68,11 +68,11 @@ public sealed record PtyStartInfo
     }
 
     /// <summary>
-    /// Copies <see cref="ProcessStartInfo.FileName"/>, <c>Arguments</c>/<c>ArgumentList</c>,
-    /// <see cref="ProcessStartInfo.WorkingDirectory"/>, <c>Environment</c> and the standard
-    /// stream encodings from <paramref name="psi"/>, so an existing
-    /// <c>ProcessStartInfo</c> can be reused as-is for a PTY launch.
+    /// Creates a launch description from <paramref name="psi"/>.
+    /// <para>Copies the file name, arguments, working directory, environment and stream encodings.</para>
     /// </summary>
+    /// <param name="psi">The <see cref="ProcessStartInfo"/> to copy.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="psi"/> is null.</exception>
     [SetsRequiredMembers]
     public PtyStartInfo(ProcessStartInfo psi)
     {

@@ -3,12 +3,10 @@ using Windows.Win32;
 
 namespace Ghostflyby.Pty;
 
-/// <summary>
-/// Windows half of <see cref="PtyStream"/>. A single overlapped BCL read pump owns the
-/// ConPTY output pipe and publishes bytes into a bounded managed buffer. User reads consume
-/// only that buffer, so final-frame draining never races or steals bytes from callers.
-/// Windows-only: compiled only by the Windows target (see csproj).
-/// </summary>
+// Windows half of PtyStream: a single overlapped BCL read pump owns the ConPTY output
+// pipe and publishes bytes into a bounded managed buffer. User reads consume only that
+// buffer, so final-frame draining never races or steals bytes from callers. Windows-only:
+// compiled only by the Windows target (see csproj).
 public sealed partial class PtyStream
 {
     private const int ReadChunkSize = 16 * 1024;
@@ -46,12 +44,23 @@ public sealed partial class PtyStream
 
     internal bool IsClosed => Volatile.Read(ref disposed) != 0;
 
+    /// <summary>There is no user-space buffering, so this does nothing beyond checking the stream is open.</summary>
     public override void Flush()
     {
         ThrowIfDisposed();
         inputWrite.Flush();
     }
 
+    /// <summary>
+    /// Reads up to <paramref name="target"/>.Length bytes, blocking until at least one
+    /// byte is available.
+    /// <br/>
+    /// Returns the number of bytes actually read (not necessarily the buffer length),
+    /// or 0 at end of stream.
+    /// </summary>
+    /// <param name="target">The buffer to fill.</param>
+    /// <returns>The number of bytes read, or 0 at end of stream.</returns>
+    /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
     public override int Read(Span<byte> target)
     {
         return target.IsEmpty ? 0 : Read(target, Timeout.Infinite, out _);
@@ -114,6 +123,17 @@ public sealed partial class PtyStream
         }
     }
 
+    /// <summary>
+    /// Asynchronously reads up to <paramref name="target"/>.Length bytes, completing as
+    /// soon as data is available.
+    /// <br/>
+    /// Returns the number of bytes read, or 0 at end of stream.
+    /// </summary>
+    /// <param name="target">The buffer to fill.</param>
+    /// <param name="cancellationToken">Canceled to abort the pending read.</param>
+    /// <returns>The number of bytes read, or 0 at end of stream.</returns>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> is canceled before any data was read.</exception>
+    /// <exception cref="ObjectDisposedException">The stream is disposed while the read is pending.</exception>
     public override async ValueTask<int> ReadAsync(
         Memory<byte> target,
         CancellationToken cancellationToken = default)
@@ -163,6 +183,13 @@ public sealed partial class PtyStream
         }
     }
 
+    /// <summary>
+    /// Writes all of <paramref name="source"/>, blocking as needed while the child
+    /// drains the terminal.
+    /// </summary>
+    /// <param name="source">The bytes to write.</param>
+    /// <exception cref="IOException">The child's terminal is closed.</exception>
+    /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
     public override void Write(ReadOnlySpan<byte> source)
     {
         ThrowIfDisposed();
@@ -170,6 +197,15 @@ public sealed partial class PtyStream
             inputWrite.Write(source);
     }
 
+    /// <summary>
+    /// Asynchronously writes all of <paramref name="source"/>.
+    /// </summary>
+    /// <param name="source">The bytes to write.</param>
+    /// <param name="cancellationToken">Canceled to abort the write.</param>
+    /// <returns>A task that completes when all bytes have been written.</returns>
+    /// <exception cref="OperationCanceledException">The write was canceled before it completed.</exception>
+    /// <exception cref="IOException">The child's terminal is closed.</exception>
+    /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
     public override ValueTask WriteAsync(
         ReadOnlyMemory<byte> source,
         CancellationToken cancellationToken = default)
@@ -214,6 +250,8 @@ public sealed partial class PtyStream
             ThreadPool.QueueUserWorkItem(static state => ((PtyStream)state!).CloseConsoleAndDrain(), this);
     }
 
+    /// <summary>Releases the stream's ConPTY channels, aborting any in-flight operations first.</summary>
+    /// <param name="disposing">True when called from user code (not the finalizer).</param>
     protected override void Dispose(bool disposing)
     {
         if (!disposing || Interlocked.Exchange(ref disposed, 1) != 0)

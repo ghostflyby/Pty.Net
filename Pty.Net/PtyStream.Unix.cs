@@ -3,30 +3,17 @@ using Microsoft.Win32.SafeHandles;
 
 namespace Ghostflyby.Pty;
 
-/// <summary>
-/// Unix half of <see cref="PtyStream"/>: a single non-blocking pty master fd
-/// (opened via <c>posix_openpt(O_NONBLOCK)</c> — never fcntl, which is broken as a
-/// variadic call on Apple arm64). Read/write are driven by poll(2):
-///
-///  * <b>No thread-pool starvation.</b> Sync reads/writes run on the calling thread
-///    (poll + non-blocking read/write; zero pool involvement). Async reads/writes are
-///    serviced by <see cref="PtyIoEngine"/>, a single process-wide poll loop; a pending
-///    operation holds no thread at all, and canceling it never has to abort a blocked
-///    syscall (there is none).
-///
-///  * <b>Partial reads.</b> <see cref="Read(byte[], int, int)"/> returns whatever is
-///    currently available once the device is readable (at least 1 byte), like a socket.
-///
-///  * <b>Immediate cancellation.</b> Canceling a pending <see cref="ReadAsync"/> returns
-///    without waiting for a timeout. Bytes already copied into the caller's buffer win
-///    over cancellation; cancellation wins only if nothing was read yet. Writes can
-///    partially advance before an <see cref="OperationCanceledException"/> is thrown.
-///
-///  * <b>Prompt EOF.</b> When the child's slave side goes away, poll reports HUP and a
-///    subsequent read returns 0 (EOF) instead of blocking forever.
-///
-/// Unix-only: compiled only by the non-Windows target (see csproj).
-/// </summary>
+// Unix half of PtyStream: a single non-blocking pty master fd (opened via
+// posix_openpt(O_NONBLOCK) — never fcntl, which is broken as a variadic call on
+// Apple arm64). Read/write are driven by poll(2):
+//   * No thread-pool starvation: sync reads/writes run on the calling thread; async
+//     reads/writes are serviced by PtyIoEngine, a single process-wide poll loop.
+//   * Partial reads: a read returns whatever is available once readable (>= 1 byte).
+//   * Immediate cancellation: canceling a pending async op returns without waiting for
+//     a timeout; bytes already copied win over cancellation.
+//   * Prompt EOF: when the child's slave side goes away, poll reports HUP and the next
+//     read returns 0 instead of blocking forever.
+// Unix-only: compiled only by the non-Windows target (see csproj).
 public sealed partial class PtyStream
 {
     private readonly SafeFileHandle handle;
@@ -39,6 +26,7 @@ public sealed partial class PtyStream
 
     internal bool IsClosed => handle.IsClosed;
 
+    /// <summary>There is no user-space buffering, so this does nothing beyond checking the stream is open.</summary>
     public override void Flush()
     {
         ObjectDisposedException.ThrowIf(handle.IsClosed, this);
@@ -47,6 +35,16 @@ public sealed partial class PtyStream
 
     // --------------------------------------------------------------------- read
 
+    /// <summary>
+    /// Reads up to <paramref name="buffer"/>.Length bytes, blocking until at least one
+    /// byte is available.
+    /// <br/>
+    /// Returns the number of bytes actually read (not necessarily the buffer length),
+    /// or 0 at end of stream.
+    /// </summary>
+    /// <param name="buffer">The buffer to fill.</param>
+    /// <returns>The number of bytes read, or 0 at end of stream.</returns>
+    /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
     public override int Read(Span<byte> buffer)
     {
         return buffer.IsEmpty ? 0 : Read(buffer, Timeout.Infinite, out _);
@@ -115,6 +113,17 @@ public sealed partial class PtyStream
         }
     }
 
+    /// <summary>
+    /// Asynchronously reads up to <paramref name="buffer"/>.Length bytes, completing as
+    /// soon as data is available.
+    /// <br/>
+    /// Returns the number of bytes read, or 0 at end of stream.
+    /// </summary>
+    /// <param name="buffer">The buffer to fill.</param>
+    /// <param name="cancellationToken">Canceled to abort the pending read.</param>
+    /// <returns>The number of bytes read, or 0 at end of stream.</returns>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> is canceled before any data was read.</exception>
+    /// <exception cref="ObjectDisposedException">The stream is disposed while the read is pending.</exception>
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(handle.IsClosed, this);
@@ -136,6 +145,13 @@ public sealed partial class PtyStream
 
     // -------------------------------------------------------------------- write
 
+    /// <summary>
+    /// Writes all of <paramref name="buffer"/>, blocking as needed while the child
+    /// drains the terminal.
+    /// </summary>
+    /// <param name="buffer">The bytes to write.</param>
+    /// <exception cref="IOException">The child's terminal is closed.</exception>
+    /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
     public override void Write(ReadOnlySpan<byte> buffer)
     {
         ObjectDisposedException.ThrowIf(handle.IsClosed, this);
@@ -177,10 +193,17 @@ public sealed partial class PtyStream
     }
 
     /// <summary>
-    /// Asynchronously writes all of <paramref name="buffer"/>. If the child is not
-    /// draining the pty and cancellation is requested mid-write, the operation stops
-    /// after whatever the device consumed and throws <see cref="OperationCanceledException"/>.
+    /// Asynchronously writes all of <paramref name="buffer"/>.
+    /// <para>If the child stops reading and <paramref name="cancellationToken"/> is
+    /// canceled mid-write, the operation stops after whatever the device consumed and
+    /// throws <see cref="OperationCanceledException"/>.</para>
     /// </summary>
+    /// <param name="buffer">The bytes to write.</param>
+    /// <param name="cancellationToken">Canceled to abort the write.</param>
+    /// <returns>A task that completes when all bytes have been written.</returns>
+    /// <exception cref="OperationCanceledException">The write was canceled before it completed.</exception>
+    /// <exception cref="IOException">The child's terminal is closed.</exception>
+    /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
     public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(handle.IsClosed, this);
@@ -191,6 +214,8 @@ public sealed partial class PtyStream
 
     // ------------------------------------------------------------------ dispose
 
+    /// <summary>Releases the stream's pty handle, aborting any in-flight operations first.</summary>
+    /// <param name="disposing">True when called from user code (not the finalizer).</param>
     protected override void Dispose(bool disposing)
     {
         // Unregister everything engine-side first, so no poll is still watching this

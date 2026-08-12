@@ -5,37 +5,19 @@ using Microsoft.Win32.SafeHandles;
 namespace Ghostflyby.Pty;
 
 /// <summary>
-/// A child process attached to a pseudo-terminal (PTY): on macOS/Linux created via
-/// <c>posix_openpt(3)</c> + <c>posix_spawn(2)</c>, on Windows via ConPTY
-/// (<c>CreatePseudoConsole</c> + <c>CreateProcessW</c>).
+/// A child process attached to a pseudo-terminal (PTY).
+/// <para>
 /// Use it to drive an interactive shell: write commands to <see cref="StandardInput"/>,
-/// read back the terminal output from <see cref="StandardOutput"/>.
-/// </summary>
-/// <remarks>
-/// I/O is exposed the way <see cref="System.Diagnostics.Process"/> does it:
-/// <see cref="StandardInput"/> / <see cref="StandardOutput"/> are the text-facing
-/// <see cref="System.IO.StreamWriter"/> / <see cref="System.IO.StreamReader"/>, and
-/// <see cref="BaseStream"/> is the raw byte stream (the same one both text facades
-/// wrap). A pty is a single bidirectional device — the child's stdout and stderr are
-/// merged into the one master stream, and there is no separate stderr channel.
-///
-/// On Unix the master fd is non-blocking and all I/O is driven by poll(2) through
-/// <see cref="PtyIoEngine"/>, so no operation ever blocks a thread-pool thread and
-/// cancellation is immediate. On Windows, ConPTY receives synchronous named-pipe server
-/// handles while the parent uses asynchronous BCL pipe clients, so its I/O is driven by
-/// overlapped operations without per-session worker threads.
-///
-/// The process-control surface is async-capable too: <see cref="WaitForExitAsync(CancellationToken)"/>
+/// read back the terminal output from <see cref="StandardOutput"/>. The child's stdout
+/// and stderr are merged into the one terminal stream; there is no separate stderr.
+/// </para>
+/// <para>
+/// The process-control surface is async-capable: <see cref="WaitForExitAsync(CancellationToken)"/>
 /// waits without occupying a thread, <see cref="DisposeAsync"/> mirrors
-/// <see cref="Dispose()"/>, and <see cref="Exited"/> fires once the child is reaped.
-/// Reaping is owned by a process-wide background reaper (waitpid on Unix, the process
-/// handle on Windows), so exit results are deterministic across concurrent waiters.
-/// </remarks>
-/// <remarks>
-/// Platform code lives in the partial files <c>PtyProcess.Start.Windows.cs</c> /
-/// <c>PtyProcess.Start.Unix.cs</c> (see the csproj file globs); this file is
-/// platform-free and the only per-platform hooks are partial methods.
-/// </remarks>
+/// <see cref="Dispose()"/>, and <see cref="Exited"/> fires once the child is reaped by
+/// a process-wide background reaper. All async I/O and waits are thread-pool-free.
+/// </para>
+/// </summary>
 public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
 {
     private const int ReadBufferSize = 4096;
@@ -57,7 +39,6 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// exist there. Owned by this process and disposed with it.
     /// </summary>
     private SafeProcessHandle? ProcessHandle { get; }
-
     // Reaped exit code.
     // int.MinValue means "not reaped yet"; afterward it is 0..255,
     // 128 + signal, or -1 when the status could not be determined.
@@ -65,7 +46,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     // process-wide reaper thread, read from any thread: Volatile keeps it visible.
     private int exitCode = int.MinValue;
 
-    /// <summary>Exit code, set once the child has been reaped by the process-wide reaper.</summary>
+    /// <summary>Exit code of the child, once it has been reaped by the process-wide reaper; null while it is running.</summary>
     public int? ExitCode
     {
         get
@@ -75,22 +56,24 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         }
     }
 
+    /// <summary>True once the child has been reaped (<see cref="ExitCode"/> is not null).</summary>
     public bool HasExited => ExitCode is not null;
 
     /// <summary>
-    /// Raised on the process-wide reaper thread once the child has been reaped.
-    /// By then <see cref="ExitCode"/> is set and <see cref="HasExited"/> is true. The
-    /// handler runs on the shared reaper thread and must not block (a blocking handler
-    /// would stall reaping for every other session); exceptions it throws are swallowed.
-    /// May fire after <see cref="Dispose"/> returned, when the child was still alive at
-    /// dispose time and exited only after the bounded reap wait elapsed.
+    /// Raised once the child has been reaped by the process-wide reaper.
+    /// <para>By then <see cref="ExitCode"/> is set and <see cref="HasExited"/> is true.
+    /// The handler runs on the shared reaper thread and must not block; exceptions it
+    /// throws are swallowed.</para>
+    /// <para>May fire after <see cref="Dispose"/> returned, when the child was still
+    /// alive at dispose time and exited only after the bounded reap wait elapsed.</para>
     /// </summary>
     public event EventHandler? Exited;
 
     /// <summary>
     /// The raw byte stream over the pty master — the single source of bytes for both
-    /// text facades. Reading here consumes bytes that <see cref="StandardOutput"/> would
-    /// otherwise decode, so use only one of them at a time.
+    /// text facades.
+    /// <para>Reading here consumes bytes that <see cref="StandardOutput"/> would
+    /// otherwise decode; use only one of them at a time.</para>
     /// </summary>
     public PtyStream BaseStream { get; }
 
@@ -98,10 +81,9 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     public StreamWriter StandardInput { get; }
 
     /// <summary>
-    /// Text reader over the child's output, like <see cref="System.Diagnostics.Process.StandardOutput"/>
-    /// (a pty merges the child's stdout and stderr). Like <see cref="StreamReader"/>, disposing
-    /// this reader closes the underlying master fd — dispose <see cref="BaseStream"/> (or the
-    /// whole <see cref="PtyProcess"/>) instead, or never dispose the facades at all.
+    /// Text reader over the child's output, like <see cref="System.Diagnostics.Process.StandardOutput"/>.
+    /// <para>A pty merges the child's stdout and stderr into this one reader. Prefer
+    /// disposing the whole <see cref="PtyProcess"/> over disposing this reader alone.</para>
     /// </summary>
     public StreamReader StandardOutput { get; }
 
@@ -130,14 +112,13 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// Launches <paramref name="info"/> in a new PTY session (child process attached to a
-    /// pseudo-terminal). On Unix this uses <c>posix_openpt(3)</c> + <c>posix_spawn(2)</c>:
-    /// posix_spawn avoids <c>fork(2)</c>, so launching stays safe even when other threads
-    /// are concurrently allocating memory (fork in a multithreaded process can deadlock
-    /// the child on inherited malloc locks). On Windows it uses ConPTY
-    /// (<c>CreatePseudoConsole</c>). A <see cref="System.Diagnostics.ProcessStartInfo"/>
-    /// can be passed via <see cref="PtyStartInfo(ProcessStartInfo)"/>.
+    /// Launches <paramref name="info"/> in a new PTY session.
     /// </summary>
+    /// <param name="info">The launch description.</param>
+    /// <returns>The running <see cref="PtyProcess"/>.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="info"/> is null.</exception>
+    /// <exception cref="IOException">The pseudo-terminal could not be created or the child could not be launched.</exception>
+    /// <exception cref="PlatformNotSupportedException">ConPTY is not available (Windows 10 1809 or earlier). Windows only.</exception>
     public static PtyProcess Start(PtyStartInfo info)
     {
         ArgumentNullException.ThrowIfNull(info);
@@ -145,7 +126,15 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
             info.StandardInputEncoding, info.StandardOutputEncoding);
     }
 
-    /// <summary>Convenience overload of <see cref="Start(PtyStartInfo)"/> with the launch parameters inline (UTF-8 I/O).</summary>
+    /// <summary>
+    /// Launches <paramref name="file"/> with <paramref name="arguments"/> in a new PTY session, using UTF-8 I/O.
+    /// </summary>
+    /// <param name="file">The executable to run.</param>
+    /// <param name="arguments">Command-line arguments for <paramref name="file"/>.</param>
+    /// <param name="workingDirectory">Initial working directory of the child; the parent's current directory when null.</param>
+    /// <returns>The running <see cref="PtyProcess"/>.</returns>
+    /// <exception cref="IOException">The pseudo-terminal could not be created or the child could not be launched.</exception>
+    /// <exception cref="PlatformNotSupportedException">ConPTY is not available (Windows 10 1809 or earlier). Windows only.</exception>
     public static PtyProcess Start(string file, string[] arguments, string? workingDirectory = null)
     {
         return StartCore(file, arguments, workingDirectory, environment: null,
@@ -162,19 +151,19 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// Blocks until the child exits or the timeout elapses. Returns false on timeout.
-    /// While waiting, native output is drained continuously so the child never blocks writing
-    /// to a full pty buffer. On Unix those bytes are discarded; on Windows the output pump
-    /// preserves them in its managed queue for subsequent reads. Like
-    /// <see cref="System.Diagnostics.Process.WaitForExit()"/> with redirected output,
-    /// concurrent consumption of <see cref="StandardOutput"/> / <see cref="BaseStream"/>
-    /// is not portable, so consume output before or after the wait rather than during it.
-    /// Pass <see cref="Timeout.InfiniteTimeSpan"/> to wait indefinitely.
-    ///
-    /// Reaping happens on the process-wide reaper thread; this method only observes
-    /// <see cref="ExitCode"/> (set by the reaper), so it never races waitpid(2).
-    /// For an asynchronous, thread-free equivalent see <see cref="WaitForExitAsync(CancellationToken)"/>.
+    /// Blocks until the child exits or <paramref name="timeout"/> elapses.
+    /// <para>While waiting, output is drained continuously so the child never blocks
+    /// writing to a full pty buffer; the drained bytes remain readable afterwards.
+    /// Concurrent consumption of <see cref="StandardOutput"/> / <see cref="BaseStream"/>
+    /// during the wait is not portable, so consume output before or after it.</para>
+    /// <para>Reaping happens on the process-wide reaper thread; this method only observes
+    /// <see cref="ExitCode"/>. Pass <see cref="Timeout.InfiniteTimeSpan"/> to wait
+    /// indefinitely. For a thread-free equivalent see
+    /// <see cref="WaitForExitAsync(CancellationToken)"/>.</para>
     /// </summary>
+    /// <param name="timeout">How long to wait.</param>
+    /// <returns>True if the child exited within <paramref name="timeout"/>; false on timeout.</returns>
+    /// <exception cref="ObjectDisposedException">The process is disposed.</exception>
     public bool WaitForExit(TimeSpan timeout)
     {
         BeginExitWait();
@@ -208,29 +197,30 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         }
     }
 
-    /// <summary>
-    /// Blocks until the child exits and has been reaped. Aligns with
-    /// <see cref="System.Diagnostics.Process.WaitForExit()"/> (no timeout); the infinite
-    /// wait only returns once the child has been reaped.
-    /// </summary>
+    /// <summary>Blocks until the child exits and has been reaped. Equivalent to <see cref="WaitForExit(TimeSpan)"/> with an infinite timeout.</summary>
     public void WaitForExit() => WaitForExit(Timeout.InfiniteTimeSpan);
 
     /// <summary>
-    /// Waits until the child exits and has been reaped, like
-    /// <see cref="System.Diagnostics.Process.WaitForExitAsync"/>, without blocking a
-    /// thread: the wait is a <see cref="Task.Delay(int)"/> loop, so a pending wait holds no
-    /// thread-pool thread. While waiting, output is drained continuously (same caveat
-    /// as <see cref="WaitForExit(TimeSpan)"/>: concurrent consumption of the output
-    /// facades is not safe during the wait).
+    /// Waits until the child exits and has been reaped, without blocking a thread.
+    /// <para>Output is drained continuously while waiting (same caveat as
+    /// <see cref="WaitForExit(TimeSpan)"/>).</para>
     /// </summary>
+    /// <param name="ct">Canceled to abandon the wait.</param>
+    /// <returns>A task that completes once the child has been reaped.</returns>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> is canceled before the child exited.</exception>
+    /// <exception cref="ObjectDisposedException">The process is disposed while waiting.</exception>
     public Task WaitForExitAsync(CancellationToken ct = default) => WaitForExitCoreAsync(Timeout.InfiniteTimeSpan, ct);
 
     /// <summary>
     /// Waits until the child exits and has been reaped, or until <paramref name="timeout"/>
-    /// elapses; returns false on timeout. Non-blocking and cancellable (see
-    /// <see cref="WaitForExitAsync(CancellationToken)"/>): the wait throws
-    /// <see cref="OperationCanceledException"/> when <paramref name="ct"/> is canceled.
+    /// elapses.
+    /// <para>Non-blocking and cancellable.</para>
     /// </summary>
+    /// <param name="timeout">How long to wait.</param>
+    /// <param name="ct">Canceled to abandon the wait.</param>
+    /// <returns>True if the child exited within <paramref name="timeout"/>; false on timeout.</returns>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> is canceled before the wait completed.</exception>
+    /// <exception cref="ObjectDisposedException">The process is disposed while waiting.</exception>
     public Task<bool> WaitForExitAsync(TimeSpan timeout, CancellationToken ct = default) => WaitForExitCoreAsync(timeout, ct);
 
     private async Task<bool> WaitForExitCoreAsync(TimeSpan timeout, CancellationToken ct)
@@ -271,11 +261,12 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// Terminates the child with SIGKILL immediately, without giving it a chance to
-    /// clean up — matching <see cref="System.Diagnostics.Process.Kill()"/>. For PTY
-    /// workflows prefer <see cref="Dispose"/> (SIGHUP + closing the master), which lets
-    /// the shell exit normally. The child is not reaped here; call
-    /// <see cref="WaitForExit()"/> or <see cref="Dispose"/> afterwards.
+    /// Terminates the child immediately (SIGKILL on Unix, TerminateProcess on Windows),
+    /// without giving it a chance to clean up — matching
+    /// <see cref="System.Diagnostics.Process.Kill()"/>.
+    /// <para>The child is not reaped here; call <see cref="WaitForExit()"/> or
+    /// <see cref="Dispose"/> afterwards. Prefer <see cref="Dispose"/> for normal
+    /// termination, which lets the shell exit cleanly.</para>
     /// </summary>
     public void Kill()
     {
@@ -283,6 +274,15 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         KillPlatform();
     }
 
+    /// <summary>
+    /// Terminates the child and releases the pty resources.
+    /// <para>A still-running child is terminated first; output produced up to that point
+    /// remains readable through <see cref="BaseStream"/> / <see cref="StandardOutput"/>.
+    /// After this returns, all operations on the streams throw
+    /// <see cref="ObjectDisposedException"/>.</para>
+    /// <para>If the child has not been reaped within a bounded wait, the process-wide
+    /// reaper keeps watching it in the background, so it cannot linger as a zombie.</para>
+    /// </summary>
     public void Dispose()
     {
         gate.Wait();
@@ -323,10 +323,10 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// Asynchronous counterpart of <see cref="Dispose()"/>: the exact same flow
-    /// (SIGHUP / terminate the live child → close the terminal → bounded reap wait)
+    /// Asynchronous counterpart of <see cref="Dispose()"/>, with the same semantics and
     /// without blocking a thread while waiting. Safe to await from async code paths.
     /// </summary>
+    /// <returns>A task that completes when the process is terminated and its resources are released.</returns>
     public async ValueTask DisposeAsync()
     {
         await gate.WaitAsync().ConfigureAwait(false);
@@ -430,7 +430,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// <summary>
     /// Called around an exit wait. Windows lifts the output pump's buffer bound for the
     /// duration of the wait, so a child blocked writing more output than the bound cannot
-    /// deadlock the wait; Unix has no equivalent bound. See <see cref="PtyStream.EnterExitWait"/>.
+    /// deadlock the wait; Unix has no equivalent bound.
     /// </summary>
     private partial void BeginExitWait();
 
