@@ -81,11 +81,11 @@ public class PtyWindowsTests
         {
             FileName = "powershell.exe",
             ArgumentList =
-            {
+            [
                 "-NoProfile",
                 "-Command",
                 "$line=[Console]::In.ReadLine(); [Console]::Out.WriteLine($line); [Console]::Out.Write('LATIN-DONE')",
-            },
+            ],
             StandardInputEncoding = Encoding.Latin1,
             StandardOutputEncoding = Encoding.Latin1,
         });
