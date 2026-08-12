@@ -81,6 +81,10 @@ public sealed partial class PtyStream
             Task signal;
             lock (readGate)
             {
+                // A Dispose may have completed since the entry check. BCL Process
+                // semantics: reads pending at close throw ObjectDisposedException —
+                // they do not deliver buffered bytes or an artificial EOF.
+                ThrowIfDisposed();
                 var count = CopyBuffered(target);
                 if (count > 0)
                     return count;
@@ -126,6 +130,9 @@ public sealed partial class PtyStream
                 Task signal;
                 lock (readGate)
                 {
+                    // BCL Process semantics: reads pending at close throw
+                    // ObjectDisposedException instead of returning buffered bytes.
+                    ThrowIfDisposed();
                     var count = CopyBuffered(target.Span);
                     if (count > 0)
                         return count;
@@ -228,7 +235,9 @@ public sealed partial class PtyStream
 
         lock (readGate)
         {
-            outputEof = true;
+            // Wake parked readers: they re-check the disposed flag in their loops and
+            // complete with ObjectDisposedException (BCL Process semantics) rather than
+            // being handed buffered bytes or an artificial EOF.
             CompleteSignals(readSignals);
             CompleteSignals(spaceSignals);
         }

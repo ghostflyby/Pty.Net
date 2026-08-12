@@ -81,7 +81,6 @@ internal static class PtyIoEngine
             return;
         Thread.Value.Post(new Control { Kind = ControlKind.CancelHandle, Handle = handle });
     }
-
     private static void EnsureStarted() => _ = Thread.Value;
 
     private static Task<int> Enqueue(SafeFileHandle handle, OperationKind kind, ReadOnlyMemory<byte> buffer,
@@ -328,12 +327,12 @@ internal static class PtyIoEngine
                 }
 
                 // AbortHandle may have been processed before this Register: the handle
-                // is already torn down and no Cancel will ever arrive for this op.
+                // is already torn down and no Abort will ever arrive for this op.
                 // (AddRef above still succeeded because the actual close is deferred
                 // while other ops hold refs, so IsClosed alone cannot detect this.)
                 if (canceledHandles.TryGetValue(op.Handle, out _))
                 {
-                    Complete(op, OpStatus.Canceled, 0, null);
+                    Complete(op, OpStatus.Failed, 0, new ObjectDisposedException("PtyStream", "The pty stream was disposed."));
                     return;
                 }
 
@@ -392,38 +391,62 @@ internal static class PtyIoEngine
             }
 
             // Queued waiter: drop it from the queue.
-            if (op.Slot is not null)
-            {
-                var removed = false;
-                var waiters = op.Slot.Waiters;
-                for (var i = 0; i < waiters.Count; i++)
-                {
-                    var w = waiters.Dequeue();
-                    if (ReferenceEquals(w, op) && !removed)
-                        removed = true; // skip this one
-                    else
-                        waiters.Enqueue(w);
-                }
-            }
-
+            RemoveWaiter(op);
             Complete(op, OpStatus.Canceled, 0, null);
+        }
+
+        /// <summary>
+        /// Tears down an operation because its stream is being disposed: completes with
+        /// <see cref="ObjectDisposedException"/> — the same shape BCL
+        /// <see cref="System.Diagnostics.Process"/> gives when its streams close with a
+        /// read pending. Token cancellation stays <see cref="OperationCanceledException"/>
+        /// (see <see cref="Cancel"/>); only handle teardown aborts the operation this way.
+        /// </summary>
+        private void Abort(Operation op)
+        {
+            if (op.Done)
+                return;
+
+            // Queued waiter: drop it from the queue so it is never promoted later.
+            RemoveWaiter(op);
+
+            Complete(op, OpStatus.Failed, 0, new ObjectDisposedException("PtyStream", "The pty stream was disposed."));
+        }
+
+        /// <summary>Drops <paramref name="op"/> from its slot's waiter queue when it is queued there.</summary>
+        private static void RemoveWaiter(Operation op)
+        {
+            if (op.Slot is null || ReferenceEquals(op.Slot.Current, op))
+                return;
+            var removed = false;
+            var waiters = op.Slot.Waiters;
+            for (var i = 0; i < waiters.Count; i++)
+            {
+                var w = waiters.Dequeue();
+                if (ReferenceEquals(w, op) && !removed)
+                    removed = true;
+                else
+                    waiters.Enqueue(w);
+            }
         }
 
         private void CancelHandle(SafeFileHandle handle)
         {
             // Snapshot first: Complete may remove or replace slot.Current while we run.
-            var toCancel = new List<Operation>();
+            var toAbort = new List<Operation>();
             foreach (var slot in slots.Values)
             {
                 if (slot.Current is { Done: false } c && ReferenceEquals(c.Handle, handle))
-                    toCancel.Add(c);
+                    toAbort.Add(c);
                 foreach (var w in slot.Waiters)
                     if (ReferenceEquals(w.Handle, handle))
-                        toCancel.Add(w);
+                        toAbort.Add(w);
             }
 
-            foreach (var op in toCancel)
-                Cancel(op);
+            // Dispose is tearing the stream down: pending reads/writes abort with
+            // ObjectDisposedException (BCL Process semantics), not a cancellation.
+            foreach (var op in toAbort)
+                Abort(op);
 
             // Remember the handle so any Register that arrives *after* this message is
             // rejected instead of being registered with no cancel to ever come.
