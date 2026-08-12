@@ -40,6 +40,9 @@ internal static class PtyReaper
     {
         private readonly object sync = new();
         private readonly List<PtyProcess> watched = [];
+        // Reusable snapshot array: copying the watch set into a fresh List every 10 ms
+        // tick would churn one allocation for the whole lifetime of any watched process.
+        private PtyProcess[] snapshot = [];
 
         public ReaperThread()
         {
@@ -61,7 +64,7 @@ internal static class PtyReaper
         {
             while (true)
             {
-                List<PtyProcess> snapshot;
+                int snapshotCount;
                 lock (sync)
                 {
                     if (watched.Count == 0)
@@ -72,11 +75,17 @@ internal static class PtyReaper
                         continue;
                     }
 
-                    snapshot = [.. watched];
+                    // Grow the reusable snapshot on demand (never shrink), like the
+                    // engine's poll set. CopyTo writes watched.Count elements at index 0.
+                    if (snapshot.Length < watched.Count)
+                        Array.Resize(ref snapshot, watched.Count);
+                    watched.CopyTo(snapshot);
+                    snapshotCount = watched.Count;
                 }
 
-                foreach (var p in snapshot)
+                for (var i = 0; i < snapshotCount; i++)
                 {
+                    var p = snapshot[i];
                     if (!p.TryReap(out var code)) continue;
                     p.OnReaped(code);
                     lock (sync)

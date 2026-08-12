@@ -209,23 +209,26 @@ internal static partial class NativeMethods
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int getrlimit(int resource, out RLimit rlim);
 
+    // Pointer form so the caller can pass a stackalloc'd sigset (pinned with fixed):
+    // a byte[] overload would allocate a 128-byte array on every Linux spawn.
     [LibraryImport("libc", SetLastError = true)]
-    internal static partial int posix_spawnattr_setsigdefault(IntPtr attr, [In] byte[] sigset);
+    internal static partial int posix_spawnattr_setsigdefault(IntPtr attr, IntPtr sigset);
 
     /// <summary>
-    /// Builds a glibc sigset_t: an all-zero buffer is sigemptyset, and each signal N
-    /// is bit (N-1) of the set (glibc __sigset_t, LSB-first within the word).
+    /// Fills <paramref name="set"/> as a glibc sigset_t: an all-zero buffer is
+    /// sigemptyset, and each signal N is bit (N-1) of the set (glibc __sigset_t,
+    /// LSB-first within the word). The caller supplies a stack-allocated buffer so a
+    /// Linux spawn performs no per-call allocation.
     /// </summary>
-    internal static byte[] SignalSet(params Signals[] signals)
+    internal static void BuildSignalSet(scoped Span<byte> set, scoped ReadOnlySpan<Signals> signals)
     {
-        var set = new byte[SigsetSize];
+        set.Clear();
         foreach (var sig in signals)
         {
             var n = (int)sig;
             if (n >= 1 && n <= SigsetSize * 8)
                 set[(n - 1) / 8] |= (byte)(1 << ((n - 1) % 8));
         }
-        return set;
     }
 #endif
 
@@ -241,8 +244,11 @@ internal static partial class NativeMethods
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int kill(int pid, Signals sig);
 
+    // poll(2) takes a pointer so callers can pass a stackalloc'd PollFd span (pinned
+    // with fixed): a PollFd[] overload would allocate a fresh one-element heap array
+    // on every sync read/write and every engine wake.
     [LibraryImport("libc", SetLastError = true)]
-    internal static partial int poll([In, Out] PollFd[] fds, nuint nfds, int timeout);
+    internal static partial int poll(IntPtr fds, nuint nfds, int timeout);
 
     // Byte transfer for PtyStream: raw read(2)/write(2) on the non-blocking pty master
     // fd. Callers pin the buffer (MemoryHandle / fixed) and pass the raw pointer, so a

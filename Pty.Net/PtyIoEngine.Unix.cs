@@ -237,12 +237,21 @@ internal static class PtyIoEngine
         /// </summary>
         private void Wake()
         {
-            var pollFd = new NativeMethods.PollFd { Fd = wakeWrite, Events = NativeMethods.PollEvents.Pollout };
+            // Stack-allocated one-element poll set: a fresh PollFd[] per wake would
+            // allocate for every async op enqueued and every cancellation.
+            Span<NativeMethods.PollFd> pollFds = stackalloc NativeMethods.PollFd[1];
+            pollFds[0] = new NativeMethods.PollFd { Fd = wakeWrite, Events = NativeMethods.PollEvents.Pollout };
             int r;
-            do
+            unsafe
             {
-                r = NativeMethods.poll([pollFd], 1, -1);
-            } while (r < 0 && Marshal.GetLastPInvokeError() == Eintr);
+                fixed (NativeMethods.PollFd* p = pollFds)
+                {
+                    do
+                    {
+                        r = NativeMethods.poll((IntPtr)p, 1, -1);
+                    } while (r < 0 && Marshal.GetLastPInvokeError() == Eintr);
+                }
+            }
 
             if (r > 0)
                 _ = NativeMethods.write(wakeWrite, wakeBufPtr, 1);
@@ -265,10 +274,17 @@ internal static class PtyIoEngine
                 BuildPollSet();
 
                 int r;
-                do
+                unsafe
                 {
-                    r = NativeMethods.poll(pollFds, (nuint)pollCount, PollSafetyTimeoutMs);
-                } while (r < 0 && Marshal.GetLastPInvokeError() == Eintr);
+                    // The poll set is a reused field; fixed pins it for the syscall.
+                    fixed (NativeMethods.PollFd* p = pollFds)
+                    {
+                        do
+                        {
+                            r = NativeMethods.poll((IntPtr)p, (nuint)pollCount, PollSafetyTimeoutMs);
+                        } while (r < 0 && Marshal.GetLastPInvokeError() == Eintr);
+                    }
+                }
 
                 if (r < 0)
                     throw new IOException($"Pty.Net poll failed: errno={Marshal.GetLastPInvokeError()}");
@@ -636,14 +652,22 @@ internal static class PtyIoEngine
         /// <summary>Reads the wake pipe without ever blocking (poll(0) then read).</summary>
         private void DrainWakePipe()
         {
-            var pollFd = new NativeMethods.PollFd { Fd = wakeRead, Events = NativeMethods.PollEvents.Pollin };
+            // Stack-allocated poll set, reused across the loop's iterations.
+            Span<NativeMethods.PollFd> pollFds = stackalloc NativeMethods.PollFd[1];
+            pollFds[0] = new NativeMethods.PollFd { Fd = wakeRead, Events = NativeMethods.PollEvents.Pollin };
             while (true)
             {
                 int r;
-                do
+                unsafe
                 {
-                    r = NativeMethods.poll([pollFd], 1, 0);
-                } while (r < 0 && Marshal.GetLastPInvokeError() == Eintr);
+                    fixed (NativeMethods.PollFd* p = pollFds)
+                    {
+                        do
+                        {
+                            r = NativeMethods.poll((IntPtr)p, 1, 0);
+                        } while (r < 0 && Marshal.GetLastPInvokeError() == Eintr);
+                    }
+                }
 
                 if (r <= 0)
                     return; // no (more) wake bytes

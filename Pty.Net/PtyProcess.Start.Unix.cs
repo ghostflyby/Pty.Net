@@ -11,6 +11,10 @@ namespace Ghostflyby.Pty;
 /// </summary>
 public sealed partial class PtyProcess
 {
+    // The stdio targets the pty slave is dup2'd onto in the child. A static array so
+    // each spawn does not allocate a fresh int[] for the loop below.
+    private static readonly int[] StdioTargets = [0, 1, 2];
+
     private static partial PtyProcess StartPlatform(
         string file, string[] arguments, string? workingDirectory,
         IDictionary<string, string?> environment, Encoding? inputEncoding, Encoding? outputEncoding)
@@ -81,14 +85,19 @@ public sealed partial class PtyProcess
             // POSIX spawn inherits SIG_IGN dispositions from the parent (macOS resets
             // them automatically, glibc does not). The .NET runtime ignores SIGPIPE and
             // friends, so reset the common ones to their defaults for a clean shell.
-            var sigdefRc = NativeMethods.posix_spawnattr_setsigdefault(
-                attr,
-                NativeMethods.SignalSet(
-                    NativeMethods.Signals.Hup,
-                    NativeMethods.Signals.Int,
-                    NativeMethods.Signals.Quit,
-                    NativeMethods.Signals.Pipe,
-                    NativeMethods.Signals.Term));
+            // The sigset is stack-allocated so a spawn performs no heap allocation here.
+            Span<byte> sigdef = stackalloc byte[NativeMethods.SigsetSize];
+            NativeMethods.BuildSignalSet(sigdef,
+                [NativeMethods.Signals.Hup, NativeMethods.Signals.Int, NativeMethods.Signals.Quit,
+                 NativeMethods.Signals.Pipe, NativeMethods.Signals.Term]);
+            int sigdefRc;
+            unsafe
+            {
+                fixed (byte* p = sigdef)
+                {
+                    sigdefRc = NativeMethods.posix_spawnattr_setsigdefault(attr, (IntPtr)p);
+                }
+            }
             if (sigdefRc != 0)
                 throw new IOException($"posix_spawnattr_setsigdefault failed: errno={sigdefRc}");
 #else
@@ -101,7 +110,7 @@ public sealed partial class PtyProcess
             // Failures are theoretically impossible (the slave fd was just opened and
             // 0/1/2 are always valid), but checked for consistency with the other steps:
             // a silently broken stdio wiring would surface as a child with no output.
-            foreach (var target in new[] { 0, 1, 2 })
+            foreach (var target in StdioTargets)
             {
                 if (NativeMethods.posix_spawn_file_actions_adddup2(fileActions, slaveFd, target) != 0)
                     throw new IOException($"posix_spawn adddup2({target}) failed: errno={Marshal.GetLastPInvokeError()}");
@@ -260,7 +269,7 @@ public sealed partial class PtyProcess
     }
 
     /// <summary>Flattens the environment dictionary into the <c>KEY=VALUE</c> array posix_spawn expects, dropping null values.</summary>
-    private static string[] BuildEnvironment(IDictionary<string, string?> env)
+    private static List<string> BuildEnvironment(IDictionary<string, string?> env)
     {
         var result = env
             .Where(kv => kv.Value is not null)
@@ -269,15 +278,15 @@ public sealed partial class PtyProcess
         // Without a TERM the shell may fall back to dumb/unknown; set a sane default.
         if (!result.Any(e => e.StartsWith("TERM=", StringComparison.Ordinal)))
             result.Add("TERM=xterm-256color");
-        return [.. result];
+        return result;
     }
 
-    private static IntPtr[] ToNative(string[] strs)
+    private static IntPtr[] ToNative(IReadOnlyList<string> strs)
     {
-        var result = new IntPtr[strs.Length + 1];
-        for (var i = 0; i < strs.Length; i++)
+        var result = new IntPtr[strs.Count + 1];
+        for (var i = 0; i < strs.Count; i++)
             result[i] = Marshal.StringToHGlobalAnsi(strs[i]);
-        result[strs.Length] = IntPtr.Zero;
+        result[strs.Count] = IntPtr.Zero;
         return result;
     }
 

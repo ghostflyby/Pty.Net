@@ -236,8 +236,15 @@ public sealed partial class PtyStream
     /// </summary>
     private static bool WaitForPoll(int fd, NativeMethods.PollEvents events, int timeoutMs, out NativeMethods.PollEvents revents)
     {
-        var pollFd = new NativeMethods.PollFd { Fd = fd, Events = events };
         var deadline = timeoutMs < 0 ? DateTime.MaxValue : DateTime.UtcNow + TimeSpan.FromMilliseconds(timeoutMs);
+
+        // Stack-allocated one-element poll set: a fresh PollFd[] per call would
+        // allocate on every sync read/write. poll rewrites Revents in place, and the
+        // EINTR-retry loop below must observe that value. Typed stackalloc keeps the
+        // element naturally aligned (PollFd is int + 2 x short), so no manual
+        // alignment is needed.
+        Span<NativeMethods.PollFd> pollFds = stackalloc NativeMethods.PollFd[1];
+        pollFds[0] = new NativeMethods.PollFd { Fd = fd, Events = events };
 
         while (true)
         {
@@ -246,17 +253,23 @@ public sealed partial class PtyStream
                 : (int)Math.Max(0, Math.Min((deadline - DateTime.UtcNow).TotalMilliseconds, int.MaxValue));
 
             int r;
-            do
+            unsafe
             {
-                r = NativeMethods.poll([pollFd], 1, remainingMs);
-            } while (r < 0 && Marshal.GetLastPInvokeError() == NativeMethods.Eintr);
+                fixed (NativeMethods.PollFd* p = pollFds)
+                {
+                    do
+                    {
+                        r = NativeMethods.poll((IntPtr)p, 1, remainingMs);
+                    } while (r < 0 && Marshal.GetLastPInvokeError() == NativeMethods.Eintr);
+                }
+            }
 
             switch (r)
             {
                 case < 0:
                     throw new IOException($"poll failed: errno={Marshal.GetLastPInvokeError()}");
                 case > 0:
-                    revents = pollFd.Revents;
+                    revents = pollFds[0].Revents;
                     return true;
             }
 
