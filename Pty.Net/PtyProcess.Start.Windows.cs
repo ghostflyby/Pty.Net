@@ -69,6 +69,17 @@ public sealed partial class PtyProcess
     }
 
     /// <summary>
+    /// Windows: exit may be blocked behind more than the pump's normal bounded buffer
+    /// (a child writing a payload larger than the bound never exits while the pump
+    /// waits for space). Lift the bound for an explicit wait, preserving all bytes for
+    /// later user reads.
+    /// </summary>
+    private partial void BeginExitWait() => BaseStream.EnterExitWait();
+
+    /// <summary>Balances <see cref="BeginExitWait"/> when the wait returns, times out, or is canceled.</summary>
+    private partial void EndExitWait() => BaseStream.ExitExitWait();
+
+    /// <summary>
     /// Called by the reaper after the root process exits. ClosePseudoConsole can wait for
     /// a final output frame to drain; PtyStream queues that work away from this shared
     /// reaper thread and publishes EOF when done.

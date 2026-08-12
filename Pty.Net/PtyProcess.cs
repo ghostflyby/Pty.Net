@@ -177,26 +177,34 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// </summary>
     public bool WaitForExit(TimeSpan timeout)
     {
-        var infinite = timeout == Timeout.InfiniteTimeSpan;
-        var deadline = infinite ? DateTime.MaxValue : DateTime.UtcNow + timeout;
-        while (true)
+        BeginExitWait();
+        try
         {
-            gate.Wait();
-            try
+            var infinite = timeout == Timeout.InfiniteTimeSpan;
+            var deadline = infinite ? DateTime.MaxValue : DateTime.UtcNow + timeout;
+            while (true)
             {
-                ObjectDisposedException.ThrowIf(disposed, this);
-                DrainOutput(); // keep the pty buffer flowing while we wait
-                if (HasExited)
-                    return true;
-            }
-            finally
-            {
-                gate.Release();
-            }
+                gate.Wait();
+                try
+                {
+                    ObjectDisposedException.ThrowIf(disposed, this);
+                    DrainOutput(); // keep the pty buffer flowing while we wait
+                    if (HasExited)
+                        return true;
+                }
+                finally
+                {
+                    gate.Release();
+                }
 
-            if (!infinite && DateTime.UtcNow >= deadline)
-                return false;
-            Thread.Sleep(WaitStepMs(deadline, infinite));
+                if (!infinite && DateTime.UtcNow >= deadline)
+                    return false;
+                Thread.Sleep(WaitStepMs(deadline, infinite));
+            }
+        }
+        finally
+        {
+            EndExitWait();
         }
     }
 
@@ -227,30 +235,38 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
 
     private async Task<bool> WaitForExitCoreAsync(TimeSpan timeout, CancellationToken ct)
     {
-        var infinite = timeout == Timeout.InfiniteTimeSpan;
-        var deadline = infinite ? DateTime.MaxValue : DateTime.UtcNow + timeout;
-        while (true)
+        BeginExitWait();
+        try
         {
-            ct.ThrowIfCancellationRequested();
-            if (HasExited)
-                return true;
-
-            await gate.WaitAsync(ct).ConfigureAwait(false);
-            try
+            var infinite = timeout == Timeout.InfiniteTimeSpan;
+            var deadline = infinite ? DateTime.MaxValue : DateTime.UtcNow + timeout;
+            while (true)
             {
-                ObjectDisposedException.ThrowIf(disposed, this);
-                DrainOutput(); // keep the pty buffer flowing while we wait
+                ct.ThrowIfCancellationRequested();
                 if (HasExited)
                     return true;
-            }
-            finally
-            {
-                gate.Release();
-            }
 
-            if (!infinite && DateTime.UtcNow >= deadline)
-                return false;
-            await Task.Delay(WaitStepMs(deadline, infinite), ct).ConfigureAwait(false);
+                await gate.WaitAsync(ct).ConfigureAwait(false);
+                try
+                {
+                    ObjectDisposedException.ThrowIf(disposed, this);
+                    DrainOutput(); // keep the pty buffer flowing while we wait
+                    if (HasExited)
+                        return true;
+                }
+                finally
+                {
+                    gate.Release();
+                }
+
+                if (!infinite && DateTime.UtcNow >= deadline)
+                    return false;
+                await Task.Delay(WaitStepMs(deadline, infinite), ct).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            EndExitWait();
         }
     }
 
@@ -410,4 +426,14 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
 
     /// <summary>Drains available output without consuming it for the caller (Unix discards it).</summary>
     private partial void DrainOutput();
+
+    /// <summary>
+    /// Called around an exit wait. Windows lifts the output pump's buffer bound for the
+    /// duration of the wait, so a child blocked writing more output than the bound cannot
+    /// deadlock the wait; Unix has no equivalent bound. See <see cref="PtyStream.EnterExitWait"/>.
+    /// </summary>
+    private partial void BeginExitWait();
+
+    /// <summary>Balances <see cref="BeginExitWait"/> when the wait returns, times out, or is canceled.</summary>
+    private partial void EndExitWait();
 }

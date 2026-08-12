@@ -218,6 +218,16 @@ public sealed partial class PtyProcess
     {
     }
 
+    /// <summary>Unix: the wait drains through the stream directly; no buffer bound to lift.</summary>
+    private partial void BeginExitWait()
+    {
+    }
+
+    /// <summary>Balances <see cref="BeginExitWait"/>.</summary>
+    private partial void EndExitWait()
+    {
+    }
+
     /// <summary>
     /// Single non-blocking reap attempt for the child: waitpid(WNOHANG). Returns true
     /// when the child was collected (or is unreachable), with the exit code.
