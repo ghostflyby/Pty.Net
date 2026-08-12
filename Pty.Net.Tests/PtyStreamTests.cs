@@ -58,9 +58,11 @@ public class PtyStreamTests : IDisposable
             reads[i] = all[i].BaseStream.ReadAsync(new byte[16], cts[i].Token).AsTask();
         }
 
-        // Give any thread-pool offloading a chance to manifest, then measure the damage.
+        // Give any thread-pool offloading a chance to manifest. The parallel suite's own
+        // startup churn dips isolated samples, so take the max over a window: a real leak
+        // (one thread pinned per parked read) suppresses every sample.
         await Task.Delay(300);
-        ThreadPool.GetAvailableThreads(out var workersDuring, out _);
+        var workersDuring = TestBash.MaxAvailableWorkers(TimeSpan.FromSeconds(1));
 
         // Cancel everything; every read must abort promptly.
         var cancelAll = Task.WhenAll(Enumerable.Range(0, sessions).Select(i => CancelAndExpectOce(reads[i], cts[i])));

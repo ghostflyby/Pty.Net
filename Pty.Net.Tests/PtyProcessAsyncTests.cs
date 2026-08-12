@@ -85,13 +85,15 @@ public class PtyProcessAsyncTests
         // Windows launches one child process per session (cmd/ping — lighter than
         // /bin/sleep's peer powershell, but still heavier than the Unix sleep), so let
         // the startup churn settle before measuring; the sessions stay alive (sleep
-        // 1000 s) throughout, and the wait itself holds no thread.
+        // 1000 s) throughout, and the wait itself holds no thread. The parallel suite
+        // also dips isolated samples, so take the max over a window afterwards: a real
+        // leak suppresses every sample, while transient churn only dips some.
 #if WINDOWS
         await Task.Delay(1500);
 #else
         await Task.Delay(300);
 #endif
-        ThreadPool.GetAvailableThreads(out var workersDuring, out _);
+        var workersDuring = TestBash.MaxAvailableWorkers(TimeSpan.FromSeconds(1));
 
         foreach (var p in all)
         {

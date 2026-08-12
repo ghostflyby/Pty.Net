@@ -86,14 +86,39 @@ internal static class TestBash
 #endif
     }
 
-    /// <summary>File + args for a short-lived child that exits on its own (~0.3 s).</summary>
+    /// <summary>
+    /// File + args for a short-lived child that exits on its own (~1 s).
+    /// On Windows it uses cmd + ping (like <see cref="SleepProcess"/>) rather than a fresh
+    /// powershell, whose multi-second startup latency under the parallel suite's load has
+    /// blown the 5 s wait in the Exited/reaper tests.
+    /// </summary>
     public static (string File, string[] Args) ShortLivedProcess()
     {
 #if WINDOWS
-        return ("powershell.exe", ["-Command", "Start-Sleep -Milliseconds 300"]);
+        return ("cmd.exe", ["/c", "ping -n 2 127.0.0.1 >nul"]);
 #else
         return ("/bin/sh", ["-c", "sleep 0.3"]);
 #endif
+    }
+
+    /// <summary>
+    /// Samples available worker threads repeatedly over <paramref name="window"/> and returns
+    /// the maximum observed value. A genuine leak (e.g. parked blocking reads pinning one
+    /// thread per session) suppresses every sample, so the max still catches it; transient
+    /// startup churn from the parallel suite dips only isolated samples, which the max
+    /// filters out.
+    /// </summary>
+    public static int MaxAvailableWorkers(TimeSpan window)
+    {
+        var deadline = DateTime.UtcNow + window;
+        var max = 0;
+        while (DateTime.UtcNow < deadline)
+        {
+            ThreadPool.GetAvailableThreads(out var available, out _);
+            max = Math.Max(max, available);
+            Thread.Sleep(25);
+        }
+        return max;
     }
 
     /// <summary>

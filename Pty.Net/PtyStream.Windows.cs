@@ -11,6 +11,9 @@ public sealed partial class PtyStream
 {
     private const int ReadChunkSize = 16 * 1024;
     private const int MaxBufferedBytes = 1024 * 1024;
+    // Bounded window for the pump to drain the ConPTY final frame after ClosePseudoConsole
+    // returns (see CloseConsoleAndDrain).
+    private const int CloseDrainGraceMs = 1000;
 
     private readonly NamedPipeClientStream inputWrite;
     private readonly NamedPipeClientStream outputRead;
@@ -371,13 +374,24 @@ public sealed partial class PtyStream
         finally
         {
             // On Windows 11 24H2+ ClosePseudoConsole returns immediately and the output
-            // pipe is not guaranteed to deliver EOF on its own; cancel the pump so the
-            // close is deterministic instead of relying on pipe EOF timing. (On older
-            // Windows the final frame is drained inside the ClosePseudoConsole call above,
-            // so canceling afterwards cannot truncate it.)
-            pumpCancellation.Cancel();
-            ObservePump(pumpTask);
-            consoleCloseCompletion.TrySetResult(true);
+            // pipe is not guaranteed to deliver EOF on its own, so the close must not
+            // depend on pipe EOF timing. On older Windows the final frame is drained
+            // inside the ClosePseudoConsole call above — but it still sits in the pipe
+            // awaiting the pump's pending ReadAsync, and canceling immediately can abort
+            // that read and truncate the tail. Give the pump a bounded window to observe
+            // pipe EOF (or read the last bytes) first, then cancel for the 24H2 case.
+            // A faulted pump is covered too: Wait rethrows, and the finally below still
+            // observes it (ObservePump swallows the failure) and signals completion.
+            try
+            {
+                if (!pumpTask.Wait(CloseDrainGraceMs))
+                    pumpCancellation.Cancel();
+            }
+            finally
+            {
+                ObservePump(pumpTask);
+                consoleCloseCompletion.TrySetResult(true);
+            }
         }
     }
 
