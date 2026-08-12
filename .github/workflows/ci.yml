@@ -18,7 +18,12 @@ jobs:
         # windows-latest drives the suite against Git Bash (bundled with Git for Windows);
         # TestHelpers resolves bash.exe and the ConPTY paths are covered by
         # Pty.WindowsTests.cs plus the portable bash-driven tests.
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        # ubuntu-24.04-arm is a native ARM64 runner (public preview). The Unix I/O path
+        # calls the variadic libc ioctl via the pad-register workaround for the AAPCS64
+        # variadic ABI (see NativeMethods.Unix.cs); that technique is proven on Apple
+        # arm64 (macos-latest below is also arm64), and this native Linux arm64 run is
+        # the gate for the glibc arm64 build.
+        os: [windows-latest, ubuntu-latest, ubuntu-24.04-arm, macos-latest]
     steps:
       - uses: actions/checkout@v7
 
