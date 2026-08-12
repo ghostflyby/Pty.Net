@@ -17,6 +17,15 @@
              full AOT publish smoke test. -->
         <IsAotCompatible>true</IsAotCompatible>
 
+        <!-- Documentation is part of the public contract: always emit the XML doc file,
+             and treat documentation warnings as compile errors. Missing/malformed docs,
+             dangling crefs and missing <param> tags (CS1590/1570/1571/1572/1573/1574/
+             1584/1587/1589/0419/1712) or a public member without any comment (CS1591)
+             fail the build. Scoped via WarningsAsErrors so unrelated warnings (e.g. the
+             AOT IL20xx set) are not affected. -->
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <WarningsAsErrors>$(WarningsAsErrors);CS0419;CS1570;CS1571;CS1572;CS1573;CS1574;CS1584;CS1587;CS1589;CS1590;CS1591;CS1712</WarningsAsErrors>
+
         <!-- Platform symbol used by #if in NativeMethods.Unix.cs / PtyProcess.Start.Unix.cs.
              The SDK may define OSX/LINUX automatically from the build host, but be explicit.
              Windows needs no define: the Windows files are compiled via file globs below. -->
