@@ -93,13 +93,6 @@ internal static partial class WindowsPty
             if (pseudoConsole is null || pseudoConsole.IsInvalid)
                 throw new Win32Exception("CreatePseudoConsole returned an invalid pseudo-console handle");
 
-            // CreatePseudoConsole has retained what it needs. Closing our copies ensures the
-            // client sides observe EOF when the pseudo console releases its copies.
-            inputServer.Dispose();
-            inputServer = null;
-            outputServer.Dispose();
-            outputServer = null;
-
             var startupInfo = new STARTUPINFOEXW();
             startupInfo.StartupInfo.cb = (uint)Marshal.SizeOf<STARTUPINFOEXW>();
             startupInfo.StartupInfo.dwFlags = STARTUPINFOW_FLAGS.STARTF_USESTDHANDLES;
@@ -161,6 +154,14 @@ internal static partial class WindowsPty
 
             if (!success)
                 throw new Win32Exception($"CreateProcessW failed for '{file}'");
+
+            // Microsoft requires the ConPTY channel handles to remain valid through
+            // CreateProcess. The pseudo console has retained what it needs now, so release
+            // our server copies; only the asynchronous parent clients remain owned here.
+            inputServer.Dispose();
+            inputServer = null;
+            outputServer.Dispose();
+            outputServer = null;
 
             processHandle = new SafeProcessHandle(processInfo.hProcess, ownsHandle: true);
             if (processInfo.hThread != 0)

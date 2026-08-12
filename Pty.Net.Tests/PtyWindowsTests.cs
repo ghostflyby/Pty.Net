@@ -1,5 +1,6 @@
 #if WINDOWS
 using Ghostflyby.Pty;
+using System.Text;
 
 namespace Ghostflyby.Pty.Tests;
 
@@ -35,6 +36,61 @@ public class PtyWindowsTests
         Assert.Contains("ps-AAAA", output);
         Assert.True(p.WaitForExit(Timeout));
         Assert.Equal(3, p.ExitCode);
+    }
+
+    /// <summary>Root exit closes ConPTY, preserves its final output, and publishes EOF.</summary>
+    [Fact]
+    public async Task RootExit_PreservesFinalOutputAndCompletesWithEof()
+    {
+        const int payloadLength = 1_250_000;
+        var exitTimeout = TimeSpan.FromSeconds(20);
+        using var p = PtyProcess.Start(
+            "powershell.exe",
+            ["-NoProfile", "-Command", $"$s='FINAL-' + ('x' * {payloadLength}) + '-FRAME'; [Console]::Out.Write($s)"]);
+
+        // No output is consumed before this wait. The payload exceeds the pump's normal
+        // bounded queue, so exit can complete only if the exit-wait lease lifts the bound.
+        Assert.True(await p.WaitForExitAsync(exitTimeout).WaitAsync(exitTimeout));
+
+        using var cts = new CancellationTokenSource(exitTimeout);
+        using var bytes = new MemoryStream();
+        var buffer = new byte[8192];
+        while (true)
+        {
+            var count = await p.BaseStream.ReadAsync(buffer, cts.Token);
+            if (count == 0)
+                break;
+            bytes.Write(buffer, 0, count);
+        }
+
+        var output = Encoding.UTF8.GetString(bytes.ToArray());
+        Assert.Contains("FINAL-", output);
+        Assert.Contains("-FRAME", output);
+        Assert.Equal(payloadLength, output.Count(c => c == 'x'));
+    }
+
+    /// <summary>Configured Latin-1 facades transcode to/from ConPTY's UTF-8 transport.</summary>
+    [Fact]
+    public void ConfiguredLatin1_TranscodesBothDirections()
+    {
+        using var p = PtyProcess.Start(new PtyStartInfo
+        {
+            FileName = "powershell.exe",
+            ArgumentList =
+            {
+                "-NoProfile",
+                "-Command",
+                "$line=[Console]::In.ReadLine(); [Console]::Out.WriteLine($line); [Console]::Out.Write('LATIN-DONE')",
+            },
+            StandardInputEncoding = Encoding.Latin1,
+            StandardOutputEncoding = Encoding.Latin1,
+        });
+
+        p.StandardInput.WriteLine("caf\u00e9");
+        var output = TestBash.ReadUntil(p.StandardOutput, "LATIN-DONE", Timeout);
+
+        Assert.Contains("caf\u00e9", output);
+        Assert.True(p.WaitForExit(Timeout));
     }
 }
 #endif

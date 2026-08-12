@@ -1,21 +1,35 @@
 #if WINDOWS
-using System.Buffers;
 using System.IO.Pipes;
 using Windows.Win32;
 
 namespace Ghostflyby.Pty;
 
 /// <summary>
-/// Windows half of <see cref="PtyStream"/>. ConPTY receives synchronous server handles,
-/// while these parent-side client streams were opened with <see cref="PipeOptions.Asynchronous"/>.
-/// The BCL therefore provides overlapped, cancellable I/O without native read/write calls or
-/// per-session worker threads.
+/// Windows half of <see cref="PtyStream"/>. A single overlapped BCL read pump owns the
+/// ConPTY output pipe and publishes bytes into a bounded managed buffer. User reads consume
+/// only that buffer, so final-frame draining never races or steals bytes from callers.
 /// </summary>
 public sealed partial class PtyStream
 {
+    private const int ReadChunkSize = 16 * 1024;
+    private const int MaxBufferedBytes = 1024 * 1024;
+
     private readonly NamedPipeClientStream inputWrite;
     private readonly NamedPipeClientStream outputRead;
     private readonly ClosePseudoConsoleSafeHandle pseudoConsole;
+    private readonly CancellationTokenSource pumpCancellation = new();
+    private readonly System.Threading.Lock readGate = new();
+    private readonly Queue<BufferChunk> chunks = [];
+    private readonly List<TaskCompletionSource<bool>> readSignals = [];
+    private readonly List<TaskCompletionSource<bool>> spaceSignals = [];
+    private readonly Task pumpTask;
+    private readonly TaskCompletionSource<bool> consoleCloseCompletion = NewSignal();
+    private int bufferedBytes;
+    private int exitWaiters;
+    private bool teardownStarted;
+    private bool outputEof;
+    private Exception? pumpError;
+    private int consoleCloseStarted;
     private int disposed;
 
     /// <summary>Takes ownership of both parent pipe ends and the pseudo console.</summary>
@@ -27,6 +41,7 @@ public sealed partial class PtyStream
         this.inputWrite = inputWrite;
         this.outputRead = outputRead;
         this.pseudoConsole = pseudoConsole;
+        pumpTask = PumpOutputAsync();
     }
 
     internal bool IsClosed => Volatile.Read(ref disposed) != 0;
@@ -43,9 +58,8 @@ public sealed partial class PtyStream
     }
 
     /// <summary>
-    /// Reads with the bounded-wait semantics used by <see cref="PtyProcess"/>. A zero timeout
-    /// is a genuine non-blocking probe; a negative timeout waits indefinitely. A return value
-    /// of zero means timeout when <paramref name="eof"/> is false, or end-of-stream when true.
+    /// Reads from the managed output buffer with the bounded-wait semantics used by
+    /// <see cref="PtyProcess"/>. Zero is a non-blocking probe; negative waits indefinitely.
     /// </summary>
     internal int Read(Span<byte> target, int timeoutMs, out bool eof)
     {
@@ -58,43 +72,41 @@ public sealed partial class PtyStream
         if (target.IsEmpty)
             return 0;
 
-        if (timeoutMs < 0)
+        var deadline = timeoutMs < 0
+            ? DateTime.MaxValue
+            : DateTime.UtcNow + TimeSpan.FromMilliseconds(timeoutMs);
+
+        while (true)
         {
-            var read = outputRead.Read(target);
-            eof = read == 0;
-            return read;
-        }
-
-        var rented = ArrayPool<byte>.Shared.Rent(target.Length);
-        try
-        {
-            using var timeout = new CancellationTokenSource();
-            if (timeoutMs > 0)
-                timeout.CancelAfter(timeoutMs);
-
-            var read = outputRead.ReadAsync(rented.AsMemory(0, target.Length), timeout.Token);
-            if (timeoutMs == 0 && !read.IsCompleted)
-                timeout.Cancel();
-
-            int count;
-            try
+            Task signal;
+            lock (readGate)
             {
-                count = read.IsCompletedSuccessfully
-                    ? read.Result
-                    : read.AsTask().GetAwaiter().GetResult();
+                var count = CopyBuffered(target);
+                if (count > 0)
+                    return count;
+                if (outputEof)
+                {
+                    eof = true;
+                    return 0;
+                }
+                if (pumpError is not null)
+                    throw new IOException("ConPTY output pump failed.", pumpError);
+                if (timeoutMs == 0)
+                    return 0;
+
+                var waiter = NewSignal();
+                readSignals.Add(waiter);
+                signal = waiter.Task;
             }
-            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+
+            var remaining = timeoutMs < 0
+                ? Timeout.Infinite
+                : (int)Math.Max(0, Math.Min((deadline - DateTime.UtcNow).TotalMilliseconds, int.MaxValue));
+            if (remaining == 0 || !signal.Wait(remaining))
             {
+                RemoveSignal(readSignals, signal);
                 return 0;
             }
-
-            rented.AsSpan(0, count).CopyTo(target);
-            eof = count == 0;
-            return count;
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(rented);
         }
     }
 
@@ -109,7 +121,34 @@ public sealed partial class PtyStream
         Interlocked.Increment(ref pendingAsyncReads);
         try
         {
-            return await outputRead.ReadAsync(target, cancellationToken).ConfigureAwait(false);
+            while (true)
+            {
+                Task signal;
+                lock (readGate)
+                {
+                    var count = CopyBuffered(target.Span);
+                    if (count > 0)
+                        return count;
+                    if (outputEof)
+                        return 0;
+                    if (pumpError is not null)
+                        throw new IOException("ConPTY output pump failed.", pumpError);
+
+                    var waiter = NewSignal();
+                    readSignals.Add(waiter);
+                    signal = waiter.Task;
+                }
+
+                try
+                {
+                    await signal.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    RemoveSignal(readSignals, signal);
+                    throw;
+                }
+            }
         }
         finally
         {
@@ -134,6 +173,40 @@ public sealed partial class PtyStream
             : inputWrite.WriteAsync(source, cancellationToken);
     }
 
+    /// <summary>
+    /// Called before an exit wait starts. While at least one waiter is active, the normal buffer
+    /// bound is lifted so process exit cannot deadlock behind an application waiting before read.
+    /// </summary>
+    internal void EnterExitWait()
+    {
+        lock (readGate)
+        {
+            exitWaiters++;
+            CompleteSignals(spaceSignals);
+        }
+    }
+
+    /// <summary>Balances <see cref="EnterExitWait"/> when a wait returns, times out, or is canceled.</summary>
+    internal void ExitExitWait()
+    {
+        lock (readGate)
+        {
+            if (exitWaiters > 0)
+                exitWaiters--;
+        }
+    }
+
+    /// <summary>
+    /// Called by the reaper after the root process exits. The close and final drain continue on
+    /// the thread pool so the single global reaper thread remains non-blocking.
+    /// </summary>
+    internal void NotifyProcessExited()
+    {
+        BeginTeardown();
+        if (Interlocked.Exchange(ref consoleCloseStarted, 1) == 0)
+            ThreadPool.QueueUserWorkItem(static state => ((PtyStream)state!).CloseConsoleAndDrain(), this);
+    }
+
     protected override void Dispose(bool disposing)
     {
         if (!disposing || Interlocked.Exchange(ref disposed, 1) != 0)
@@ -142,50 +215,209 @@ public sealed partial class PtyStream
             return;
         }
 
-        Task? drain = null;
+        BeginTeardown();
+        if (Interlocked.Exchange(ref consoleCloseStarted, 1) == 0)
+            CloseConsoleAndDrain();
+        else
+            consoleCloseCompletion.Task.GetAwaiter().GetResult();
+
+        inputWrite.Dispose();
+        outputRead.Dispose();
+        pumpCancellation.Cancel();
+        ObservePump(pumpTask);
+
+        lock (readGate)
+        {
+            outputEof = true;
+            CompleteSignals(readSignals);
+            CompleteSignals(spaceSignals);
+        }
+        pumpCancellation.Dispose();
+        base.Dispose(disposing);
+    }
+
+    private async Task PumpOutputAsync()
+    {
+        var buffer = new byte[ReadChunkSize];
         try
         {
-            // ClosePseudoConsole can emit a final frame and wait for its output channel to
-            // drain. Keep an overlapped BCL read active before closing it, then abort that
-            // read by closing our pipe if EOF did not already complete it.
-            drain = outputRead.CopyToAsync(Stream.Null);
-            pseudoConsole.Dispose();
+            while (true)
+            {
+                await WaitForBufferSpaceAsync(pumpCancellation.Token).ConfigureAwait(false);
+                var count = await outputRead.ReadAsync(buffer, pumpCancellation.Token).ConfigureAwait(false);
+                if (count == 0)
+                {
+                    PublishEof();
+                    return;
+                }
+
+                var copy = new byte[count];
+                buffer.AsSpan(0, count).CopyTo(copy);
+                lock (readGate)
+                {
+                    chunks.Enqueue(new BufferChunk(copy));
+                    bufferedBytes += count;
+                    CompleteSignals(readSignals);
+                }
+            }
         }
-        finally
+        catch (OperationCanceledException) when (pumpCancellation.IsCancellationRequested)
         {
-            inputWrite.Dispose();
-            outputRead.Dispose();
-            ObserveTeardownDrain(drain);
-            base.Dispose(disposing);
+            PublishEof();
+        }
+        catch (ObjectDisposedException) when (IsClosed)
+        {
+            PublishEof();
+        }
+        catch (IOException) when (pseudoConsole.IsClosed || IsClosed)
+        {
+            PublishEof();
+        }
+        catch (Exception ex)
+        {
+            lock (readGate)
+            {
+                pumpError = ex;
+                CompleteSignals(readSignals);
+                CompleteSignals(spaceSignals);
+            }
         }
     }
 
-    private static void ObserveTeardownDrain(Task? drain)
+    private async Task WaitForBufferSpaceAsync(CancellationToken cancellationToken)
     {
-        if (drain is null)
-            return;
+        while (true)
+        {
+            Task signal;
+            lock (readGate)
+            {
+                if (teardownStarted || exitWaiters > 0 || bufferedBytes < MaxBufferedBytes)
+                    return;
+                var waiter = NewSignal();
+                spaceSignals.Add(waiter);
+                signal = waiter.Task;
+            }
 
+            try
+            {
+                await signal.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                RemoveSignal(spaceSignals, signal);
+                throw;
+            }
+        }
+    }
+
+    private void CloseConsoleAndDrain()
+    {
         try
         {
-            drain.GetAwaiter().GetResult();
+            pseudoConsole.Dispose();
+            ObservePump(pumpTask);
+        }
+        catch
+        {
+            // Root exit has already been recorded; a teardown error is surfaced to readers
+            // only when the pump itself cannot publish buffered data or EOF.
+        }
+        finally
+        {
+            consoleCloseCompletion.TrySetResult(true);
+        }
+    }
+
+    private int CopyBuffered(Span<byte> target)
+    {
+        var copied = 0;
+        while (copied < target.Length && chunks.Count > 0)
+        {
+            var chunk = chunks.Peek();
+            var count = Math.Min(target.Length - copied, chunk.Remaining);
+            chunk.Data.AsSpan(chunk.Offset, count).CopyTo(target[copied..]);
+            chunk.Offset += count;
+            copied += count;
+            bufferedBytes -= count;
+            if (chunk.Remaining == 0)
+                chunks.Dequeue();
+        }
+        if (copied > 0)
+            CompleteSignals(spaceSignals);
+        return copied;
+    }
+
+    private void BeginTeardown()
+    {
+        lock (readGate)
+        {
+            teardownStarted = true;
+            CompleteSignals(spaceSignals);
+        }
+    }
+
+    private void PublishEof()
+    {
+        lock (readGate)
+        {
+            outputEof = true;
+            CompleteSignals(readSignals);
+            CompleteSignals(spaceSignals);
+        }
+    }
+
+    private static TaskCompletionSource<bool> NewSignal() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private void RemoveSignal(List<TaskCompletionSource<bool>> signals, Task signal)
+    {
+        lock (readGate)
+        {
+            for (var i = signals.Count - 1; i >= 0; i--)
+            {
+                if (ReferenceEquals(signals[i].Task, signal))
+                {
+                    signals.RemoveAt(i);
+                    break;
+                }
+            }
+        }
+    }
+
+    private static void CompleteSignals(List<TaskCompletionSource<bool>> signals)
+    {
+        foreach (var signal in signals)
+            signal.TrySetResult(true);
+        signals.Clear();
+    }
+
+    private static void ObservePump(Task pump)
+    {
+        try
+        {
+            pump.GetAwaiter().GetResult();
         }
         catch (OperationCanceledException)
         {
-            // Disposing an async pipe cancels an outstanding overlapped read.
         }
         catch (ObjectDisposedException)
         {
-            // The output client is deliberately closed after the pseudo console.
         }
         catch (IOException)
         {
-            // A broken/aborted pipe is the expected terminal state during teardown.
         }
     }
 
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(IsClosed, this);
+    }
+
+    private sealed class BufferChunk(byte[] data)
+    {
+        internal byte[] Data { get; } = data;
+        internal int Offset { get; set; }
+        internal int Remaining => Data.Length - Offset;
     }
 }
 #endif

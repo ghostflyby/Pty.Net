@@ -101,14 +101,29 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
     private PtyProcess(PtyStream stream, int pid, Encoding? inputEncoding, Encoding? outputEncoding, SafeProcessHandle? processHandle)
     {
         BaseStream = stream;
-        // Null encoding means UTF-8 — the terminal default on macOS, Linux and Windows.
+        // Null encoding means UTF-8 — the terminal default on macOS and Linux and the
+        // mandatory ConPTY byte transport on Windows.
         // The reader's read-ahead buffer is fine: this text facade owns the stream until
         // the caller switches to BaseStream (never mix — like Process's StandardOutput).
-        StandardInput = new StreamWriter(stream, inputEncoding ?? new UTF8Encoding(encoderShouldEmitUTF8Identifier: false))
+        var effectiveInputEncoding = inputEncoding ?? new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+        var effectiveOutputEncoding = outputEncoding ?? Encoding.UTF8;
+#if WINDOWS
+        // ConPTY always transports UTF-8 bytes. These directional facade streams expose
+        // the caller-selected encodings on their outer side while BaseStream remains the
+        // untouched raw UTF-8 transport.
+        var inputFacadeStream = Encoding.CreateTranscodingStream(
+            stream, Encoding.UTF8, effectiveInputEncoding, leaveOpen: true);
+        var outputFacadeStream = Encoding.CreateTranscodingStream(
+            stream, Encoding.UTF8, effectiveOutputEncoding, leaveOpen: true);
+#else
+        Stream inputFacadeStream = stream;
+        Stream outputFacadeStream = stream;
+#endif
+        StandardInput = new StreamWriter(inputFacadeStream, effectiveInputEncoding)
         {
             AutoFlush = true,
         };
-        StandardOutput = new StreamReader(stream, outputEncoding ?? Encoding.UTF8);
+        StandardOutput = new StreamReader(outputFacadeStream, effectiveOutputEncoding);
         Pid = pid;
         ProcessHandle = processHandle;
         // The process-wide reaper owns the exit wait for this child: it sets ExitCode and
@@ -306,11 +321,12 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
 
     /// <summary>
     /// Blocks until the child exits or the timeout elapses. Returns false on timeout.
-    /// While waiting, output is drained continuously so the child never blocks writing
-    /// to a full pty buffer. Note: like <see cref="System.Diagnostics.Process.WaitForExit()"/>
-    /// with redirected output, concurrent consumption of <see cref="StandardOutput"/> /
-    /// <see cref="BaseStream"/> is not safe while waiting — the drained bytes are
-    /// discarded, so capture output you need before or concurrently with this call.
+    /// While waiting, native output is drained continuously so the child never blocks writing
+    /// to a full pty buffer. On Unix those bytes are discarded; on Windows the output pump
+    /// preserves them in its managed queue for subsequent reads. Like
+    /// <see cref="System.Diagnostics.Process.WaitForExit()"/> with redirected output,
+    /// concurrent consumption of <see cref="StandardOutput"/> / <see cref="BaseStream"/>
+    /// is not portable, so consume output before or after the wait rather than during it.
     /// Pass <see cref="Timeout.InfiniteTimeSpan"/> to wait indefinitely.
     ///
     /// Reaping happens on the process-wide reaper thread; this method only observes
@@ -319,6 +335,13 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
     /// </summary>
     public bool WaitForExit(TimeSpan timeout)
     {
+#if WINDOWS
+        // Exit may be blocked behind more than the pump's normal bounded buffer. Lift
+        // that bound for an explicit wait, preserving all bytes for later user reads.
+        BaseStream.EnterExitWait();
+        try
+        {
+#endif
         var infinite = timeout == Timeout.InfiniteTimeSpan;
         var deadline = infinite ? DateTime.MaxValue : DateTime.UtcNow + timeout;
         while (true)
@@ -340,6 +363,13 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
                 return false;
             Thread.Sleep(WaitStepMs(deadline, infinite));
         }
+#if WINDOWS
+        }
+        finally
+        {
+            BaseStream.ExitExitWait();
+        }
+#endif
     }
 
     /// <summary>
@@ -369,6 +399,11 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
 
     private async Task<bool> WaitForExitCoreAsync(TimeSpan timeout, CancellationToken ct)
     {
+#if WINDOWS
+        BaseStream.EnterExitWait();
+        try
+        {
+#endif
         var infinite = timeout == Timeout.InfiniteTimeSpan;
         var deadline = infinite ? DateTime.MaxValue : DateTime.UtcNow + timeout;
         while (true)
@@ -394,6 +429,13 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
                 return false;
             await Task.Delay(WaitStepMs(deadline, infinite), ct).ConfigureAwait(false);
         }
+#if WINDOWS
+        }
+        finally
+        {
+            BaseStream.ExitExitWait();
+        }
+#endif
     }
 
     /// <summary>
@@ -506,6 +548,11 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
     /// </summary>
     internal void OnReaped(int code)
     {
+#if WINDOWS
+        // ClosePseudoConsole can wait for a final output frame to drain. PtyStream queues
+        // that work away from this shared reaper thread and publishes EOF when done.
+        BaseStream.NotifyProcessExited();
+#endif
         Volatile.Write(ref exitCode, code);
         try
         {
@@ -556,6 +603,12 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
     /// </summary>
     private void DrainOutput()
     {
+#if WINDOWS
+        // The Windows output pump continuously drains the native ConPTY pipe into its
+        // managed queue. Do not consume that queue here: all bytes remain visible to the
+        // caller through BaseStream / StandardOutput.
+        return;
+#else
         while (true)
         {
             // 0ms timeout: only drain what is already there, never wait.
@@ -563,6 +616,7 @@ public sealed class PtyProcess : IDisposable, IAsyncDisposable
             if (n <= 0)
                 return; // nothing available right now, or EOF
         }
+#endif
     }
 
     /// <summary>Decodes a waitpid(2) status into an exit code: 0..255, or 128 + signal when killed.</summary>
