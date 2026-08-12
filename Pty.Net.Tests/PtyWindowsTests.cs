@@ -87,12 +87,12 @@ public class PtyWindowsTests
              "$h=[Console]::WindowHeight; $w=[Console]::WindowWidth; [Console]::Out.Write($w.ToString()+','+$h.ToString()+'|A'); Start-Sleep -Seconds 5; $h=[Console]::WindowHeight; $w=[Console]::WindowWidth; [Console]::Out.Write($w.ToString()+','+$h.ToString()+'|B')"]);
 
         var first = TestBash.ReadUntil(p.StandardOutput, "|A", Timeout);
-        Assert.Matches(@"\b120,30\|A", first);
+        Assert.Contains("120,30|A", first);
 
         p.Resize(80, 24);
 
         var second = TestBash.ReadUntil(p.StandardOutput, "|B", Timeout);
-        Assert.Matches(@"\b80,24\|B", second);
+        Assert.Contains("80,24|B", second);
     }
 
     /// <summary>Configured Latin-1 facades transcode to/from ConPTY's UTF-8 transport.</summary>

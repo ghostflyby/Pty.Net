@@ -179,14 +179,19 @@ internal static partial class NativeMethods
 
     // ioctl(2) is variadic (int ioctl(int, unsigned long, ...)) and .NET has no
     // varargs interop (__arglist throws InvalidProgramException on non-Windows), so a
-    // fixed signature must substitute. That works on x86-64 SysV (the callee reads the
-    // fixed arguments from registers), but on arm64 — macOS and Linux — the AAPCS64
-    // variadic ABI makes the callee re-read its arguments from the register save area
-    // on the stack, which a fixed-signature caller never populates: the pointer arrives
-    // garbage and the call fails or crashes. The proven workaround (IronPython's fcntl
-    // module, dotnet/runtime#48796) pads the six remaining general-purpose registers
-    // (x2-x7) with dummy arguments so the real pointer lands in the stack argument area
-    // where the variadic callee looks for it.
+    // fixed signature must substitute. Whether that works depends on the libc's
+    // va_list mechanics:
+    //   * Linux (glibc/musl) reads the leading variadic arguments from the argument
+    //     registers, so a plain fixed signature (fd, request, arg in x0/x1/x2 on
+    //     arm64, rdi/rsi/rdx on x64) delivers the pointer correctly on both.
+    //   * Apple arm64 stores variadic arguments on the stack, so the fixed signature
+    //     must push the real argument there: the proven workaround (IronPython's
+    //     fcntl module, dotnet/runtime#48796) pads the six remaining general-purpose
+    //     registers (x2-x7) with dummies, landing the pointer in the stack argument
+    //     area where Apple's va_arg looks for it.
+    // Both forms were verified empirically on Apple arm64 (pad works, plain crashes)
+    // and the plain form on Linux x64; the Linux arm64 plain form is exercised by the
+    // CI arm64 runner.
     [LibraryImport("libc", SetLastError = true, EntryPoint = "ioctl")]
     internal static partial int ioctl(int fd, nuint request, IntPtr arg);
 
@@ -194,10 +199,10 @@ internal static partial class NativeMethods
     internal static partial int ioctlArm64(int fd, nuint request,
         nint r2, nint r3, nint r4, nint r5, nint r6, nint r7, IntPtr arg);
 
-    /// <summary>Calls ioctl(fd, request, arg), selecting the arm64 pad-register form where required.</summary>
+    /// <summary>Calls ioctl(fd, request, arg), selecting the pad-register form where the platform's variadic ABI requires it.</summary>
     internal static int IoCtl(int fd, nuint request, IntPtr arg)
     {
-        return RuntimeInformation.ProcessArchitecture == Architecture.Arm64
+        return OperatingSystem.IsMacOS() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64
             ? ioctlArm64(fd, request, 0, 0, 0, 0, 0, 0, arg)
             : ioctl(fd, request, arg);
     }
