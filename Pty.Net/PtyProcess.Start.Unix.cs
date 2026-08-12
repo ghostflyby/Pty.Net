@@ -15,6 +15,18 @@ public sealed partial class PtyProcess
     // each spawn does not allocate a fresh int[] for the loop below.
     private static readonly int[] StdioTargets = [0, 1, 2];
 
+    // Shared drain buffer, used by DrainOutput (WaitForExit calls it every ~10ms). The
+    // drain only discards bytes and never reads them back, so every process can share
+    // one 4KB buffer instead of holding its own — memory stays O(1) however many
+    // processes are draining concurrently. A dedicated lock serializes the drain across
+    // instances (the per-process gate only orders one process's own calls); the
+    // critical section is a 0ms non-blocking read, so contention is negligible. Unix-
+    // only: the Windows DrainOutput is a no-op, so this lives here where Windows never
+    // compiles it.
+    private const int ReadBufferSize = 4096;
+    private static readonly byte[] DrainBuffer = new byte[ReadBufferSize];
+    private static readonly System.Threading.Lock DrainLock = new();
+
     private static partial PtyProcess StartPlatform(
         string file, string[] arguments, string? workingDirectory,
         IDictionary<string, string?> environment, Encoding? inputEncoding, Encoding? outputEncoding,
@@ -236,12 +248,15 @@ public sealed partial class PtyProcess
     /// </summary>
     private partial void DrainOutput()
     {
-        while (true)
+        lock (DrainLock)
         {
-            // 0ms timeout: only drain what is already there, never wait.
-            var n = BaseStream.Read(drainBuf, 0, out _);
-            if (n <= 0)
-                return; // nothing available right now, or EOF
+            while (true)
+            {
+                // 0ms timeout: only drain what is already there, never wait.
+                var n = BaseStream.Read(DrainBuffer, 0, out _);
+                if (n <= 0)
+                    return; // nothing available right now, or EOF
+            }
         }
     }
 

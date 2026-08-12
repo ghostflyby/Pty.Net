@@ -19,13 +19,7 @@ namespace Ghostflyby.Pty;
 /// </summary>
 public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
 {
-    private const int ReadBufferSize = 4096;
-
     private readonly SemaphoreSlim gate = new(1, 1);
-
-    // Reused by DrainOutput, which WaitForExit calls every ~10ms; a fresh allocation per
-    // call would churn ~4KB each iteration. Serialized by the gate.
-    private readonly byte[] drainBuf = new byte[ReadBufferSize];
 
     private bool disposed;
 
