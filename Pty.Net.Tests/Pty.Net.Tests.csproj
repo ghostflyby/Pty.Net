@@ -7,6 +7,9 @@
         <Nullable>enable</Nullable>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <IsPackable>false</IsPackable>
+        <!-- Every warning is a build error. Test classes have no doc comments and the
+             project does not generate an XML doc file, so CS1591 never activates here. -->
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
 
         <!-- Platform symbol used by #if (e.g. platform-specific libc constants in tests). -->
         <DefineConstants Condition="$([MSBuild]::IsOSPlatform('OSX'))">$(DefineConstants);OSX</DefineConstants>
