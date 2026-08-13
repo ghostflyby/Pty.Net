@@ -16,12 +16,11 @@ concurrency:
   group: publish-${{ github.ref }}
   cancel-in-progress: false
 
-# The version steps use bash parameter expansion (${GITHUB_REF_NAME#v}) and $VAR env
-# reads. Windows runners default run: steps to PowerShell, where those are empty — pin
-# every step to bash (preinstalled on all three runners) so VERSION flows everywhere.
+# Every run: step uses pwsh (PowerShell Core), preinstalled on all three runners, so
+# the same script syntax works on Windows, macOS, and Linux — no bash-isms anywhere.
 defaults:
   run:
-    shell: bash
+    shell: pwsh
 
 jobs:
   build:
@@ -45,14 +44,15 @@ jobs:
           dotnet-version: 10.0.x
 
       - name: Set version from tag
-        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+        run: |
+          "VERSION=$($env:GITHUB_REF_NAME -replace '^v','')" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
 
       # A release candidate must pass the full suite on the OS whose dll it ships.
       - name: Test
         run: dotnet test Pty.Net.slnx -c Release --nologo
 
       - name: Pack
-        run: dotnet pack Pty.Net/Pty.Net.csproj -c Release --nologo -o pkg -p:Version=$VERSION
+        run: dotnet pack Pty.Net/Pty.Net.csproj -c Release --nologo -o pkg -p:Version=$env:VERSION
 
       - name: Upload platform package
         uses: actions/upload-artifact@v4
@@ -82,62 +82,94 @@ jobs:
 
       - name: Validate tag is SemVer and not a downgrade
         run: |
-          set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          echo "VERSION=$version" >> "$GITHUB_ENV"
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "error: tag '$GITHUB_REF_NAME' is not a valid vX.Y.Z[(-suffix)] version"
-            exit 1
-          fi
-          latest="$(gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || true)"
-          if [[ -n "$latest" ]]; then
-            latest_v="${latest#v}"
-            newer="$(printf '%s\n%s\n' "$latest_v" "$version" | sort -V | tail -n 1)"
-            if [[ "$newer" != "$version" ]]; then
-              echo "error: version '$version' is not newer than the latest release '$latest_v'"
-              exit 1
-            fi
-            echo "ok: $version > $latest_v"
-          else
-            echo "no previous release; this is the first publish"
-          fi
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          "VERSION=$version" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+          if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
+              throw "tag '$env:GITHUB_REF_NAME' is not a valid vX.Y.Z[(-suffix)] version"
+          }
+          $latest = (gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>$null)
+          if ($latest) {
+              function Test-Newer([string]$candidate, [string]$previous) {
+                  $c = $candidate -split '-'; $p = $previous -split '-'
+                  $cNum = [version]$c[0]; $pNum = [version]$p[0]
+                  if ($cNum -gt $pNum) { return $true }
+                  if ($cNum -lt $pNum) { return $false }
+                  $cPre = if ($c.Count -gt 1) { $c[1] } else { '' }
+                  $pPre = if ($p.Count -gt 1) { $p[1] } else { '' }
+                  if ($pPre -eq '' -and $cPre -ne '') { return $false }   # 1.0.0-beta < 1.0.0
+                  if ($cPre -eq '' -and $pPre -ne '') { return $true }
+                  return $cPre -gt $pPre
+              }
+              $latestV = $latest -replace '^v', ''
+              if (-not (Test-Newer $version $latestV)) {
+                  throw "version '$version' is not newer than the latest release '$latestV'"
+              }
+              Write-Host "ok: $version > $latestV"
+          } else {
+              Write-Host 'no previous release; this is the first publish'
+          }
         env:
           GH_TOKEN: ${{ github.token }}
 
       - name: Assemble cross-platform nupkg
         run: |
-          set -euo pipefail
-          version="$VERSION"
-          mkdir -p merged/lib/net10.0
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $version = $env:VERSION
+          New-Item -ItemType Directory -Force -Path 'merged/lib/net10.0' | Out-Null
           # Each OS build fills both of its architecture RID folders (see build job).
-          declare -A rids=(
-            [pkg-windows-latest]="win-x64 win-arm64"
-            [pkg-ubuntu-latest]="linux-x64 linux-arm64"
-            [pkg-macos-latest]="osx-x64 osx-arm64"
-          )
-          for art in "${!rids[@]}"; do
-            nupkg="$(find "pkgs/$art" -name '*.nupkg' | head -n 1)"
-            [[ -n "$nupkg" ]] || { echo "error: no nupkg found in $art"; exit 1; }
-            for rid in ${rids[$art]}; do
-              mkdir -p "merged/lib/net10.0/$rid"
-              unzip -p "$nupkg" 'lib/net10.0/*.dll' > "merged/lib/net10.0/$rid/Ghostflyby.Pty.dll"
-            done
-          done
+          $rids = @{
+            'pkg-windows-latest' = @('win-x64','win-arm64')
+            'pkg-ubuntu-latest'  = @('linux-x64','linux-arm64')
+            'pkg-macos-latest'   = @('osx-x64','osx-arm64')
+          }
+          foreach ($art in $rids.Keys) {
+            $nupkg = Get-ChildItem -Path "pkgs/$art" -Filter '*.nupkg' -Recurse | Select-Object -First 1
+            if (-not $nupkg) { throw "no nupkg found in $art" }
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($nupkg.FullName)
+            $entry = $zip.Entries | Where-Object { $_.FullName -like 'lib/net10.0/*.dll' } | Select-Object -First 1
+            if (-not $entry) { $zip.Dispose(); throw "no lib dll in $($nupkg.Name)" }
+            $tmp = [System.IO.Path]::GetTempFileName()
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $tmp, $true)
+            $zip.Dispose()
+            try {
+              foreach ($rid in $rids[$art]) {
+                New-Item -ItemType Directory -Force -Path "merged/lib/net10.0/$rid" | Out-Null
+                Copy-Item -LiteralPath $tmp -Destination "merged/lib/net10.0/$rid/Ghostflyby.Pty.dll" -Force
+              }
+            } finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+          }
           # Root package structure (nuspec, rels, content-types) from any single package.
-          base="$(find pkgs -name '*.nupkg' | head -n 1)"
-          unzip -o -q "$base" -d merged -x 'lib/*'
-          (cd merged && zip -qr "../Ghostflyby.Pty.$version.nupkg" .)
+          $base = Get-ChildItem -Path pkgs -Filter '*.nupkg' -Recurse | Select-Object -First 1
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($base.FullName)
+          try {
+            foreach ($entry in $zip.Entries) {
+              if ($entry.FullName -like 'lib/*') { continue }
+              $dest = Join-Path 'merged' $entry.FullName
+              New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+              [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
+            }
+          } finally { $zip.Dispose() }
+          Compress-Archive -Path 'merged/*' -DestinationPath "Ghostflyby.Pty.$version.nupkg" -Force
 
       - name: Verify assembled package
         run: |
-          set -euo pipefail
-          dlls="$(unzip -l "Ghostflyby.Pty.$VERSION.nupkg" | grep -c 'lib/net10.0/.*/Ghostflyby.Pty.dll')"
-          if [[ "$dlls" != "6" ]]; then
-            echo "error: expected 6 RID-specific dlls, found $dlls"
-            unzip -l "Ghostflyby.Pty.$VERSION.nupkg" | grep 'lib/net10.0'
-            exit 1
-          fi
-          unzip -l "Ghostflyby.Pty.$VERSION.nupkg" | grep 'Ghostflyby.Pty.nuspec'
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead("Ghostflyby.Pty.$env:VERSION.nupkg")
+          try {
+            $dlls = @($zip.Entries | Where-Object { $_.FullName -like 'lib/net10.0/*/Ghostflyby.Pty.dll' })
+            if ($dlls.Count -ne 6) {
+              $zip.Entries | Where-Object { $_.FullName -like 'lib/net10.0/*' } | ForEach-Object { Write-Host $_.FullName }
+              throw "expected 6 RID-specific dlls, found $($dlls.Count)"
+            }
+            $nuspec = @($zip.Entries | Where-Object { $_.FullName -like '*.nuspec' })
+            if ($nuspec.Count -ne 1) { throw "expected exactly one nuspec, found $($nuspec.Count)" }
+          } finally { $zip.Dispose() }
 
       - name: NuGet login (OIDC → temporary API key)
         uses: NuGet/login@v1
@@ -148,12 +180,12 @@ jobs:
           user: ${{ secrets.NUGET_USER }}
 
       - name: Publish to nuget.org
-        run: dotnet nuget push "Ghostflyby.Pty.$VERSION.nupkg" --source https://api.nuget.org/v3/index.json --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" --skip-duplicate
+        run: dotnet nuget push "Ghostflyby.Pty.$env:VERSION.nupkg" --source https://api.nuget.org/v3/index.json --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" --skip-duplicate
 
       - name: Create GitHub release
         run: |
-          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" \
-            --notes "Cross-platform pty library — see https://www.nuget.org/packages/Ghostflyby.Pty/$VERSION for package details." \
-            "Ghostflyby.Pty.$VERSION.nupkg"
+          gh release create "$env:GITHUB_REF_NAME" --title "$env:GITHUB_REF_NAME" `
+            --notes "Cross-platform pty library — see https://www.nuget.org/packages/Ghostflyby.Pty/$env:VERSION for package details." `
+            "Ghostflyby.Pty.$env:VERSION.nupkg"
         env:
           GH_TOKEN: ${{ github.token }}
