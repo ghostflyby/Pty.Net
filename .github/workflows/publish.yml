@@ -16,6 +16,13 @@ concurrency:
   group: publish-${{ github.ref }}
   cancel-in-progress: false
 
+# The version steps use bash parameter expansion (${GITHUB_REF_NAME#v}) and $VAR env
+# reads. Windows runners default run: steps to PowerShell, where those are empty — pin
+# every step to bash (preinstalled on all three runners) so VERSION flows everywhere.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build:
     # One build per OS: the compiled dll is platform-specific but architecture-neutral
