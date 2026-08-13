@@ -70,6 +70,7 @@ public sealed partial class PtyStream
     /// </summary>
     /// <param name="target">The buffer to fill.</param>
     /// <returns>The number of bytes read, or 0 at end of stream.</returns>
+    /// <exception cref="InvalidOperationException">A pending async read is in progress on this stream; sync and async reads cannot be mixed.</exception>
     /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
     public override int Read(Span<byte> target)
     {

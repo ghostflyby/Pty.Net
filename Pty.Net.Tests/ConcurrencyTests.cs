@@ -32,9 +32,9 @@ public class ConcurrencyTests
                 try
                 {
                     using var bash = TestBash.Start();
-                    TestBash.ReadUntil(bash.StandardOutput, "$", TimeSpan.FromSeconds(8));
-                    bash.StandardInput.WriteLine($"echo marker-{i}; echo __DONE__\n");
-                    var output = TestBash.ReadUntil(bash.StandardOutput, "__DONE__", TimeSpan.FromSeconds(8));
+                    TestBash.ReadUntil(bash.Output, "$", TimeSpan.FromSeconds(8));
+                    bash.Input.WriteLine($"echo marker-{i}; echo __DONE__\n");
+                    var output = TestBash.ReadUntil(bash.Output, "__DONE__", TimeSpan.FromSeconds(8));
                     if (!output.Contains($"marker-{i}"))
                         failures.Enqueue($"session {i}: marker missing in output");
                 }

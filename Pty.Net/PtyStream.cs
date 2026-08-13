@@ -8,10 +8,10 @@ namespace Ghostflyby.Pty;
 /// side closes, and every operation throws <see cref="ObjectDisposedException"/> after
 /// the stream — or the <see cref="PtyProcess"/> that owns it — is disposed.
 /// </para>
-/// <para>
-/// Use one of <see cref="PtyProcess.StandardInput"/> / <see cref="PtyProcess.StandardOutput"/>
-/// for text, or this raw stream for bytes; never mix both on the same direction.
-/// </para>
+    /// <para>
+    /// Use one of <see cref="PtyProcess.Input"/> / <see cref="PtyProcess.Output"/>
+    /// for text, or this raw stream for bytes; never mix both on the same direction.
+    /// </para>
 /// </summary>
 public sealed partial class PtyStream : Stream
 {
@@ -69,6 +69,7 @@ public sealed partial class PtyStream : Stream
     /// <returns>The number of bytes read, or 0 at end of stream.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="buffer"/> is null.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="offset"/> or <paramref name="count"/> is out of bounds for <paramref name="buffer"/>.</exception>
+    /// <exception cref="InvalidOperationException">A pending async read is in progress on this stream; sync and async reads cannot be mixed.</exception>
     /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
     public override int Read(byte[] buffer, int offset, int count)
     {

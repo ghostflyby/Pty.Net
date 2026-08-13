@@ -33,7 +33,7 @@ public class PtyProcessAsyncTests
     public async Task WaitForExitAsync_ReturnsTrue_WhenChildExits()
     {
         using var bash = TestBash.Start();
-        bash.StandardInput.WriteLine("exit");
+        bash.Input.WriteLine("exit");
 
         Assert.True(await bash.WaitForExitAsync(Timeout).WaitAsync(Timeout));
         Assert.Equal(0, bash.ExitCode);
@@ -114,7 +114,7 @@ public class PtyProcessAsyncTests
     public async Task DisposeAsync_CompletesForExitedChild()
     {
         var bash = TestBash.Start();
-        bash.StandardInput.WriteLine("exit");
+        bash.Input.WriteLine("exit");
         await bash.WaitForExitAsync(Timeout).WaitAsync(Timeout);
 
         await bash.DisposeAsync(); // must complete and not throw
@@ -185,7 +185,7 @@ public class PtyProcessAsyncTests
         var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
         bash.Exited += (_, _) => tcs.TrySetResult(bash.ExitCode ?? -1);
 
-        bash.StandardInput.WriteLine("exit");
+        bash.Input.WriteLine("exit");
 
         Assert.Equal(0, await tcs.Task.WaitAsync(Timeout));
     }

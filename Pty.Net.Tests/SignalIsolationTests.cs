@@ -22,12 +22,12 @@ public partial class SignalIsolationTests
         try
         {
             using var bash = TestBash.Start();
-            TestBash.ReadUntil(bash.StandardOutput, "$", Timeout);
+            TestBash.ReadUntil(bash.Output, "$", Timeout);
 
             // SIGINT (2): if the child inherited SIG_IGN, trap -p prints
             // "trap '' INT". Default disposition prints nothing for INT.
-            bash.StandardInput.WriteLine($"trap -p INT TERM; echo {Done}");
-            var output = TestBash.ReadUntil(bash.StandardOutput, Done, Timeout);
+            bash.Input.WriteLine($"trap -p INT TERM; echo {Done}");
+            var output = TestBash.ReadUntil(bash.Output, Done, Timeout);
 
             Assert.DoesNotContain("trap '' INT", output);
         }

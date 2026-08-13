@@ -16,7 +16,7 @@ public class PtyWindowsDiagnostics
             var marker = $"WINDOWS_PTY_SESSION_{session}";
             using var process = PtyProcess.Start("cmd.exe", ["/d", "/c", $"echo {marker}"]);
 
-            var output = TestBash.ReadUntil(process.StandardOutput, marker, Timeout);
+            var output = TestBash.ReadUntil(process.Output, marker, Timeout);
 
             Assert.Contains(marker, output);
             Assert.True(process.WaitForExit(Timeout), $"Session {session} did not exit in time.");

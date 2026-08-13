@@ -63,7 +63,7 @@ public sealed partial class PtyProcess
     /// <summary>
     /// Non-blocking drain: the Windows output pump continuously drains the native ConPTY
     /// pipe into its managed queue, so there is nothing to do here. Do not consume that
-    /// queue: all bytes remain visible to the caller through BaseStream / StandardOutput.
+    /// queue: all bytes remain visible to the caller through BaseStream / Output.
     /// </summary>
     private partial void DrainOutput()
     {

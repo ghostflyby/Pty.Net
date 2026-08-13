@@ -22,15 +22,15 @@ public class PtyStreamTests : IDisposable
     /// <summary>Turns off the tty line-discipline echo so command output is not mixed with echoed input.</summary>
     private void DisableEcho()
     {
-        bash.StandardInput.WriteLine("stty -echo");
-        TestBash.Drain(bash.StandardOutput, TimeSpan.FromMilliseconds(200));
+        bash.Input.WriteLine("stty -echo");
+        TestBash.Drain(bash.Output, TimeSpan.FromMilliseconds(200));
     }
 
     /// <summary>Waits for the shell prompt and drains it, leaving the session idle.</summary>
     private void WaitForIdlePrompt()
     {
-        TestBash.ReadUntil(bash.StandardOutput, "$", Timeout);
-        TestBash.Drain(bash.StandardOutput, TimeSpan.FromMilliseconds(50));
+        TestBash.ReadUntil(bash.Output, "$", Timeout);
+        TestBash.Drain(bash.Output, TimeSpan.FromMilliseconds(50));
     }
 
     /// <summary>
@@ -53,7 +53,7 @@ public class PtyStreamTests : IDisposable
             all[i] = TestBash.Start();
             // Drain the startup banner so the session is truly idle; a read parked here
             // must stay pending (the whole point of the test) instead of consuming it.
-            TestBash.ReadUntil(all[i].StandardOutput, "$", Timeout);
+            TestBash.ReadUntil(all[i].Output, "$", Timeout);
             cts[i] = new CancellationTokenSource();
             reads[i] = all[i].BaseStream.ReadAsync(new byte[16], cts[i].Token).AsTask();
         }
@@ -88,7 +88,7 @@ public class PtyStreamTests : IDisposable
     public async Task ReadAsync_ReturnsAvailableBytesNotFullBuffer()
     {
         DisableEcho();
-        bash.StandardInput.WriteLine($"printf 'short'; echo {Done}");
+        bash.Input.WriteLine($"printf 'short'; echo {Done}");
 
         var buf = new byte[1024];
         var n = await Stream.ReadAsync(buf).AsTask().WaitAsync(Timeout);
@@ -103,7 +103,7 @@ public class PtyStreamTests : IDisposable
     public async Task ReadAsync_ReadsDataThatWasAlreadyAvailable()
     {
         DisableEcho();
-        bash.StandardInput.WriteLine($"printf 'ALREADY-THERE'; echo {Done}");
+        bash.Input.WriteLine($"printf 'ALREADY-THERE'; echo {Done}");
         await Task.Delay(100); // let the echo land in the pty buffer before reading
 
         using var cts = new CancellationTokenSource();
@@ -147,7 +147,7 @@ public class PtyStreamTests : IDisposable
         using var cts = new CancellationTokenSource();
         var read = Stream.ReadAsync(new byte[16], cts.Token).AsTask();
 
-        bash.StandardInput.WriteLine("exit");
+        bash.Input.WriteLine("exit");
 
         // Partial reads may surface leftover output first; keep reading until EOF (0).
         var n = await read.WaitAsync(Timeout);
@@ -162,7 +162,7 @@ public class PtyStreamTests : IDisposable
     public void Read_ReturnsZeroAfterChildExit()
     {
         WaitForIdlePrompt();
-        bash.StandardInput.WriteLine("exit");
+        bash.Input.WriteLine("exit");
         bash.WaitForExit(Timeout);
 
         // Like the async variant, partial reads may surface leftover output first
@@ -179,14 +179,14 @@ public class PtyStreamTests : IDisposable
     public async Task WriteAsync_Completes()
     {
         DisableEcho();
-        bash.StandardInput.WriteLine($"cat; echo {Done}");
-        TestBash.Drain(bash.StandardOutput, TimeSpan.FromMilliseconds(500)); // let cat start reading
+        bash.Input.WriteLine($"cat; echo {Done}");
+        TestBash.Drain(bash.Output, TimeSpan.FromMilliseconds(500)); // let cat start reading
 
         using var cts = new CancellationTokenSource();
-        await bash.StandardInput.WriteAsync("hello-async-write\n".AsMemory(), cts.Token).WaitAsync(Timeout);
-        await bash.StandardInput.WriteAsync("\x04".AsMemory(), CancellationToken.None); // EOT ends cat
+        await bash.Input.WriteAsync("hello-async-write\n".AsMemory(), cts.Token).WaitAsync(Timeout);
+        await bash.Input.WriteAsync("\x04".AsMemory(), CancellationToken.None); // EOT ends cat
 
-        var output = TestBash.ReadUntil(bash.StandardOutput, Done, Timeout);
+        var output = TestBash.ReadUntil(bash.Output, Done, Timeout);
         Assert.Contains("hello-async-write", output);
     }
 
@@ -203,9 +203,9 @@ public class PtyStreamTests : IDisposable
     public async Task WriteAsync_BlockedOnFullPtyBuffer_CancelsImmediately()
     {
         WaitForIdlePrompt();
-        bash.StandardInput.WriteLine("stty -icanon min 1 time 0"); // non-canonical: bounded input queue
-        TestBash.Drain(bash.StandardOutput, TimeSpan.FromMilliseconds(300));
-        bash.StandardInput.WriteLine("exec sleep 1000"); // child stops reading stdin
+        bash.Input.WriteLine("stty -icanon min 1 time 0"); // non-canonical: bounded input queue
+        TestBash.Drain(bash.Output, TimeSpan.FromMilliseconds(300));
+        bash.Input.WriteLine("exec sleep 1000"); // child stops reading stdin
         await Task.Delay(300);
 
         using var cts = new CancellationTokenSource();
@@ -237,7 +237,7 @@ public class PtyStreamTests : IDisposable
             .ToArray();
         await Task.Delay(200); // let them all register before output flows
 
-        bash.StandardInput.WriteLine($"seq 1 500; echo {Done}"); // ~2 KB of output
+        bash.Input.WriteLine($"seq 1 500; echo {Done}"); // ~2 KB of output
 
         var results = await Task.WhenAll(reads).WaitAsync(Timeout);
         Assert.All(results, n => Assert.True(n > 0, "every overlapping read should get data"));

@@ -34,12 +34,12 @@ public partial class FdInheritanceTests
         try
         {
             using var bash = TestBash.Start();
-            TestBash.ReadUntil(bash.StandardOutput, "$", Timeout);
+            TestBash.ReadUntil(bash.Output, "$", Timeout);
 
             // If fd leaked into the child, `/dev/fd/{fd}` is accessible from bash and
             // prints LEAKED; otherwise the child reports CLEAN.
-            bash.StandardInput.WriteLine($"if [ -e /dev/fd/{fd} ]; then echo LEAKED; else echo CLEAN; fi; echo {Done}");
-            var output = TestBash.ReadUntil(bash.StandardOutput, Done, Timeout);
+            bash.Input.WriteLine($"if [ -e /dev/fd/{fd} ]; then echo LEAKED; else echo CLEAN; fi; echo {Done}");
+            var output = TestBash.ReadUntil(bash.Output, Done, Timeout);
 
             Assert.Contains("CLEAN", output);
         }

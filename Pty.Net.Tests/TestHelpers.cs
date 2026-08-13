@@ -6,7 +6,7 @@ using System.Text;
 /// <summary>
 /// Test-side helpers for driving a PTY session. Marker-based reading (<c>ReadUntil</c>)
 /// is deliberately not part of the public library API — consumers build their own text
-/// layer on <c>PtyProcess.StandardOutput</c> — so the tests share one here.
+/// layer on <c>PtyProcess.Output</c> — so the tests share one here.
 /// All blocking work uses the reader's async path with a cancelable token (the engine
 /// cancels pending reads immediately), so no thread-pool thread is ever parked.
 /// </summary>

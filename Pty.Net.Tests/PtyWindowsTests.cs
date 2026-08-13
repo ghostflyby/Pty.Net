@@ -19,7 +19,7 @@ public class PtyWindowsTests
     public void Cmd_EchoesThroughConPty()
     {
         using var p = PtyProcess.Start("cmd.exe", ["/c", "echo hello-windows-pty & echo DONE_CMD"]);
-        var output = TestBash.ReadUntil(p.StandardOutput, "DONE_CMD", Timeout);
+        var output = TestBash.ReadUntil(p.Output, "DONE_CMD", Timeout);
 
         Assert.Contains("hello-windows-pty", output);
         Assert.True(p.WaitForExit(Timeout));
@@ -31,7 +31,7 @@ public class PtyWindowsTests
     public void PowerShell_OutputAndExitCodeRoundTrip()
     {
         using var p = PtyProcess.Start("powershell.exe", ["-NoProfile", "-Command", "Write-Output 'ps-AAAA'; Write-Output 'ps-DONE'; exit 3"]);
-        var output = TestBash.ReadUntil(p.StandardOutput, "ps-DONE", Timeout);
+        var output = TestBash.ReadUntil(p.Output, "ps-DONE", Timeout);
 
         Assert.Contains("ps-AAAA", output);
         Assert.True(p.WaitForExit(Timeout));
@@ -86,12 +86,12 @@ public class PtyWindowsTests
             ["-NoProfile", "-Command",
              "$h=[Console]::WindowHeight; $w=[Console]::WindowWidth; [Console]::Out.Write($w.ToString()+','+$h.ToString()+'|A'); Start-Sleep -Seconds 5; $h=[Console]::WindowHeight; $w=[Console]::WindowWidth; [Console]::Out.Write($w.ToString()+','+$h.ToString()+'|B')"]);
 
-        var first = TestBash.ReadUntil(p.StandardOutput, "|A", Timeout);
+        var first = TestBash.ReadUntil(p.Output, "|A", Timeout);
         Assert.Contains("120,30|A", first);
 
         p.Resize(80, 24);
 
-        var second = TestBash.ReadUntil(p.StandardOutput, "|B", Timeout);
+        var second = TestBash.ReadUntil(p.Output, "|B", Timeout);
         Assert.Contains("80,24|B", second);
     }
 
@@ -108,12 +108,12 @@ public class PtyWindowsTests
                 "-Command",
                 "$line=[Console]::In.ReadLine(); [Console]::Out.WriteLine($line); [Console]::Out.Write('LATIN-DONE')",
             ],
-            StandardInputEncoding = Encoding.Latin1,
-            StandardOutputEncoding = Encoding.Latin1,
+            InputEncoding = Encoding.Latin1,
+            OutputEncoding = Encoding.Latin1,
         });
 
-        p.StandardInput.WriteLine("caf\u00e9");
-        var output = TestBash.ReadUntil(p.StandardOutput, "LATIN-DONE", Timeout);
+        p.Input.WriteLine("caf\u00e9");
+        var output = TestBash.ReadUntil(p.Output, "LATIN-DONE", Timeout);
 
         Assert.Contains("caf\u00e9", output);
         Assert.True(p.WaitForExit(Timeout));

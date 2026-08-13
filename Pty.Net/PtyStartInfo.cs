@@ -26,16 +26,16 @@ public sealed record PtyStartInfo
     public string WorkingDirectory { get; init; } = System.Environment.CurrentDirectory;
 
     /// <summary>
-    /// Encoding used to encode text written to <see cref="PtyProcess.StandardInput"/>.
+    /// Encoding used to encode text written to <see cref="PtyProcess.Input"/>.
     /// <para>Defaults to UTF-8.</para>
     /// </summary>
-    public Encoding StandardInputEncoding { get; init; } = Encoding.UTF8;
+    public Encoding InputEncoding { get; init; } = Encoding.UTF8;
 
     /// <summary>
-    /// Encoding used to decode text read from <see cref="PtyProcess.StandardOutput"/>.
+    /// Encoding used to decode text read from <see cref="PtyProcess.Output"/>.
     /// <para>Defaults to UTF-8.</para>
     /// </summary>
-    public Encoding StandardOutputEncoding { get; init; } = Encoding.UTF8;
+    public Encoding OutputEncoding { get; init; } = Encoding.UTF8;
 
     /// <summary>Initial terminal width in character columns. Defaults to 120.</summary>
     public int InitialCols { get; init; } = 120;
@@ -86,9 +86,9 @@ public sealed record PtyStartInfo
         FileName = psi.FileName;
         WorkingDirectory = psi.WorkingDirectory;
         if (psi.StandardInputEncoding is { } inputEncoding)
-            StandardInputEncoding = inputEncoding;
+            InputEncoding = inputEncoding;
         if (psi.StandardOutputEncoding is { } outputEncoding)
-            StandardOutputEncoding = outputEncoding;
+            OutputEncoding = outputEncoding;
         foreach (var kv in psi.Environment)
             Environment[kv.Key] = kv.Value;
         ArgumentList = psi.ArgumentList.Count == 0 ? ParseArguments(psi.Arguments) : [.. psi.ArgumentList];
