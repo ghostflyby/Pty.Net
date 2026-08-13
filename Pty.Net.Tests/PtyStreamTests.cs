@@ -194,7 +194,7 @@ public class PtyStreamTests : IDisposable
     /// When the child stops reading its stdin, a big write fills the pty buffer and blocks;
     /// canceling it throws immediately (a partial advance is acceptable).
     /// The pty is put into non-canonical mode first, because canonical mode discards excess
-    /// input instead of applying backpressure, which would let the write complete.
+    /// input instead of applying backpressure, which would let the write action complete.
     /// Unix-only: it relies on stty termios (non-canonical mode). ConPTY's input queue is
     /// not termios-controlled, so this particular backpressure setup does not hold there.
     /// </summary>

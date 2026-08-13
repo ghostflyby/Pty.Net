@@ -1,12 +1,11 @@
 using System.Diagnostics.CodeAnalysis;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace Ghostflyby.Pty;
 
 /// <summary>
 /// Unix half of <see cref="PtyReaper"/>: one event-driven reaper thread waits on the
-/// kernel's process-exit notification instead of polling waitpid(WNOHANG) every 10 ms.
+/// kernel's process-exit notification instead of polling waitpid(WNOHANG) every 10ms.
 /// Linux watches a pidfd per process via epoll (the fd turns readable on exit); macOS
 /// watches EVFILT_PROC | NOTE_EXIT on a kqueue. An idle watched process therefore holds
 /// no periodic wakeup, and an exiting child is collected the moment the kernel reports
@@ -54,7 +53,7 @@ internal static partial class PtyReaper
         private readonly int wakeFd;
 #endif
 
-        private readonly object sync = new();
+        private readonly Lock sync = new();
         private readonly Dictionary<int, PtyProcess> byPid = [];
         // Processes whose Watch arrived and are not yet registered. Drained every loop
         // iteration; a registration failure moves the process to retryWatch.
@@ -250,7 +249,7 @@ internal static partial class PtyReaper
 #if LINUX
             // A retry may follow a previous pidfd_open on the same pid (registration
             // failed after the fd was created): close the stale fd before opening a new
-            // one, or every retry would leak an fd (fatal under a low RLIMIT_NOFILE).
+            // one, or every retry would leak a fd (fatal under a low RLIMIT_NOFILE).
             lock (sync)
             {
                 if (pidToFd.Remove(pid, out var stale))
@@ -349,9 +348,8 @@ internal static partial class PtyReaper
             PtyProcess? process;
             lock (sync)
             {
-                if (!byPid.TryGetValue(pid, out process))
+                if (!byPid.Remove(pid, out process))
                     return;
-                byPid.Remove(pid);
             }
 
             Unregister(pid);
@@ -486,7 +484,7 @@ internal static partial class PtyReaper
         /// <summary>
         /// Reads the wake channel back to zero. Linux-only: the eventfd counter accumulates
         /// every <see cref="Wake"/> and the channel is level-triggered in the poll set, so
-        /// the loop must drain it after each wake event or it stays readable forever and
+        /// the loop must drain it after each wake event, or it stays readable forever and
         /// the loop spins. macOS needs no drain — EVFILT_USER is registered with EV_CLEAR
         /// and resets on delivery.
         /// </summary>

@@ -18,18 +18,21 @@ public class StartExceptionTests
     [Fact]
     public void Start_StringOverload_NullFile_ThrowsArgumentNullException()
     {
+        // ReSharper disable once NullableWarningSuppressionIsUsed
         Assert.Throws<ArgumentNullException>(() => PtyProcess.Start(null!, []));
     }
 
     [Fact]
     public void Start_StringOverload_NullArguments_ThrowsArgumentNullException()
     {
+        // ReSharper disable once NullableWarningSuppressionIsUsed
         Assert.Throws<ArgumentNullException>(() => PtyProcess.Start("/bin/echo", null!));
     }
 
     [Fact]
     public void Start_StartInfoOverload_NullInfo_ThrowsArgumentNullException()
     {
+        // ReSharper disable once NullableWarningSuppressionIsUsed
         Assert.Throws<ArgumentNullException>(() => PtyProcess.Start(null!));
     }
 

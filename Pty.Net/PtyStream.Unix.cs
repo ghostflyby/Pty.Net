@@ -200,9 +200,9 @@ public sealed partial class PtyStream
     /// throws <see cref="OperationCanceledException"/>.</para>
     /// </summary>
     /// <param name="buffer">The bytes to write.</param>
-    /// <param name="cancellationToken">Canceled to abort the write.</param>
+    /// <param name="cancellationToken">Canceled to abort the write action.</param>
     /// <returns>A task that completes when all bytes have been written.</returns>
-    /// <exception cref="OperationCanceledException">The write was canceled before it completed.</exception>
+    /// <exception cref="OperationCanceledException">The write action was canceled before it completed.</exception>
     /// <exception cref="IOException">The child's terminal is closed.</exception>
     /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
     public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)

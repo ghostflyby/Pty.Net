@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 
 namespace Ghostflyby.Pty.Tests;
@@ -47,6 +48,7 @@ public partial class SignalIsolationTests
         }
 
         [LibraryImport("libc", SetLastError = true)]
+        [SuppressMessage("ReSharper","InconsistentNaming")]
         internal static partial IntPtr signal(Signals signum, IntPtr handler);
     }
 }

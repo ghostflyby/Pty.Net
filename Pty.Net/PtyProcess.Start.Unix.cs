@@ -253,9 +253,7 @@ public sealed partial class PtyProcess
         lock (PtsnameLock)
         {
             var path = Marshal.PtrToStringUTF8(NativeMethods.ptsname(masterFd));
-            if (path is null)
-                throw new IOException($"ptsname failed: errno={Marshal.GetLastPInvokeError()}");
-            return path;
+            return path ?? throw new IOException($"ptsname failed: errno={Marshal.GetLastPInvokeError()}");
         }
 #else
 #error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."

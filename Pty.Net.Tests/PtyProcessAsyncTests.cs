@@ -83,7 +83,7 @@ public class PtyProcessAsyncTests
         }
 
         // Windows launches one child process per session (cmd/ping — lighter than
-        // /bin/sleep's peer powershell, but still heavier than the Unix sleep), so let
+        // /bin/sleep's peer PowerShell, but still heavier than the Unix sleep), so let
         // the startup churn settle before measuring; the sessions stay alive (sleep
         // 1000 s) throughout, and the wait itself holds no thread. The parallel suite
         // also dips isolated samples, so take the max over a window afterwards: a real

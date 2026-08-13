@@ -6,12 +6,12 @@ namespace Ghostflyby.Pty;
 /// <summary>
 /// P/Invoke declarations for the libc functions used to set up a pseudo-terminal
 /// and run an interactive shell in it. Uses <c>posix_openpt(3)</c> + <c>posix_spawn(2)</c>
-/// (not fork+exec) so spawning stays safe in a multi-threaded process.
+/// (not fork+exec) so spawning stays safe in a multithreaded process.
 ///
 /// Unix-only: this file is compiled only by the non-Windows target (see csproj), so
 /// Windows-specific constants and branches are absent. pty setup returns raw fds
 /// (posix_openpt/grantpt/unlockpt/ptsname are non-variadic, so they work on Apple arm64
-/// where the variadic fcntl mis-delivers its third argument); the caller wraps the master
+/// where the variadic fcntl misdelivers its third argument); the caller wraps the master
 /// in a <see cref="SafeFileHandle"/> for <see cref="PtyStream"/>. Byte transfer goes
 /// through raw read(2)/write(2) on the non-blocking master fd, driven by
 /// <see cref="PtyStream"/> / <see cref="PtyIoEngine"/> (see <see cref="PtyProcess"/>).
@@ -153,7 +153,7 @@ internal static partial class NativeMethods
     }
 
     // posix_openpt(3) + grantpt/unlockpt/ptsname/open(2) replace openpty(3): all are
-    // non-variadic, so they work on Apple arm64 (where variadic fcntl mis-delivers
+    // non-variadic, so they work on Apple arm64 (where variadic fcntl misdelivers
     // its third argument). The O_NONBLOCK flag on the master fd is the foundation of
     // PtyStream's poll-driven I/O. posix_openpt/grantpt/unlockpt return raw fds;
     // the runtime wraps the master in a SafeFileHandle for PtyStream, the slave is
@@ -199,8 +199,9 @@ internal static partial class NativeMethods
 
     // ioctl(2) is variadic (int ioctl(int, unsigned long, ...)) and .NET has no
     // varargs interop (__arglist throws InvalidProgramException on non-Windows), so a
-    // fixed signature must substitute. Whether that works depends on the libc's
-    // va_list mechanics:
+    // fixed signature must substitute.
+
+    // Whether that works depend on the libc's va_list mechanics:
     //   * Linux (glibc/musl) reads the leading variadic arguments from the argument
     //     registers, so a plain fixed signature (fd, request, arg in x0/x1/x2 on
     //     arm64, rdi/rsi/rdx on x64) delivers the pointer correctly on both.
@@ -355,7 +356,7 @@ internal static partial class NativeMethods
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int epoll_create1(int flags);
 
-    // pidfd_open(2) (kernel 5.3+): an fd that reports readable once the process exits.
+    // pidfd_open(2) (kernel 5.3+): a fd that reports readable once the process exits.
     // The reaper listens for that with epoll — exit detection without touching SIGCHLD.
     // musl (Alpine) does not export a pidfd_open wrapper, so it is invoked through the
     // generic syscall(2) with the architecture's __NR_pidfd_open, which glibc and musl

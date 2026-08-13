@@ -250,7 +250,7 @@ public class PtyProcessTests : IDisposable
         using var p = PtyProcess.Start(new PtyStartInfo
         {
             FileName = TestBash.BashPath,
-            ArgumentList = [ "--noprofile", "--norc", "--noediting", "-i" ],
+            ArgumentList = ["--noprofile", "--norc", "--noediting", "-i"],
             InputEncoding = latin1,
             OutputEncoding = latin1,
         });
@@ -268,9 +268,9 @@ public class PtyProcessTests : IDisposable
 
     /// <summary>
     /// Turns off the tty line-discipline echo so command output is not mixed with the
-    /// echoed input, and waits for the change to take effect (echo off is what keeps a
-    /// command's own literal text out of the output, which otherwise short-circuits
-    /// marker reads).
+    /// echoed input, and waits for the change to take effect.
+    /// (Echo off is what keeps a command's own literal text out of the output, which
+    /// otherwise short-circuits marker reads.)
     /// </summary>
     private void DisableEcho()
     {
