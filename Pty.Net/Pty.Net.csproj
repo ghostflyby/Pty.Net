@@ -13,7 +13,7 @@
              the version is derived from the git tag at publish time (vX.Y.Z → X.Y.Z),
              so the tag is the single source of truth and this file never drifts. -->
         <Authors>ghostflyby</Authors>
-        <Description>The multi-platform pty wrapper in pure C# with P/Invoke.</Description>
+        <Description>The multi-platform pty wrapper in pure C# with P/Invoke: drive interactive shells with a real terminal on Windows, macOS, and Linux.</Description>
         <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
         <RepositoryType>git</RepositoryType>
         <RepositoryUrl>https://github.com/ghostflyby/Pty.Net</RepositoryUrl>
