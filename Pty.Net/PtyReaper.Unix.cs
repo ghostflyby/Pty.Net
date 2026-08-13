@@ -22,10 +22,10 @@ namespace Ghostflyby.Pty;
 /// interrupts the wait when a new process is queued.
 ///
 /// A registration that fails while the child is still alive (transient fd pressure, an
-/// old kernel without pidfd) is re-queued and retried after a short bounded wait: the
-/// drain never spins on a failing registration, so a persistent failure degrades to a
-/// slow poll instead of stalling the whole reaper and leaving every other child
-/// unreaped.
+/// old kernel without pidfd) moves the process to a retry list that is scanned in full
+/// on a short bounded interval. Every retry-waiting process is re-tried each interval —
+/// never a serial queue where one failing registration would stall the others — so a
+/// persistent failure degrades the whole set to a slow scan instead of losing children.
 /// </summary>
 internal static partial class PtyReaper
 {
@@ -38,7 +38,7 @@ internal static partial class PtyReaper
     {
         private const int MaxEvents = 64;
         private const int Eintr = NativeMethods.Eintr;
-        // Wait window when a registration failed and needs a retry: long enough that a
+        // Retry interval for processes whose registration failed: long enough that a
         // transient resource shortage usually clears, short enough that the child's exit
         // is still collected promptly. Only active while a retry is pending — otherwise
         // the wait blocks indefinitely.
@@ -55,7 +55,14 @@ internal static partial class PtyReaper
 
         private readonly object sync = new();
         private readonly Dictionary<int, PtyProcess> byPid = [];
+        // Processes whose Watch arrived and are not yet registered. Drained every loop
+        // iteration; a registration failure moves the process to retryWatch.
         private readonly Queue<PtyProcess> pendingWatch = [];
+        // Processes whose registration failed while they were still alive. Scanned in
+        // full every RetryIntervalMs: each is reaped if it has exited or re-registered
+        // if it has not. A scan always touches every entry, so no process can starve
+        // behind a persistently failing one.
+        private readonly List<PtyProcess> retryWatch = [];
         // Linux-only: pid -> pidfd, for unregistering a reaped process.
         private readonly Dictionary<int, int> pidToFd = [];
 
@@ -66,11 +73,6 @@ internal static partial class PtyReaper
 #else
 #error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
 #endif
-
-        // True while a failed registration sits in the pending queue waiting for a retry.
-        // Engine thread only. When set, the wait below uses a finite timeout so the retry
-        // actually happens; a clean drain clears it and the wait blocks indefinitely again.
-        private bool pendingForRetry;
 
         public ReaperThread()
         {
@@ -131,6 +133,7 @@ internal static partial class PtyReaper
             while (true)
             {
                 DrainPendingWatch();
+                ScanRetryWatch();
                 var n = WaitForEvents();
                 for (var i = 0; i < n; i++)
                 {
@@ -145,13 +148,11 @@ internal static partial class PtyReaper
         /// Registers every queued process: reaps those that already exited (the spawn-to-
         /// register window), registers the survivors for an exit event. Runs on the loop
         /// thread, so no registration can interleave with event dispatch. A registration
-        /// that fails while the process is still alive is returned to the queue and the
-        /// drain stops there — retried after <see cref="RetryIntervalMs"/> instead of
-        /// spinning on it, so the reaper keeps serving other processes.
+        /// that fails while the process is still alive moves it to <see cref="retryWatch"/>,
+        /// which the loop scans on its own interval.
         /// </summary>
         private void DrainPendingWatch()
         {
-            pendingForRetry = false;
             while (true)
             {
                 PtyProcess? process;
@@ -175,10 +176,38 @@ internal static partial class PtyReaper
 
                 if (!Register(process))
                 {
-                    // Still alive but could not be registered: retry shortly.
-                    EnqueueForRetry(process);
-                    return;
+                    lock (sync)
+                    {
+                        retryWatch.Add(process);
+                    }
                 }
+            }
+        }
+
+        /// <summary>
+        /// Re-tries every process whose registration failed: reap it if it has exited
+        /// (the exit may have happened while no pidfd was registered), otherwise attempt
+        /// registration again. Runs before each wait; the wait is bounded while this list
+        /// is non-empty, so the scan repeats on <see cref="RetryIntervalMs"/>.
+        /// </summary>
+        private void ScanRetryWatch()
+        {
+            for (var i = retryWatch.Count - 1; i >= 0; i--)
+            {
+                var process = retryWatch[i];
+                if (process.TryReap(out var code))
+                {
+                    process.OnReaped(code);
+                    retryWatch.RemoveAt(i);
+                    lock (sync)
+                    {
+                        byPid.Remove(process.Pid);
+                    }
+                    continue;
+                }
+                if (Register(process))
+                    retryWatch.RemoveAt(i);
+                // Still alive and still failing: leave it for the next scan.
             }
         }
 
@@ -191,6 +220,15 @@ internal static partial class PtyReaper
         {
             var pid = process.Pid;
 #if LINUX
+            // A retry may follow a previous pidfd_open on the same pid (registration
+            // failed after the fd was created): close the stale fd before opening a new
+            // one, or every retry would leak an fd (fatal under a low RLIMIT_NOFILE).
+            lock (sync)
+            {
+                if (pidToFd.Remove(pid, out var stale))
+                    NativeMethods.close(stale);
+            }
+
             var pidfd = (int)NativeMethods.syscall(NativeMethods.PidfdOpenSyscallNumber, pid, 0);
             if (pidfd < 0)
             {
@@ -247,19 +285,6 @@ internal static partial class PtyReaper
             return true;
         }
 
-        /// <summary>Returns a process whose registration failed back to the pending queue for a retry.</summary>
-        private void EnqueueForRetry(PtyProcess process)
-        {
-            lock (sync)
-            {
-                pendingWatch.Enqueue(process);
-            }
-            // No Wake(): a retry is not urgent — the finite wait timeout (see
-            // WaitForEvents) wakes the loop after RetryIntervalMs, so a failing
-            // registration cannot spin the wake channel.
-            pendingForRetry = true;
-        }
-
         /// <summary>
         /// Collects the process that fired an exit event. The kernel has confirmed the
         /// exit, so waitpid succeeds; a failure (extreme race) re-registers instead of
@@ -290,7 +315,12 @@ internal static partial class PtyReaper
                 byPid[pid] = process;
             }
             if (!Register(process))
-                EnqueueForRetry(process);
+            {
+                lock (sync)
+                {
+                    retryWatch.Add(process);
+                }
+            }
         }
 
         private void Unregister(int pid)
@@ -321,10 +351,12 @@ internal static partial class PtyReaper
         {
             while (true)
             {
+                // While a registration retry is pending, bound the wait so the retry list
+                // gets its periodic scan; a clean state blocks indefinitely (no periodic
+                // wakeups).
+                var retryPending = retryWatch.Count > 0;
 #if LINUX
-                // A pending retry bounds the wait so the failed registration gets another
-                // chance; a clean state blocks indefinitely (no periodic wakeups).
-                var timeout = pendingForRetry ? RetryIntervalMs : -1;
+                var timeout = retryPending ? RetryIntervalMs : -1;
                 var n = NativeMethods.epoll_wait(eventFd, linuxEvents, MaxEvents, timeout);
 #elif OSX
                 // kevent's timeout is a struct timespec*; null means block indefinitely.
@@ -333,7 +365,7 @@ internal static partial class PtyReaper
                     TvSec = RetryIntervalMs / 1000,
                     TvNsec = (RetryIntervalMs % 1000) * 1_000_000,
                 };
-                var timeoutPtr = pendingForRetry ? (IntPtr)(&ts) : IntPtr.Zero;
+                var timeoutPtr = retryPending ? (IntPtr)(&ts) : IntPtr.Zero;
                 var n = NativeMethods.kevent(eventFd, null, 0, macEvents, MaxEvents, timeoutPtr);
 #else
 #error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
