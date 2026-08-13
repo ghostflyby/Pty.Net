@@ -62,19 +62,19 @@ public sealed partial class PtyStream
     }
 
     /// <summary>
-    /// Reads up to <paramref name="target"/>.Length bytes, blocking until at least one
+    /// Reads up to <paramref name="buffer"/>.Length bytes, blocking until at least one
     /// byte is available.
     /// <br/>
     /// Returns the number of bytes actually read (not necessarily the buffer length),
     /// or 0 at end of stream.
     /// </summary>
-    /// <param name="target">The buffer to fill.</param>
+    /// <param name="buffer">The buffer to fill.</param>
     /// <returns>The number of bytes read, or 0 at end of stream.</returns>
     /// <exception cref="InvalidOperationException">A pending async read is in progress on this stream; sync and async reads cannot be mixed.</exception>
     /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
-    public override int Read(Span<byte> target)
+    public override int Read(Span<byte> buffer)
     {
-        return target.IsEmpty ? 0 : Read(target, Timeout.Infinite, out _);
+        return buffer.IsEmpty ? 0 : Read(buffer, Timeout.Infinite, out _);
     }
 
     /// <summary>
@@ -132,22 +132,22 @@ public sealed partial class PtyStream
     }
 
     /// <summary>
-    /// Asynchronously reads up to <paramref name="target"/>.Length bytes, completing as
+    /// Asynchronously reads up to <paramref name="buffer"/>.Length bytes, completing as
     /// soon as data is available.
     /// <br/>
     /// Returns the number of bytes read, or 0 at end of stream.
     /// </summary>
-    /// <param name="target">The buffer to fill.</param>
+    /// <param name="buffer">The buffer to fill.</param>
     /// <param name="cancellationToken">Canceled to abort the pending read.</param>
     /// <returns>The number of bytes read, or 0 at end of stream.</returns>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> is canceled before any data was read.</exception>
     /// <exception cref="ObjectDisposedException">The stream is disposed while the read is pending.</exception>
     public override async ValueTask<int> ReadAsync(
-        Memory<byte> target,
+        Memory<byte> buffer,
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        if (target.IsEmpty)
+        if (buffer.IsEmpty)
             return 0;
 
         Interlocked.Increment(ref pendingAsyncReads);
@@ -161,7 +161,7 @@ public sealed partial class PtyStream
                     // BCL Process semantics: reads pending at close throw
                     // ObjectDisposedException instead of returning buffered bytes.
                     ThrowIfDisposed();
-                    var count = CopyBuffered(target.Span);
+                    var count = CopyBuffered(buffer.Span);
                     if (count > 0)
                         return count;
                     if (outputEof)
@@ -185,36 +185,36 @@ public sealed partial class PtyStream
     }
 
     /// <summary>
-    /// Writes all of <paramref name="source"/>, blocking as needed while the child
+    /// Writes all of <paramref name="buffer"/>, blocking as needed while the child
     /// drains the terminal.
     /// </summary>
-    /// <param name="source">The bytes to write.</param>
+    /// <param name="buffer">The bytes to write.</param>
     /// <exception cref="IOException">The child's terminal is closed.</exception>
     /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
-    public override void Write(ReadOnlySpan<byte> source)
+    public override void Write(ReadOnlySpan<byte> buffer)
     {
         ThrowIfDisposed();
-        if (!source.IsEmpty)
-            inputWrite.Write(source);
+        if (!buffer.IsEmpty)
+            inputWrite.Write(buffer);
     }
 
     /// <summary>
-    /// Asynchronously writes all of <paramref name="source"/>.
+    /// Asynchronously writes all of <paramref name="buffer"/>.
     /// </summary>
-    /// <param name="source">The bytes to write.</param>
+    /// <param name="buffer">The bytes to write.</param>
     /// <param name="cancellationToken">Canceled to abort the write.</param>
     /// <returns>A task that completes when all bytes have been written.</returns>
     /// <exception cref="OperationCanceledException">The write was canceled before it completed.</exception>
     /// <exception cref="IOException">The child's terminal is closed.</exception>
     /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
     public override ValueTask WriteAsync(
-        ReadOnlyMemory<byte> source,
+        ReadOnlyMemory<byte> buffer,
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        return source.IsEmpty
+        return buffer.IsEmpty
             ? ValueTask.CompletedTask
-            : inputWrite.WriteAsync(source, cancellationToken);
+            : inputWrite.WriteAsync(buffer, cancellationToken);
     }
 
     // ------------------------------------------------------------ window size

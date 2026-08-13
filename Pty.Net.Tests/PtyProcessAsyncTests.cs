@@ -3,7 +3,7 @@ using System.Diagnostics;
 namespace Ghostflyby.Pty.Tests;
 
 /// <summary>
-/// Exercises the async process-control surface: <see cref="PtyProcess.WaitForExitAsync(CancellationToken)"/>,
+/// Exercises the async process-control surface: <see cref="PtyProcess.WaitForExitAsync(TimeSpan?, CancellationToken)"/>,
 /// <see cref="PtyProcess.DisposeAsync"/> and the <see cref="PtyProcess.Exited"/> event, plus the
 /// process-wide reaper that owns waitpid(2).
 /// </summary>

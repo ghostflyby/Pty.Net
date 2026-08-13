@@ -11,7 +11,7 @@ namespace Ghostflyby.Pty;
 /// and stderr are merged into the one terminal stream; there is no separate stderr.
 /// </para>
 /// <para>
-/// The process-control surface is async-capable: <see cref="WaitForExitAsync(CancellationToken)"/>
+/// The process-control surface is async-capable: <see cref="WaitForExitAsync(TimeSpan?, CancellationToken)"/>
 /// waits without occupying a thread, <see cref="DisposeAsync"/> mirrors
 /// <see cref="Dispose()"/>, and <see cref="Exited"/> fires once the child is reaped by
 /// a process-wide background reaper. All async I/O and waits are thread-pool-free.
@@ -24,7 +24,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// <summary>
     /// Completion signal for the exit wait: completed exactly once, by the process-wide
     /// reaper when it collects this child (see <see cref="OnReaped"/>). All exit waits —
-    /// <see cref="WaitForExit(TimeSpan)"/>, <see cref="WaitForExitAsync(TimeSpan, CancellationToken)"/>
+    /// <see cref="WaitForExit(TimeSpan)"/>, <see cref="WaitForExitAsync(TimeSpan?, CancellationToken)"/>
     /// and the bounded wait inside <see cref="Dispose"/>/<see cref="DisposeAsync"/> — observe
     /// this signal instead of polling <see cref="HasExited"/>, so a wait holds no timer tick
     /// and completes the moment the reaper collects the child. Lazy so a process that is
@@ -191,7 +191,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// <para>Reaping happens on the process-wide reaper thread; this method only observes
     /// the reaper's exit signal. Pass <see cref="Timeout.InfiniteTimeSpan"/> to wait
     /// indefinitely. For a thread-free equivalent see
-    /// <see cref="WaitForExitAsync(CancellationToken)"/>.</para>
+    /// <see cref="WaitForExitAsync(TimeSpan?, CancellationToken)"/>.</para>
     /// </summary>
     /// <param name="timeout">How long to wait.</param>
     /// <returns>True if the child exited within <paramref name="timeout"/>; false on timeout.</returns>
@@ -240,23 +240,15 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// <para>Output is drained continuously while waiting (same caveat as
     /// <see cref="WaitForExit(TimeSpan)"/>).</para>
     /// </summary>
+    /// <param name="timeout">How long to wait; null waits indefinitely.</param>
     /// <param name="ct">Canceled to abandon the wait.</param>
-    /// <returns>A task that completes once the child has been reaped.</returns>
+    /// <returns>True if the child exited within <paramref name="timeout"/>; false on
+    /// timeout. A null timeout never expires, so the result is always true once the
+    /// child has been reaped.</returns>
     /// <exception cref="OperationCanceledException"><paramref name="ct"/> is canceled before the child exited.</exception>
     /// <exception cref="ObjectDisposedException">The process is disposed while waiting.</exception>
-    public Task WaitForExitAsync(CancellationToken ct = default) => WaitForExitCoreAsync(Timeout.InfiniteTimeSpan, ct);
-
-    /// <summary>
-    /// Waits until the child exits and has been reaped, or until <paramref name="timeout"/>
-    /// elapses.
-    /// <para>Non-blocking and cancellable.</para>
-    /// </summary>
-    /// <param name="timeout">How long to wait.</param>
-    /// <param name="ct">Canceled to abandon the wait.</param>
-    /// <returns>True if the child exited within <paramref name="timeout"/>; false on timeout.</returns>
-    /// <exception cref="OperationCanceledException"><paramref name="ct"/> is canceled before the wait completed.</exception>
-    /// <exception cref="ObjectDisposedException">The process is disposed while waiting.</exception>
-    public Task<bool> WaitForExitAsync(TimeSpan timeout, CancellationToken ct = default) => WaitForExitCoreAsync(timeout, ct);
+    public Task<bool> WaitForExitAsync(TimeSpan? timeout = null, CancellationToken ct = default)
+        => WaitForExitCoreAsync(timeout ?? Timeout.InfiniteTimeSpan, ct);
 
     private async Task<bool> WaitForExitCoreAsync(TimeSpan timeout, CancellationToken ct)
     {

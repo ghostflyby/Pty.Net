@@ -8,10 +8,10 @@ namespace Ghostflyby.Pty;
 /// side closes, and every operation throws <see cref="ObjectDisposedException"/> after
 /// the stream — or the <see cref="PtyProcess"/> that owns it — is disposed.
 /// </para>
-    /// <para>
-    /// Use one of <see cref="PtyProcess.Input"/> / <see cref="PtyProcess.Output"/>
-    /// for text, or this raw stream for bytes; never mix both on the same direction.
-    /// </para>
+/// <para>
+/// Use one of <see cref="PtyProcess.Input"/> / <see cref="PtyProcess.Output"/>
+/// for text, or this raw stream for bytes; never mix both on the same direction.
+/// </para>
 /// </summary>
 public sealed partial class PtyStream : Stream
 {
@@ -44,7 +44,8 @@ public sealed partial class PtyStream : Stream
 
     /// <inheritdoc cref="Length"/>
     /// <exception cref="NotSupportedException">Always thrown.</exception>
-    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException("The pty stream is not seekable.");
+    public override long Seek(long offset, SeekOrigin origin) =>
+        throw new NotSupportedException("The pty stream is not seekable.");
 
     /// <inheritdoc cref="Length"/>
     /// <exception cref="NotSupportedException">Always thrown.</exception>
