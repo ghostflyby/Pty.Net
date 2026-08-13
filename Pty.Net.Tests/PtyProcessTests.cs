@@ -270,6 +270,32 @@ public class PtyProcessTests : IDisposable
     }
 
     /// <summary>
+    /// Windows environment variables are case-insensitive: overriding "SYSTEMROOT"
+    /// (upper-cased) must replace the inherited "SystemRoot" value instead of adding a
+    /// second variable to the environment block, whose case-insensitive lookup by
+    /// CreateProcess is then undefined. Unix-only counterpart is the case-sensitive
+    /// <see cref="Environment_OverridesAreVisibleToChild"/>.
+    /// </summary>
+#if WINDOWS
+    [Fact]
+    public void Environment_OverrideIsCaseInsensitiveOnWindows()
+    {
+        // SystemRoot is always present on Windows; override its case-variant and read it
+        // back through cmd.exe. The inherited value must be replaced, not duplicated.
+        var info = new PtyStartInfo("cmd.exe")
+        {
+            Arguments = ["/c", "echo %SYSTEMROOT%; echo __DONE__"],
+            Environment = ImmutableDictionary<string, string?>.Empty.Add("SYSTEMROOT", "CUSTOM-ROOT"),
+        };
+
+        using var p = PtyProcess.Start(info);
+        var output = TestBash.ReadUntil(p.Output, "__DONE__", Timeout);
+
+        Assert.Contains("CUSTOM-ROOT", output);
+    }
+#endif
+
+    /// <summary>
     /// A bare file name (no slash) is resolved through PATH on every platform:
     /// posix_spawnp on Unix, CreateProcess on Windows. Guards the regression where Unix
     /// used plain posix_spawn and threw FileNotFoundException for a name like "bash".

@@ -596,11 +596,15 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// environment, taken at launch time: non-null entries override inherited variables,
     /// null entries remove them. A null overrides set (the <see cref="Start(string, IReadOnlyList{string}, string)"/>
     /// convenience overload) yields the plain parent environment.
+    /// <para>Key comparison is case-insensitive on Windows, where environment variables
+    /// are case-insensitive: overriding "PATH" must replace the inherited "Path" instead
+    /// of adding a second variable to the environment block. On Unix keys stay
+    /// case-sensitive, as the OS distinguishes them.</para>
     /// </summary>
     private static Dictionary<string, string?> MergeWithParentEnvironment(IReadOnlyDictionary<string, string?>? overrides)
     {
-        var env = new Dictionary<string, string?>(StringComparer.Ordinal);
-        foreach (System.Collections.DictionaryEntry e in System.Environment.GetEnvironmentVariables())
+        var env = new Dictionary<string, string?>(EnvironmentKeyComparer);
+        foreach (System.Collections.DictionaryEntry e in Environment.GetEnvironmentVariables())
             env[(string)e.Key] = (string?)e.Value;
 
         if (overrides is not null)
@@ -614,6 +618,9 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
 
         return env;
     }
+
+    private static StringComparer EnvironmentKeyComparer =>
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
     /// <summary>Decodes a waitpid(2) status into an exit code: 0..255, or 128 + signal when killed.</summary>
     private static int ExtractExitCode(int status)
