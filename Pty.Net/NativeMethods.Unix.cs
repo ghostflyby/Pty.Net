@@ -301,7 +301,9 @@ internal static partial class NativeMethods
     // Compile-time symbols cannot express this (AnyCPU builds define no architecture
     // symbol), so the caller selects the variant at runtime — the same pattern as
     // IoCtl's pad-register selection.
-    internal static bool EpollIsPacked => RuntimeInformation.ProcessArchitecture == Architecture.X64;
+    // True when the kernel's epoll_event is packed: x86_64 only. Computed once — the
+    // process architecture never changes — so the reaper's per-call check stays free.
+    internal static readonly bool EpollIsPacked = RuntimeInformation.ProcessArchitecture == Architecture.X64;
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct EpollEvent

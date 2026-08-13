@@ -136,6 +136,44 @@ public class PtyProcessAsyncTests
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(3), $"DisposeAsync took {sw.Elapsed}");
     }
 
+    /// <summary>
+    /// A child that ignores SIGHUP survives the terminate step inside
+    /// <see cref="PtyProcess.DisposeAsync"/>: the bounded 2 s reap wait elapses with the
+    /// child still alive, and DisposeAsync must return normally (no TimeoutException)
+    /// while the process-wide reaper keeps watching the child in the background.
+    /// Unix-only: Windows TerminateProcess kills the child regardless of signal
+    /// handling, so the 2 s branch is unreachable there.
+    /// </summary>
+#if !WINDOWS
+    [Fact]
+    public async Task DisposeAsync_SurvivingChild_CompletesAfterBoundedWait()
+    {
+        // trap '' HUP makes the child ignore the hangup Dispose sends; sleep keeps it
+        // alive well past the 2 s bounded wait. Wait for the trap to be installed before
+        // disposing: a SIGHUP landing before `trap` runs would terminate the fresh shell
+        // by default and the test would never reach the 2 s branch.
+        var p = PtyProcess.Start("/bin/sh", ["-c", "trap '' HUP; sleep 30"]);
+        try
+        {
+            await Task.Delay(300);
+            var sw = Stopwatch.StartNew();
+            await p.DisposeAsync(); // must complete, not throw TimeoutException
+            sw.Stop();
+
+            // The bounded window is 2 s; allow scheduling slack. The pre-fix behavior
+            // threw TimeoutException at exactly 2 s, so this also guards the shape.
+            Assert.True(sw.Elapsed >= TimeSpan.FromSeconds(2), $"returned too early: {sw.Elapsed}");
+            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(5), $"DisposeAsync took {sw.Elapsed}");
+        }
+        finally
+        {
+            // Ensure the surviving child does not outlive the test: SIGKILL it; the
+            // reaper collects it in the background.
+            p.Kill();
+        }
+    }
+#endif
+
     // --- Exited event -----------------------------------------------------
 
     [Fact]

@@ -380,8 +380,10 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
             BaseStream.Dispose();
 
             // Same bounded wait as <see cref="Dispose()"/>, without blocking a thread:
-            // the exit signal completes when the reaper collects the child.
-            await ExitSignal.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+            // the exit signal completes when the reaper collects the child. Timeout does
+            // not throw — the process-wide reaper keeps watching the child (see
+            // <see cref="Exited"/>), so only the reap completion is deferred.
+            await WaitForReapAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
 
             if (HasExited)
                 ProcessHandle?.Dispose();
@@ -424,6 +426,26 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
 
     /// <summary>The task completed by the reaper once this child is collected (see <see cref="OnReaped"/>).</summary>
     private Task<bool> ExitSignal => exitSignal.Value.Task;
+
+    /// <summary>
+    /// Awaits the reaper's exit signal for up to <paramref name="timeout"/>, without
+    /// throwing when the window elapses: the process-wide reaper keeps watching the child
+    /// in the background, so only the reap completion is deferred past dispose (see
+    /// <see cref="Exited"/>). Mirrors <see cref="WaitForExit(TimeSpan)"/>'s non-throwing
+    /// timeout — <see cref="Task.WaitAsync(TimeSpan)"/> would throw TimeoutException
+    /// instead, and in <see cref="DisposeAsync"/> that would skip the process-handle
+    /// release for a still-alive child (which the reaper is still waiting on).
+    /// </summary>
+    private async Task WaitForReapAsync(TimeSpan timeout)
+    {
+        try
+        {
+            await ExitSignal.WaitAsync(timeout).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+        }
+    }
 
     /// <summary>
     /// Awaits <paramref name="signal"/> for up to <paramref name="timeoutMs"/> ms,

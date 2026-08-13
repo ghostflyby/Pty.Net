@@ -15,7 +15,8 @@ public sealed partial class PtyProcess
     // each spawn does not allocate a fresh int[] for the loop below.
     private static readonly int[] StdioTargets = [0, 1, 2];
 
-    // Shared drain buffer, used by DrainOutput (WaitForExit calls it every ~10ms). The
+    // Shared drain buffer, used by DrainOutput (the exit-wait loops call it every ~2 ms).
+    // The
     // drain only discards bytes and never reads them back, so every process can share
     // one 4KB buffer instead of holding its own — memory stays O(1) however many
     // processes are draining concurrently. A dedicated lock serializes the drain across
