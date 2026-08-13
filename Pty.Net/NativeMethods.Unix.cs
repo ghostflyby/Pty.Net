@@ -5,7 +5,7 @@ namespace Ghostflyby.Pty;
 
 /// <summary>
 /// P/Invoke declarations for the libc functions used to set up a pseudo-terminal
-/// and run an interactive shell in it. Uses <c>posix_openpt(3)</c> + <c>posix_spawn(2)</c>
+/// and run an interactive shell in it. Uses <c>posix_openpt(3)</c> + <c>posix_spawnp(2)</c>
 /// (not fork+exec) so spawning stays safe in a multithreaded process.
 ///
 /// Unix-only: this file is compiled only by the non-Windows target (see csproj), so
@@ -228,8 +228,11 @@ internal static partial class NativeMethods
             : ioctl(fd, request, arg);
     }
 
+    // posix_spawnp searches PATH for a file name without a slash, matching
+    // Process.Start / CreateProcess on Windows; a path with a slash is executed
+    // directly, exactly like posix_spawn.
     [LibraryImport("libc", SetLastError = true)]
-    internal static partial int posix_spawn(
+    internal static partial int posix_spawnp(
         out int pid, IntPtr path, IntPtr fileActions, IntPtr attr,
         [In] IntPtr[] argv, [In] IntPtr[] envp);
 

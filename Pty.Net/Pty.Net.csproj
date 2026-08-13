@@ -17,6 +17,7 @@
         <!-- SPDX expression: nuget.org renders the Apache-2.0 badge from it. The license
              text itself lives at the repo root (LICENSE). -->
         <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
         <RepositoryType>git</RepositoryType>
         <RepositoryUrl>https://github.com/ghostflyby/Pty.Net</RepositoryUrl>
         <PackageProjectUrl>https://github.com/ghostflyby/Pty.Net</PackageProjectUrl>
@@ -72,6 +73,12 @@
     <!-- The test suite reads internal state (pipe handles, debug trace) directly. -->
     <ItemGroup>
         <InternalsVisibleTo Include="Pty.Net.Tests" />
+    </ItemGroup>
+
+    <!-- Ship the README inside the package: nuget.org renders it on the package page
+         (PackageReadmeFile above). -->
+    <ItemGroup>
+        <None Include="$(MSBuildThisFileDirectory)../README.md" Link="README.md" Pack="true" PackagePath="\" />
     </ItemGroup>
 
     <!-- Public API contract: PublicApiAnalyzers fails the build whenever a public symbol
