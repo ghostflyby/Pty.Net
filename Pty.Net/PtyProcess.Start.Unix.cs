@@ -5,7 +5,7 @@ using Microsoft.Win32.SafeHandles;
 namespace Ghostflyby.Pty;
 
 /// <summary>
-/// Unix half of <see cref="PtyProcess"/>: posix_spawn-based launch, SIGHUP teardown and
+/// Unix half of <see cref="PtyProcess"/>: posix_spawnp-based launch, SIGHUP teardown and
 /// waitpid reaping. Compiled only on the non-Windows target (see csproj), so the shared
 /// <c>PtyProcess.cs</c> carries no platform conditionals.
 /// </summary>
@@ -33,7 +33,9 @@ public sealed partial class PtyProcess
         IDictionary<string, string?> environment, Encoding? inputEncoding, Encoding? outputEncoding,
         int initialCols, int initialRows)
     {
-        // Everything is prepared in the parent; posix_spawn performs the exec natively.
+        // Everything is prepared in the parent; posix_spawnp performs the exec natively.
+        // It searches PATH for a bare file name (matching CreateProcess on Windows), so
+        // Process.Start-style relative names work on every platform.
         var envp = ToNative(BuildEnvironment(environment));
         var argv = ToNative([Path.GetFileName(file), .. arguments]);
         var path = Marshal.StringToHGlobalAnsi(file);
@@ -183,7 +185,7 @@ public sealed partial class PtyProcess
                     throw TranslateChdirError(workingDirectory, chdirRc);
             }
 
-            var spawnRc = NativeMethods.posix_spawn(out var pid, path, fileActions, attr, argv, envp);
+            var spawnRc = NativeMethods.posix_spawnp(out var pid, path, fileActions, attr, argv, envp);
             if (spawnRc != 0)
                 throw TranslateSpawnError(file, spawnRc);
 
@@ -375,7 +377,7 @@ public sealed partial class PtyProcess
             NativeMethods.ENoent => new FileNotFoundException($"The executable '{file}' was not found."),
             NativeMethods.Enotdir => new DirectoryNotFoundException($"A component of the executable path '{file}' is not a directory."),
             NativeMethods.Eacces => new UnauthorizedAccessException($"The executable '{file}' could not be executed: permission denied."),
-            _ => new IOException($"posix_spawn failed for '{file}': errno={errno}"),
+            _ => new IOException($"posix_spawnp failed for '{file}': errno={errno}"),
         };
     }
 

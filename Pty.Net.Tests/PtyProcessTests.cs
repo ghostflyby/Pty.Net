@@ -269,6 +269,20 @@ public class PtyProcessTests : IDisposable
         Assert.Contains("visible-42", output);
     }
 
+    /// <summary>
+    /// A bare file name (no slash) is resolved through PATH on every platform:
+    /// posix_spawnp on Unix, CreateProcess on Windows. Guards the regression where Unix
+    /// used plain posix_spawn and threw FileNotFoundException for a name like "bash".
+    /// </summary>
+    [Fact]
+    public void Start_ResolvesBareFileNameViaPath()
+    {
+        using var p = PtyProcess.Start("bash", ["--noprofile", "--norc", "-c", "echo spawnp-ok; echo __DONE__"]);
+        var output = TestBash.ReadUntil(p.Output, "__DONE__", Timeout);
+
+        Assert.Contains("spawnp-ok", output);
+    }
+
     [Fact]
     public void WaitForExit_NoTimeout_ReturnsAfterChildExits()
     {
