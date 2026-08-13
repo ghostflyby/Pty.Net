@@ -333,12 +333,6 @@ internal static partial class NativeMethods
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int epoll_create1(int flags);
 
-    [LibraryImport("libc", SetLastError = true)]
-    internal static partial int epoll_ctl(int epfd, int op, int fd, ref EpollEvent ev);
-
-    [LibraryImport("libc", SetLastError = true)]
-    internal static partial int epoll_wait(int epfd, [Out] EpollEvent[] events, int maxevents, int timeout);
-
     // pidfd_open(2) (kernel 5.3+): an fd that reports readable once the process exits.
     // The reaper listens for that with epoll — exit detection without touching SIGCHLD.
     // musl (Alpine) does not export a pidfd_open wrapper, so it is invoked through the
