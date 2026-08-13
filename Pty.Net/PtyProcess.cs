@@ -139,7 +139,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         if (string.IsNullOrWhiteSpace(info.FileName))
             throw new ArgumentException("FileName must name an executable.", nameof(info));
         return StartCore(info.FileName, info.ResolveArguments(), info.WorkingDirectory, info.Environment,
-            info.InputEncoding, info.OutputEncoding, info.Cols, info.Rows);
+            info.InputEncoding, info.OutputEncoding, info.Column, info.Row);
     }
 
     /// <summary>

@@ -38,10 +38,10 @@ public sealed record PtyStartInfo
     public Encoding OutputEncoding { get; init; } = Encoding.UTF8;
 
     /// <summary>Initial terminal width in character columns. Defaults to 120.</summary>
-    public int Cols { get; init; } = 120;
+    public int Column { get; init; } = 120;
 
     /// <summary>Initial terminal height in character rows. Defaults to 30.</summary>
-    public int Rows { get; init; } = 30;
+    public int Row { get; init; } = 30;
 
     /// <summary>
     /// Environment variables passed to the child.

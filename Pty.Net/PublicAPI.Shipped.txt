@@ -26,10 +26,10 @@ override Ghostflyby.Pty.PtyStartInfo.Equals(object? obj) -> bool
 Ghostflyby.Pty.PtyStartInfo.FileName.get -> string!
 Ghostflyby.Pty.PtyStartInfo.FileName.init -> void
 override Ghostflyby.Pty.PtyStartInfo.GetHashCode() -> int
-Ghostflyby.Pty.PtyStartInfo.Cols.get -> int
-Ghostflyby.Pty.PtyStartInfo.Cols.init -> void
-Ghostflyby.Pty.PtyStartInfo.Rows.get -> int
-Ghostflyby.Pty.PtyStartInfo.Rows.init -> void
+Ghostflyby.Pty.PtyStartInfo.Column.get -> int
+Ghostflyby.Pty.PtyStartInfo.Column.init -> void
+Ghostflyby.Pty.PtyStartInfo.Row.get -> int
+Ghostflyby.Pty.PtyStartInfo.Row.init -> void
 Ghostflyby.Pty.PtyStartInfo.InputEncoding.get -> System.Text.Encoding!
 Ghostflyby.Pty.PtyStartInfo.InputEncoding.init -> void
 Ghostflyby.Pty.PtyStartInfo.OutputEncoding.get -> System.Text.Encoding!
