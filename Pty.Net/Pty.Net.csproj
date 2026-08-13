@@ -61,4 +61,15 @@
         <InternalsVisibleTo Include="Pty.Net.Tests" />
     </ItemGroup>
 
+    <!-- Public API contract: PublicApiAnalyzers fails the build whenever a public symbol
+         is missing from PublicAPI.Shipped.txt / PublicAPI.Unshipped.txt or the shipped
+         surface changes incompatibly. The baseline files are explicit here even though
+         the package also wires them up automatically. PrivateAssets keeps the analyzer
+         and its rules out of consumers. -->
+    <ItemGroup>
+        <PackageReference Include="Microsoft.CodeAnalysis.PublicApiAnalyzers" Version="5.6.0" PrivateAssets="all" />
+        <AdditionalFiles Include="PublicAPI.Shipped.txt" />
+        <AdditionalFiles Include="PublicAPI.Unshipped.txt" />
+    </ItemGroup>
+
 </Project>
