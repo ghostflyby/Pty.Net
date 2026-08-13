@@ -1,5 +1,6 @@
 #if WINDOWS
 using Ghostflyby.Pty;
+using System.Diagnostics;
 using System.Text;
 
 namespace Ghostflyby.Pty.Tests;
@@ -121,6 +122,34 @@ public class PtyWindowsTests
 
         Assert.Contains("caf\u00e9", output);
         Assert.True(p.WaitForExit(Timeout));
+    }
+
+    /// <summary>
+    /// Disposing a live child on Windows must not deadlock: the graceful step starts the
+    /// async ClosePseudoConsole (which sends CTRL_CLOSE_EVENT), the grace window elapses,
+    /// and the force-kill unblocks that close. This smoke test pins the timing so the
+    /// shared dispose path stays correct on both platforms.
+    /// </summary>
+    [Fact]
+    public void Dispose_LiveChild_CompletesWithoutHang()
+    {
+        var p = PtyProcess.Start("powershell.exe", ["-NoProfile", "-Command", "Start-Sleep -Seconds 30"]);
+        try
+        {
+            p.GracefulExitTimeout = TimeSpan.FromSeconds(1);
+            var sw = Stopwatch.StartNew();
+            p.Dispose();
+            sw.Stop();
+
+            // The 1 s grace window plus a comfortable scheduling margin; a hang in the
+            // close/kill ordering would blow well past this.
+            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(15), $"Dispose took {sw.Elapsed}");
+            Assert.True(p.HasExited, "child must be reaped by dispose");
+        }
+        finally
+        {
+            p.Kill(); // no-op if already reaped; guards against a premature failure
+        }
     }
 }
 #endif

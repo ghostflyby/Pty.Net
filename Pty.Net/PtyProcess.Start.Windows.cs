@@ -48,21 +48,17 @@ public sealed partial class PtyProcess
     }
 
     /// <summary>
-    /// Signals the child before the terminal is closed so it exits instead of hanging
-    /// without a controlling terminal (SIGHUP on Unix; on Windows a live child is
-    /// terminated so ClosePseudoConsole does not wait on it indefinitely).
+    /// Gives a still-alive child the chance to exit cleanly before the terminal closes:
+    /// on Unix via SIGHUP, on Windows by starting the ClosePseudoConsole close
+    /// asynchronously, which sends CTRL_CLOSE_EVENT (the Windows analog of SIGHUP) to
+    /// the attached clients. The close runs on a thread-pool thread; if the child does
+    /// not exit, the dispose grace window force-kills it, which unblocks that close.
+    /// Exited children are left alone so their final output is preserved.
     /// </summary>
-    private void TerminateChildIfAlive()
+    private void SignalChildIfAlive()
     {
-        // ConPTY has no signals. ClosePseudoConsole (inside BaseStream.Dispose below)
-        // sends CTRL_CLOSE_EVENT and — on Windows before 11 24H2 — waits indefinitely
-        // for the attached clients to disconnect and drain. A still-alive child (an
-        // interactive shell the caller never exited) would block that close forever,
-        // so terminate it first: the client disconnects and the close plus final-frame
-        // drain complete promptly. Exited children are left alone so their final
-        // output is preserved.
-        if (!HasExited && ProcessHandle is not null)
-            WindowsPty.Terminate(ProcessHandle);
+        if (!HasExited)
+            BaseStream.BeginAsyncClose();
     }
 
     /// <summary>

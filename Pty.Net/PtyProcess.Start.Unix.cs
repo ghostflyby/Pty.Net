@@ -265,7 +265,7 @@ public sealed partial class PtyProcess
     /// without a controlling terminal (SIGHUP on Unix; on Windows a live child is
     /// terminated so ClosePseudoConsole does not wait on it indefinitely).
     /// </summary>
-    private void TerminateChildIfAlive()
+    private void SignalChildIfAlive()
     {
         if (!HasExited)
         {

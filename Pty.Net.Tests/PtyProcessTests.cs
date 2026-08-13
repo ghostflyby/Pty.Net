@@ -229,34 +229,6 @@ public class PtyProcessTests : IDisposable
     }
 
     /// <summary>
-    /// <see cref="PtyProcess.Interrupt"/> delivers Ctrl-C to the foreground process
-    /// group: the interactive bash's foreground sleep is interrupted and the shell
-    /// returns to its prompt, still alive. Unix-only — ConPTY's 0x03 forwarding is best
-    /// effort, so the outcome is not asserted on Windows.
-    /// </summary>
-#if !WINDOWS
-    [Fact]
-    public async Task Interrupt_StopsForegroundProcess_ShellSurvives()
-    {
-        using var p = TestBash.Start();
-        TestBash.ReadUntil(p.Output, "$", Timeout); // drain the startup prompt
-
-        // Marker before the long-running foreground job: its output proves the job has
-        // started (0x03 sent too early would hit the shell before exec and be ignored).
-        p.Input.WriteLine("echo BEFORE; sleep 30; echo AFTER");
-        TestBash.ReadUntil(p.Output, "BEFORE", Timeout);
-        await Task.Delay(200); // let the sleep finish exec'ing
-        p.Interrupt();         // Ctrl-C to the foreground group
-
-        // The interrupted sleep never reaches `echo AFTER`; the shell prints a fresh
-        // prompt once the job is reaped, and the shell itself must have survived
-        // (HasExited false) — Interrupt does not terminate the session.
-        TestBash.ReadUntil(p.Output, "$", Timeout);
-        Assert.False(p.HasExited);
-    }
-#endif
-
-    /// <summary>
     /// <see cref="PtyProcess.HangUp"/> sends SIGHUP, the terminal-hangup signal: an
     /// interactive shell exits cleanly instead of being force-killed. Unix-only — ConPTY
     /// has no terminal signal, so HangUp is a no-op on Windows.

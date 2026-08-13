@@ -38,8 +38,8 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
 
     /// <summary>Set once a force kill has been issued (<see cref="Kill()"/> or the
     /// graceful window in <see cref="Dispose"/>/<see cref="DisposeAsync"/> expired), so
-    /// later <see cref="Interrupt"/>/<see cref="Kill()"/> calls stay no-ops. Volatile:
-    /// written from the calling thread, read from any thread.</summary>
+    /// later <see cref="Kill()"/> and <see cref="HangUp()"/> calls stay no-ops.
+    /// Volatile: written from the calling thread, read from any thread.</summary>
     private int killRequested; // 0/1
 
     /// <summary>OS process id of the child.</summary>
@@ -313,31 +313,6 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     public TimeSpan GracefulExitTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
-    /// Sends an interrupt to the child's foreground process group, like pressing Ctrl-C
-    /// in the terminal: on Unix the 0x03 byte makes the tty line discipline deliver
-    /// SIGINT; on Windows ConPTY the byte is forwarded to the console, which is best
-    /// effort for console applications. The child itself keeps running until it handles
-    /// the interrupt — this does not terminate the session.
-    /// <para>Fire-and-forget, matching <see cref="Kill()"/>: combine with
-    /// <see cref="WaitForExit(TimeSpan)"/> (or <see cref="WaitForExitAsync(TimeSpan?, CancellationToken)"/>)
-    /// for a graceful-termination pattern such as
-    /// <c>Interrupt(); if (!WaitForExit(5s)) Kill();</c>.</para>
-    /// <para>No-op once the child has exited, has been killed, or the process is
-    /// disposed.</para>
-    /// </summary>
-    /// <exception cref="ObjectDisposedException">The process is disposed.</exception>
-    /// <exception cref="IOException">The interrupt byte could not be written.</exception>
-    public void Interrupt()
-    {
-        ObjectDisposedException.ThrowIf(disposed, this);
-        if (HasExited || Volatile.Read(ref killRequested) != 0)
-            return;
-        // 0x03 = Ctrl-C: the tty line discipline turns it into SIGINT for the child's
-        // foreground process group on Unix; ConPTY forwards it to the console on Windows.
-        BaseStream.Write([0x03]);
-    }
-
-    /// <summary>
     /// Sends SIGHUP — the terminal-hangup signal — asking the child to exit cleanly.
     /// This is the same signal <see cref="Dispose"/>/<see cref="DisposeAsync"/> send as
     /// their graceful step, so an interactive shell gets a chance to clean up and exit.
@@ -490,10 +465,10 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         if (HasExited || Volatile.Read(ref killRequested) != 0)
             return;
 
-        // Platform hook: SIGHUP the still-alive child on Unix; on Windows terminate it
-        // so ClosePseudoConsole does not wait indefinitely (exited children are left
-        // alone so their final output is preserved).
-        TerminateChildIfAlive();
+        // Platform hook: SIGHUP the still-alive child on Unix; on Windows initiate the
+        // async pseudo-console close, which sends CTRL_CLOSE_EVENT (exited children are
+        // left alone so their final output is preserved).
+        SignalChildIfAlive();
         if (HasExited)
             return;
 
@@ -518,7 +493,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         if (HasExited || Volatile.Read(ref killRequested) != 0)
             return;
 
-        TerminateChildIfAlive();
+        SignalChildIfAlive();
         if (HasExited)
             return;
 

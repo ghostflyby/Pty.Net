@@ -1,5 +1,4 @@
 #nullable enable
 Ghostflyby.Pty.PtyProcess.GracefulExitTimeout.get -> System.TimeSpan
 Ghostflyby.Pty.PtyProcess.GracefulExitTimeout.set -> void
-Ghostflyby.Pty.PtyProcess.Interrupt() -> void
 Ghostflyby.Pty.PtyProcess.HangUp() -> void

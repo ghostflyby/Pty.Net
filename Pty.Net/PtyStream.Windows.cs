@@ -262,14 +262,27 @@ public sealed partial class PtyStream
     }
 
     /// <summary>
+    /// Initiates the pseudo-console close on a thread-pool thread without waiting: it
+    /// sends CTRL_CLOSE_EVENT to the attached clients (the Windows analog of SIGHUP), so
+    /// a still-alive child gets a chance to exit cleanly, and then drains the final
+    /// frame. Used by the dispose grace window; the reaper also calls it once the child
+    /// exits. Idempotent: <see cref="consoleCloseStarted"/> ensures the close runs
+    /// exactly once, whichever path gets there first.
+    /// </summary>
+    internal void BeginAsyncClose()
+    {
+        BeginTeardown();
+        if (Interlocked.Exchange(ref consoleCloseStarted, 1) == 0)
+            ThreadPool.QueueUserWorkItem(static state => ((PtyStream)state!).CloseConsoleAndDrain(), this);
+    }
+
+    /// <summary>
     /// Called by the reaper after the root process exits. The close and final drain continue on
     /// the thread pool so the single global reaper thread remains non-blocking.
     /// </summary>
     internal void NotifyProcessExited()
     {
-        BeginTeardown();
-        if (Interlocked.Exchange(ref consoleCloseStarted, 1) == 0)
-            ThreadPool.QueueUserWorkItem(static state => ((PtyStream)state!).CloseConsoleAndDrain(), this);
+        BeginAsyncClose();
     }
 
     /// <summary>Releases the stream's ConPTY channels, aborting any in-flight operations first.</summary>
