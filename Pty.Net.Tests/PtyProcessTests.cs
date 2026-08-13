@@ -229,18 +229,19 @@ public class PtyProcessTests : IDisposable
     }
 
     /// <summary>
-    /// <see cref="PtyProcess.HangUp"/> sends SIGHUP, the terminal-hangup signal: an
-    /// interactive shell exits cleanly instead of being force-killed. Unix-only — ConPTY
-    /// has no terminal signal, so HangUp is a no-op on Windows.
+    /// <see cref="PtyProcess.RequestClose"/> asks the terminal session to close: SIGHUP
+    /// on Unix lets an interactive shell exit cleanly instead of being force-killed.
+    /// Unix-only — on Windows it starts the async pseudo-console close (CTRL_CLOSE_EVENT),
+    /// which is covered by the ConPTY smoke tests.
     /// </summary>
 #if !WINDOWS
     [Fact]
-    public void HangUp_CausesShellToExit()
+    public void RequestClose_CausesShellToExit()
     {
         using var p = TestBash.Start();
         Assert.False(p.HasExited);
 
-        p.HangUp();
+        p.RequestClose();
 
         // SIGHUP lets the shell run its exit path; it must exit on its own.
         Assert.True(p.WaitForExit(Timeout));

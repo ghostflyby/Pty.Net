@@ -42,10 +42,8 @@ public sealed partial class PtyProcess
     /// <summary>Windows: ConPTY has no POSIX signals; TerminateProcess is the SIGKILL analog.</summary>
     private partial void KillPlatform() => WindowsPty.Terminate(ProcessHandle!);
 
-    /// <summary>Windows: no terminal-hangup signal exists (ConPTY has no SIGHUP analog).</summary>
-    private partial void HangUpPlatform()
-    {
-    }
+    /// <summary>Windows: starts the async pseudo-console close, which sends CTRL_CLOSE_EVENT (see <see cref="PtyProcess.RequestClose"/>).</summary>
+    private partial void RequestClosePlatform() => BaseStream.BeginAsyncClose();
 
     /// <summary>
     /// Gives a still-alive child the chance to exit cleanly before the terminal closes:

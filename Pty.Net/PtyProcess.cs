@@ -38,7 +38,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
 
     /// <summary>Set once a force kill has been issued (<see cref="Kill()"/> or the
     /// graceful window in <see cref="Dispose"/>/<see cref="DisposeAsync"/> expired), so
-    /// later <see cref="Kill()"/> and <see cref="HangUp()"/> calls stay no-ops.
+    /// later <see cref="Kill()"/> and <see cref="RequestClose()"/> calls stay no-ops.
     /// Volatile: written from the calling thread, read from any thread.</summary>
     private int killRequested; // 0/1
 
@@ -305,32 +305,32 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
 
     /// <summary>
     /// How long <see cref="Dispose"/>/<see cref="DisposeAsync"/> wait for a still-alive
-    /// child to exit cleanly after the terminate signal (SIGHUP on Unix) before force
-    /// killing it with <see cref="Kill()"/>. Defaults to 30 seconds.
-    /// <para>Windows has no terminal signal, so the terminate step there kills the child
-    /// outright and this window is not exercised.</para>
+    /// child to exit cleanly after the terminal-close signal (see <see cref="RequestClose"/>)
+    /// before force killing it with <see cref="Kill()"/>. Defaults to 30 seconds.
     /// </summary>
     public TimeSpan GracefulExitTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
-    /// Sends SIGHUP — the terminal-hangup signal — asking the child to exit cleanly.
-    /// This is the same signal <see cref="Dispose"/>/<see cref="DisposeAsync"/> send as
-    /// their graceful step, so an interactive shell gets a chance to clean up and exit.
-    /// The child decides how to handle it; nothing is guaranteed to exit.
+    /// Asks the child to close the terminal session and exit cleanly: SIGHUP on Unix,
+    /// CTRL_CLOSE_EVENT on Windows (initiated via an async pseudo-console close). This is
+    /// the same signal <see cref="Dispose"/>/<see cref="DisposeAsync"/> send as their
+    /// graceful step, so an interactive shell gets a chance to clean up and exit. The
+    /// child decides how to handle it; nothing is guaranteed to exit.
     /// <para>Fire-and-forget, matching <see cref="Kill()"/>: combine with
     /// <see cref="WaitForExit(TimeSpan)"/> for a graceful pattern such as
-    /// <c>HangUp(); if (!WaitForExit(5s)) Kill();</c>.</para>
+    /// <c>RequestClose(); if (!WaitForExit(5s)) Kill();</c>.</para>
     /// <para>No-op once the child has exited, has been killed, or the process is
-    /// disposed. Windows has no terminal signal, so this is a no-op there.</para>
+    /// disposed.</para>
     /// </summary>
     /// <exception cref="ObjectDisposedException">The process is disposed.</exception>
-    public void HangUp()
+    public void RequestClose()
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         if (HasExited || Volatile.Read(ref killRequested) != 0)
             return;
-        // Platform hook: SIGHUP on Unix; no terminal signal on Windows (no-op).
-        HangUpPlatform();
+        // Platform hook: SIGHUP on Unix; async CTRL_CLOSE_EVENT via ClosePseudoConsole on
+        // Windows (which also starts draining the final frame).
+        RequestClosePlatform();
     }
 
     /// <summary>
@@ -377,10 +377,10 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// <summary>
     /// Terminates the child and releases the pty resources, blocking until the cleanup
     /// has actually completed.
-    /// <para>A still-alive child is first sent the graceful terminate signal (SIGHUP on
-    /// Unix, so an interactive shell can clean up and exit; TerminateProcess on Windows,
-    /// which has no terminal signal) and given <see cref="GracefulExitTimeout"/> to exit
-    /// on its own. If it does not, it is force-killed with <see cref="Kill()"/>. This
+    /// <para>A still-alive child is first sent the terminal-close signal (see
+    /// <see cref="RequestClose"/>: SIGHUP on Unix, CTRL_CLOSE_EVENT on Windows) and given
+    /// <see cref="GracefulExitTimeout"/> to exit on its own. If it does not, it is
+    /// force-killed with <see cref="Kill()"/>. This
     /// method returns only once the reaper has collected the child and the pty resources
     /// are released; a child that ignores the graceful signal is therefore terminated,
     /// not left running in the background.</para>
@@ -614,8 +614,8 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// <summary>Terminates the child: SIGKILL on Unix, TerminateProcess on Windows.</summary>
     private partial void KillPlatform();
 
-    /// <summary>Sends the terminal-hangup signal (SIGHUP) to the child; a no-op on Windows, which has no terminal signal.</summary>
-    private partial void HangUpPlatform();
+    /// <summary>Sends the terminal-close signal to the child: SIGHUP on Unix, async CTRL_CLOSE_EVENT on Windows.</summary>
+    private partial void RequestClosePlatform();
 
     /// <summary>Non-blocking reap attempt for the child; true when collected, with the exit code.</summary>
     private partial bool TryReapPlatform(out int exitCode);
