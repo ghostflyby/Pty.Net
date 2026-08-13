@@ -1,0 +1,142 @@
+name: publish
+
+# Tag-triggered release: push a vX.Y.Z tag (e.g. v0.1.0) to build, test, assemble the
+# cross-platform package and publish it to nuget.org plus a GitHub release. The version
+# is derived from the tag — the single source of truth — not from the csproj.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  # gh release create needs to write releases.
+  contents: write
+
+# A publish must never be cancelled mid-flight (a half-pushed release), and two pushes
+# of the same tag cannot happen — but guard anyway: same-ref publishes serialize.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # One build per OS: the compiled dll is platform-specific but architecture-neutral
+    # managed IL (the csproj splits files by OS only, and macOS arm64, Linux arm64, and
+    # qemu-degraded x64 are all verified in CI). The publish job below copies each OS
+    # build into both of its architecture RID folders, so no arch matrix is needed.
+    name: Build ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Set version from tag
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      # A release candidate must pass the full suite on the OS whose dll it ships.
+      - name: Test
+        run: dotnet test Pty.Net.slnx -c Release --nologo
+
+      - name: Pack
+        run: dotnet pack Pty.Net/Pty.Net.csproj -c Release --nologo -o pkg -p:Version=$VERSION
+
+      - name: Upload platform package
+        uses: actions/upload-artifact@v4
+        with:
+          name: pkg-${{ matrix.os }}
+          path: pkg/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish to nuget.org + GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download platform packages
+        uses: actions/download-artifact@v4
+        with:
+          path: pkgs
+          pattern: pkg-*
+          merge-multiple: false
+
+      - name: Validate tag is SemVer and not a downgrade
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "error: tag '$GITHUB_REF_NAME' is not a valid vX.Y.Z[(-suffix)] version"
+            exit 1
+          fi
+          latest="$(gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || true)"
+          if [[ -n "$latest" ]]; then
+            latest_v="${latest#v}"
+            newer="$(printf '%s\n%s\n' "$latest_v" "$version" | sort -V | tail -n 1)"
+            if [[ "$newer" != "$version" ]]; then
+              echo "error: version '$version' is not newer than the latest release '$latest_v'"
+              exit 1
+            fi
+            echo "ok: $version > $latest_v"
+          else
+            echo "no previous release; this is the first publish"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Assemble cross-platform nupkg
+        run: |
+          set -euo pipefail
+          version="$VERSION"
+          mkdir -p merged/lib/net10.0
+          # Each OS build fills both of its architecture RID folders (see build job).
+          declare -A rids=(
+            [pkg-windows-latest]="win-x64 win-arm64"
+            [pkg-ubuntu-latest]="linux-x64 linux-arm64"
+            [pkg-macos-latest]="osx-x64 osx-arm64"
+          )
+          for art in "${!rids[@]}"; do
+            nupkg="$(find "pkgs/$art" -name '*.nupkg' | head -n 1)"
+            [[ -n "$nupkg" ]] || { echo "error: no nupkg found in $art"; exit 1; }
+            for rid in ${rids[$art]}; do
+              mkdir -p "merged/lib/net10.0/$rid"
+              unzip -p "$nupkg" 'lib/net10.0/*.dll' > "merged/lib/net10.0/$rid/Ghostflyby.Pty.dll"
+            done
+          done
+          # Root package structure (nuspec, rels, content-types) from any single package.
+          base="$(find pkgs -name '*.nupkg' | head -n 1)"
+          unzip -o -q "$base" -d merged -x 'lib/*'
+          (cd merged && zip -qr "../Ghostflyby.Pty.$version.nupkg" .)
+
+      - name: Verify assembled package
+        run: |
+          set -euo pipefail
+          dlls="$(unzip -l "Ghostflyby.Pty.$VERSION.nupkg" | grep -c 'lib/net10.0/.*/Ghostflyby.Pty.dll')"
+          if [[ "$dlls" != "6" ]]; then
+            echo "error: expected 6 RID-specific dlls, found $dlls"
+            unzip -l "Ghostflyby.Pty.$VERSION.nupkg" | grep 'lib/net10.0'
+            exit 1
+          fi
+          unzip -l "Ghostflyby.Pty.$VERSION.nupkg" | grep 'Ghostflyby.Pty.nuspec'
+
+      - name: Publish to nuget.org
+        run: dotnet nuget push "Ghostflyby.Pty.$VERSION.nupkg" --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+
+      - name: Create GitHub release
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" \
+            --notes "Cross-platform pty library — see https://www.nuget.org/packages/Ghostflyby.Pty/$VERSION for package details." \
+            "Ghostflyby.Pty.$VERSION.nupkg"
+        env:
+          GH_TOKEN: ${{ github.token }}
