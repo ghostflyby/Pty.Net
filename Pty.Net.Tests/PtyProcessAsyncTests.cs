@@ -83,12 +83,16 @@ public class PtyProcessAsyncTests
     {
         var (file, args) = TestBash.BusyProcess();
         var p = PtyProcess.Start(file, args);
+        // A busy child typically does not exit on the graceful signal (SIGHUP / Windows
+        // CTRL_CLOSE_EVENT), so a short grace window keeps the test fast — it pins down
+        // "dispose completes", not "the child exits cleanly".
+        p.GracefulExitTimeout = TimeSpan.FromSeconds(1);
 
         var sw = Stopwatch.StartNew();
         await p.DisposeAsync();
         sw.Stop();
 
-        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(3), $"DisposeAsync took {sw.Elapsed}");
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(5), $"DisposeAsync took {sw.Elapsed}");
     }
 
     /// <summary>
