@@ -25,7 +25,7 @@ public sealed partial class PtyProcess
     // compiles it.
     private const int ReadBufferSize = 4096;
     private static readonly byte[] DrainBuffer = new byte[ReadBufferSize];
-    private static readonly System.Threading.Lock DrainLock = new();
+    private static readonly Lock DrainLock = new();
 
     private static partial PtyProcess StartPlatform(
         string file, string[] arguments, string? workingDirectory,

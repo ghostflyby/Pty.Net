@@ -21,6 +21,19 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
 {
     private readonly SemaphoreSlim gate = new(1, 1);
 
+    /// <summary>
+    /// Completion signal for the exit wait: completed exactly once, by the process-wide
+    /// reaper when it collects this child (see <see cref="OnReaped"/>). All exit waits —
+    /// <see cref="WaitForExit(TimeSpan)"/>, <see cref="WaitForExitAsync(TimeSpan, CancellationToken)"/>
+    /// and the bounded wait inside <see cref="Dispose"/>/<see cref="DisposeAsync"/> — observe
+    /// this signal instead of polling <see cref="HasExited"/>, so a wait holds no timer tick
+    /// and completes the moment the reaper collects the child. Lazy so a process that is
+    /// never waited on (the common case) allocates no completion source.
+    /// </summary>
+    private readonly Lazy<TaskCompletionSource<bool>> exitSignal = new(
+        () => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously),
+        LazyThreadSafetyMode.ExecutionAndPublication);
+
     private bool disposed;
 
     /// <summary>OS process id of the child.</summary>
@@ -151,7 +164,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// Concurrent consumption of <see cref="StandardOutput"/> / <see cref="BaseStream"/>
     /// during the wait is not portable, so consume output before or after it.</para>
     /// <para>Reaping happens on the process-wide reaper thread; this method only observes
-    /// <see cref="ExitCode"/>. Pass <see cref="Timeout.InfiniteTimeSpan"/> to wait
+    /// the reaper's exit signal. Pass <see cref="Timeout.InfiniteTimeSpan"/> to wait
     /// indefinitely. For a thread-free equivalent see
     /// <see cref="WaitForExitAsync(CancellationToken)"/>.</para>
     /// </summary>
@@ -180,9 +193,12 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
                     gate.Release();
                 }
 
+                // The reaper completes the exit signal the moment it collects the child,
+                // so a wait returns at exit time instead of on a poll tick. The step is
+                // bounded so a timeout cannot overshoot the deadline.
                 if (!infinite && DateTime.UtcNow >= deadline)
                     return false;
-                Thread.Sleep(WaitStepMs(deadline, infinite));
+                ExitSignal.Wait(WaitStepMs(deadline, infinite));
             }
         }
         finally
@@ -243,9 +259,16 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
                     gate.Release();
                 }
 
-                if (!infinite && DateTime.UtcNow >= deadline)
-                    return false;
-                await Task.Delay(WaitStepMs(deadline, infinite), ct).ConfigureAwait(false);
+                // One wait per loop, bounded by the remaining timeout: the reaper completes
+                // the signal at exit time, so there is no poll tick between the child's
+                // exit and this returning true, and the wait never overshoots the deadline.
+                // (WaitAsync throws TimeoutException when its window elapses; a canceled
+                // token still surfaces as OperationCanceledException.)
+                var exited = infinite
+                    ? await ExitSignal.WaitAsync(ct).ConfigureAwait(false)
+                    : await WaitStepAsync(ExitSignal, WaitStepMs(deadline, infinite), ct).ConfigureAwait(false);
+                if (exited || !infinite && DateTime.UtcNow >= deadline)
+                    return exited;
             }
         }
         finally
@@ -283,8 +306,8 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     public void Resize(int columns, int rows)
     {
         // Both platforms carry the size in 16-bit fields (ushort winsize / short COORD).
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(columns, nameof(columns));
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(rows, nameof(rows));
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(columns);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(rows);
         if (columns > ushort.MaxValue || rows > ushort.MaxValue)
             throw new ArgumentOutOfRangeException(nameof(columns), "Terminal dimensions are limited to 16 bits per axis.");
         BaseStream.SetWindowSize(columns, rows);
@@ -322,10 +345,10 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
             // Bounded wait for the reaper to collect the child. If it has not exited by
             // the deadline, the process-wide reaper keeps watching in the background, so
             // the child cannot linger as a zombie — only the reap completion is deferred
-            // past dispose (see <see cref="Exited"/>).
-            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
-            while (!HasExited && DateTime.UtcNow < deadline)
-                Thread.Sleep(10);
+            // past dispose (see <see cref="Exited"/>). A single wait on the exit signal
+            // replaces the old 10 ms poll loop: the calling thread parks for the whole
+            // bounded window instead of waking every 10 ms.
+            ExitSignal.Wait(TimeSpan.FromSeconds(2));
 
             // The reaper may still be watching an un-exited child; only release the process
             // handle once the wait is over, or the reaper would lose its wait target.
@@ -356,9 +379,9 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
 
             BaseStream.Dispose();
 
-            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
-            while (!HasExited && DateTime.UtcNow < deadline)
-                await Task.Delay(10).ConfigureAwait(false);
+            // Same bounded wait as <see cref="Dispose()"/>, without blocking a thread:
+            // the exit signal completes when the reaper collects the child.
+            await ExitSignal.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
 
             if (HasExited)
                 ProcessHandle?.Dispose();
@@ -383,6 +406,9 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         // away from this shared reaper thread; Unix has no teardown work.
         OnReapedPlatform();
         Volatile.Write(ref exitCode, code);
+        // Release every exit wait (WaitForExit / WaitForExitAsync / Dispose / DisposeAsync)
+        // before raising the event, so a handler that blocks cannot stall them.
+        exitSignal.Value.TrySetResult(true);
         try
         {
             Exited?.Invoke(this, EventArgs.Empty);
@@ -396,6 +422,43 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// <summary>Single non-blocking reap attempt for this child; true when collected, with the exit code.</summary>
     internal bool TryReap(out int exitCode) => TryReapPlatform(out exitCode);
 
+    /// <summary>The task completed by the reaper once this child is collected (see <see cref="OnReaped"/>).</summary>
+    private Task<bool> ExitSignal => exitSignal.Value.Task;
+
+    /// <summary>
+    /// Awaits <paramref name="signal"/> for up to <paramref name="timeoutMs"/> ms,
+    /// returning false when the window elapses instead of throwing. A canceled token
+    /// surfaces as <see cref="OperationCanceledException"/> (the <see cref="Task.WaitAsync(TimeSpan, CancellationToken)"/>
+    /// timeout would otherwise be indistinguishable from a cancellation).
+    /// </summary>
+    private static async Task<bool> WaitStepAsync(Task<bool> signal, int timeoutMs, CancellationToken ct)
+    {
+        try
+        {
+            return await signal.WaitAsync(TimeSpan.FromMilliseconds(timeoutMs), ct).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            return false; // the step window elapsed without the child exiting
+        }
+    }
+
+    /// <summary>
+    /// Window for one exit-wait step: 2 ms so the wait loop keeps draining output while
+    /// the child is still alive (a long-lived child producing output must not sit on a
+    /// full pty buffer for the whole remaining wait — the old 10 ms cadence capped
+    /// exit-time throughput at roughly the pty buffer per tick). Bounded by the remaining
+    /// timeout so a wait never overshoots its deadline by more than one step. The exit
+    /// signal wakes the loop immediately when the reaper collects the child, so the 2 ms
+    /// is a drain cadence, not an exit-detection delay.
+    /// </summary>
+    private static int WaitStepMs(DateTime deadline, bool infinite)
+    {
+        if (infinite)
+            return 2;
+        return (int)Math.Clamp((deadline - DateTime.UtcNow).TotalMilliseconds, 0, 2);
+    }
+
     /// <summary>A snapshot of the parent's environment, for launches with no explicit <see cref="PtyStartInfo.Environment"/>.</summary>
     private static Dictionary<string, string?> ParentEnvironment() => PtyStartInfo.SnapshotParentEnvironment();
 
@@ -404,17 +467,6 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     {
         var signal = status & 0x7F;
         return signal == 0 ? (status >> 8) & 0xFF : 128 + signal;
-    }
-
-    /// <summary>
-    /// Poll interval for the exit-wait loops: a fixed 10 ms, but bounded by the remaining
-    /// timeout so a wait never overshoots its deadline by more than one poll tick.
-    /// </summary>
-    private static int WaitStepMs(DateTime deadline, bool infinite)
-    {
-        if (infinite)
-            return 10;
-        return (int)Math.Clamp((deadline - DateTime.UtcNow).TotalMilliseconds, 0, 10);
     }
 
     // --- platform partial hooks ---------------------------------------------

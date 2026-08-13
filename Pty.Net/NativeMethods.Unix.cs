@@ -282,6 +282,81 @@ internal static partial class NativeMethods
                 set[(n - 1) / 8] |= (byte)(1 << ((n - 1) % 8));
         }
     }
+
+    // ---- epoll / pidfd / eventfd: the event-driven reaper (PtyReaper.Unix.cs) ----
+    // epoll(2) event and control constants (identical across Linux architectures).
+    internal const int EpollIn = 0x001;
+    internal const int EpollCloexec = 0x80000; // EPOLL_CLOEXEC == O_CLOEXEC on Linux
+    internal const int EpollCtlAdd = 1;
+    internal const int EpollCtlDel = 2;
+    // eventfd(2) flags: EFD_CLOEXEC (== O_CLOEXEC) and EFD_NONBLOCK (== O_NONBLOCK).
+    internal const int EfdCloexec = 0x80000;
+    internal const int EfdNonblock = 0x800;
+
+    // struct epoll_event: uint32 events, then epoll_data_t (a union; stored here as a
+    // u64 so the caller can stash a pid or fd). Sequential layout pads to 8-byte
+    // alignment for the union, matching the kernel's 16-byte struct on all 64-bit arches.
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct EpollEvent
+    {
+        internal uint Events;
+        internal ulong Data;
+    }
+
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int epoll_create1(int flags);
+
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int epoll_ctl(int epfd, int op, int fd, ref EpollEvent ev);
+
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int epoll_wait(int epfd, [Out] EpollEvent[] events, int maxevents, int timeout);
+
+    // pidfd_open(2) (kernel 5.3+): an fd that reports readable once the process exits.
+    // The reaper listens for that with epoll — exit detection without touching SIGCHLD.
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int pidfd_open(int pid, uint flags);
+
+    // eventfd(2): the reaper's self-wake channel — a counter fd that stays writable, so
+    // waking never blocks (unlike a pipe, which can fill).
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int eventfd(uint initval, int flags);
+#endif
+
+#if OSX
+    // ---- kqueue / kevent: the event-driven reaper (PtyReaper.Unix.cs) ----
+    // kevent filters and flags from <sys/event.h> (Darwin). EVFILT_PROC reports NOTE_EXIT
+    // when the watched process exits; EVFILT_USER is a self-wake channel (macOS 10.9+)
+    // triggered from any thread with NOTE_TRIGGER.
+    internal const short EvfilProc = -7;
+    internal const short EvfilUser = -10;
+    internal const ushort EvAdd = 0x0001;
+    internal const ushort EvDelete = 0x0002;
+    internal const ushort EvClear = 0x0020;
+    internal const uint NoteExit = 0x80000000;
+    internal const uint NoteTrigger = 0x01000000;
+
+    // struct kevent (Darwin, 64-bit): ident, filter, flags, fflags, data, udata. Fixed
+    // signature, so it is safe on Apple arm64 (unlike variadic fcntl).
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct Kevent
+    {
+        internal nuint Ident;
+        internal short Filter;
+        internal ushort Flags;
+        internal uint Fflags;
+        internal nint Data;
+        internal IntPtr Udata;
+    }
+
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int kqueue();
+
+    // kevent(kq, changelist, nchanges, eventlist, nevents, timeout): timeout is a
+    // struct timespec* — IntPtr.Zero means block indefinitely. Either list may be null
+    // with count 0; the eventlist is written back with returned events.
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int kevent(int kq, [In] Kevent[]? changelist, int nchanges, [Out] Kevent[]? eventlist, int nevents, IntPtr timeout);
 #endif
 
     [LibraryImport("libc", SetLastError = true)]
