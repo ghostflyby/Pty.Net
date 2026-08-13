@@ -160,9 +160,11 @@ public class PtyProcessAsyncTests
             await p.DisposeAsync(); // must complete, not throw TimeoutException
             sw.Stop();
 
-            // The bounded window is 2 s; allow scheduling slack. The pre-fix behavior
-            // threw TimeoutException at exactly 2 s, so this also guards the shape.
-            Assert.True(sw.Elapsed >= TimeSpan.FromSeconds(2), $"returned too early: {sw.Elapsed}");
+            // The bounded window is 2 s; the Stopwatch may straddle the WaitAsync timer
+            // by a sub-millisecond, so assert "the wait branch ran" with a comfortable
+            // margin (1.5 s) rather than the exact 2 s — a trap-install failure would
+            // return in ~0.3 s. The pre-fix behavior threw TimeoutException at 2 s.
+            Assert.True(sw.Elapsed >= TimeSpan.FromSeconds(1.5), $"returned too early: {sw.Elapsed}");
             Assert.True(sw.Elapsed < TimeSpan.FromSeconds(5), $"DisposeAsync took {sw.Elapsed}");
         }
         finally
