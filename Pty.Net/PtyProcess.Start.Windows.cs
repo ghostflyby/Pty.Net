@@ -42,6 +42,11 @@ public sealed partial class PtyProcess
     /// <summary>Windows: ConPTY has no POSIX signals; TerminateProcess is the SIGKILL analog.</summary>
     private partial void KillPlatform() => WindowsPty.Terminate(ProcessHandle!);
 
+    /// <summary>Windows: no terminal-hangup signal exists (ConPTY has no SIGHUP analog).</summary>
+    private partial void HangUpPlatform()
+    {
+    }
+
     /// <summary>
     /// Signals the child before the terminal is closed so it exits instead of hanging
     /// without a controlling terminal (SIGHUP on Unix; on Windows a live child is

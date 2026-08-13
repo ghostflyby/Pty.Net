@@ -272,9 +272,12 @@ public sealed partial class PtyProcess
             // The child was spawned with posix_spawn + SETSID, so it has no controlling
             // terminal: closing the pty master alone does not deliver a hangup. Signal
             // it explicitly, then close the master so its output writes fail cleanly.
-            NativeMethods.kill(Pid, NativeMethods.Signals.Hup);
+            HangUpPlatform();
         }
     }
+
+    /// <summary>Unix: SIGHUP the child — the terminal-hangup signal (see <see cref="PtyProcess.HangUp"/>).</summary>
+    private partial void HangUpPlatform() => NativeMethods.kill(Pid, NativeMethods.Signals.Hup);
 
     /// <summary>Unix: the pty stream is the facade stream; no transcoding is involved.</summary>
     private partial void CreateFacades(

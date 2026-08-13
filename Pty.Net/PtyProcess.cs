@@ -338,6 +338,27 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
+    /// Sends SIGHUP — the terminal-hangup signal — asking the child to exit cleanly.
+    /// This is the same signal <see cref="Dispose"/>/<see cref="DisposeAsync"/> send as
+    /// their graceful step, so an interactive shell gets a chance to clean up and exit.
+    /// The child decides how to handle it; nothing is guaranteed to exit.
+    /// <para>Fire-and-forget, matching <see cref="Kill()"/>: combine with
+    /// <see cref="WaitForExit(TimeSpan)"/> for a graceful pattern such as
+    /// <c>HangUp(); if (!WaitForExit(5s)) Kill();</c>.</para>
+    /// <para>No-op once the child has exited, has been killed, or the process is
+    /// disposed. Windows has no terminal signal, so this is a no-op there.</para>
+    /// </summary>
+    /// <exception cref="ObjectDisposedException">The process is disposed.</exception>
+    public void HangUp()
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        if (HasExited || Volatile.Read(ref killRequested) != 0)
+            return;
+        // Platform hook: SIGHUP on Unix; no terminal signal on Windows (no-op).
+        HangUpPlatform();
+    }
+
+    /// <summary>
     /// Terminates the child immediately (SIGKILL on Unix, TerminateProcess on Windows),
     /// without giving it a chance to clean up — matching
     /// <see cref="System.Diagnostics.Process.Kill()"/>.
@@ -617,6 +638,9 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
 
     /// <summary>Terminates the child: SIGKILL on Unix, TerminateProcess on Windows.</summary>
     private partial void KillPlatform();
+
+    /// <summary>Sends the terminal-hangup signal (SIGHUP) to the child; a no-op on Windows, which has no terminal signal.</summary>
+    private partial void HangUpPlatform();
 
     /// <summary>Non-blocking reap attempt for the child; true when collected, with the exit code.</summary>
     private partial bool TryReapPlatform(out int exitCode);
