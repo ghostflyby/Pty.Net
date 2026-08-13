@@ -3,13 +3,12 @@ name: publish
 # Tag-triggered release: push a vX.Y.Z tag (e.g. v0.1.0) to build, test, assemble the
 # cross-platform package and publish it to nuget.org plus a GitHub release. The version
 # is derived from the tag — the single source of truth — not from the csproj.
+# Publish uses NuGet Trusted Publishing (OIDC): no long-lived API key in secrets; the
+# short-lived key is exchanged by NuGet/login@v1. Register the matching policy on
+# nuget.org (owner: ghostflyby, repo: ghostflyby/Pty.Net, workflow file: publish.yml).
 on:
   push:
-    tags: ['v*']
-
-permissions:
-  # gh release create needs to write releases.
-  contents: write
+    tags: ['v*.*.*']
 
 # A publish must never be cancelled mid-flight (a half-pushed release), and two pushes
 # of the same tag cannot happen — but guard anyway: same-ref publishes serialize.
@@ -61,6 +60,11 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # id-token: write lets NuGet/login exchange the OIDC token for a short-lived NuGet
+    # API key (Trusted Publishing); contents: write is for gh release create.
+    permissions:
+      id-token: write
+      contents: write
     steps:
       - name: Download platform packages
         uses: actions/download-artifact@v4
@@ -128,10 +132,16 @@ jobs:
           fi
           unzip -l "Ghostflyby.Pty.$VERSION.nupkg" | grep 'Ghostflyby.Pty.nuspec'
 
+      - name: NuGet login (OIDC → temporary API key)
+        uses: NuGet/login@v1
+        id: login
+        with:
+          # nuget.org username (profile name), not an email address. The temp key is
+          # valid for 1 hour and is exchanged right before the push.
+          user: ${{ secrets.NUGET_USER }}
+
       - name: Publish to nuget.org
-        run: dotnet nuget push "Ghostflyby.Pty.$VERSION.nupkg" --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate
-        env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: dotnet nuget push "Ghostflyby.Pty.$VERSION.nupkg" --source https://api.nuget.org/v3/index.json --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" --skip-duplicate
 
       - name: Create GitHub release
         run: |
