@@ -14,6 +14,8 @@
              so the tag is the single source of truth and this file never drifts. -->
         <Authors>ghostflyby</Authors>
         <Description>The multi-platform pty wrapper in pure C# with P/Invoke: drive interactive shells with a real terminal on Windows, macOS, and Linux.</Description>
+        <!-- SPDX expression: nuget.org renders the Apache-2.0 badge from it. The license
+             text itself lives at the repo root (LICENSE). -->
         <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
         <RepositoryType>git</RepositoryType>
         <RepositoryUrl>https://github.com/ghostflyby/Pty.Net</RepositoryUrl>
