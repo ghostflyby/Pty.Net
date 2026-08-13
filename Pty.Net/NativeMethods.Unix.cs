@@ -82,9 +82,14 @@ internal static partial class NativeMethods
 
     // errno values used in the poll/read/write retry logic.
     // EINTR and EIO are identical on macOS and Linux; EAGAIN differs.
+    // ENOENT, ENOTDIR and EACCES feed the launch-error translation in
+    // PtyProcess.Start.Unix.cs and are identical on macOS and Linux.
     internal const int Eintr = 4;
     internal const int Eio = 5;
     internal const int Echild = 10;
+    internal const int ENoent = 2;
+    internal const int Enotdir = 20;
+    internal const int Eacces = 13;
 #if OSX
     internal const int Eagain = 35;
 #elif LINUX

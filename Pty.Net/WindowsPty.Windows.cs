@@ -96,9 +96,9 @@ internal static partial class WindowsPty
                 0,
                 out pseudoConsole);
             if (hr.Failed)
-                throw new Win32Exception(hr.Value, $"CreatePseudoConsole failed: {hr}");
+                throw new IOException($"CreatePseudoConsole failed: {hr}", new Win32Exception(hr.Value));
             if (pseudoConsole is null || pseudoConsole.IsInvalid)
-                throw new Win32Exception("CreatePseudoConsole returned an invalid pseudo-console handle");
+                throw new IOException("CreatePseudoConsole returned an invalid pseudo-console handle");
 
             var startupInfo = new STARTUPINFOEXW();
             startupInfo.StartupInfo.cb = (uint)Marshal.SizeOf<STARTUPINFOEXW>();
@@ -108,6 +108,7 @@ internal static partial class WindowsPty
             var attrListInitialized = false;
             PROCESS_INFORMATION processInfo = default;
             var success = false;
+            var createProcessError = 0;
             try
             {
                 const uint attributeCount = 1;
@@ -149,6 +150,10 @@ internal static partial class WindowsPty
                         (PCWSTR)cwdPtr,
                         (STARTUPINFOW*)&startupInfo,
                         &processInfo);
+                    // Capture the error immediately: the attribute-list teardown in the
+                    // finally below is itself a P/Invoke and could clobber the last error.
+                    if (!success)
+                        createProcessError = Marshal.GetLastPInvokeError();
                 }
             }
             finally
@@ -160,7 +165,7 @@ internal static partial class WindowsPty
             }
 
             if (!success)
-                throw new Win32Exception($"CreateProcessW failed for '{file}'");
+                throw TranslateCreateProcessError(file, createProcessError);
 
             // Microsoft requires the ConPTY channel handles to remain valid through
             // CreateProcess. The pseudo console has retained what it needs now, so release
@@ -211,6 +216,25 @@ internal static partial class WindowsPty
     {
         if (!processHandle.IsInvalid)
             TerminateProcess(processHandle, 1);
+    }
+
+    /// <summary>
+    /// Translates a CreateProcessW error code into the BCL exception type that names the
+    /// cause, mirroring the Unix errno translation (see
+    /// PtyProcess.Start.Unix.cs.TranslateSpawnError) so <see cref="PtyProcess.Start(PtyStartInfo)"/>
+    /// throws the same exception types for the same user mistakes on both platforms.
+    /// Other failures stay an IOException wrapping the Win32Exception, per the documented
+    /// <c>IOException</c> contract on <see cref="PtyProcess.Start(PtyStartInfo)"/>.
+    /// </summary>
+    private static Exception TranslateCreateProcessError(string file, int errorCode)
+    {
+        return errorCode switch
+        {
+            2 /* ERROR_FILE_NOT_FOUND */ => new FileNotFoundException($"The executable '{file}' was not found."),
+            3 /* ERROR_PATH_NOT_FOUND */ => new DirectoryNotFoundException($"A component of the executable path '{file}' was not found."),
+            5 /* ERROR_ACCESS_DENIED */ => new UnauthorizedAccessException($"The executable '{file}' could not be executed: access denied."),
+            _ => new IOException($"CreateProcessW failed for '{file}': Win32 error {errorCode}", new Win32Exception(errorCode)),
+        };
     }
 
     /// <summary>Non-blocking process-handle reap step with the real Windows exit code.</summary>

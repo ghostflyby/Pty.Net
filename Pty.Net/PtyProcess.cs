@@ -6,8 +6,8 @@ namespace Ghostflyby.Pty;
 /// <summary>
 /// A child process attached to a pseudo-terminal (PTY).
 /// <para>
-/// Use it to drive an interactive shell: write commands to <see cref="StandardInput"/>,
-/// read back the terminal output from <see cref="StandardOutput"/>. The child's stdout
+    /// Use it to drive an interactive shell: write commands to <see cref="StandardInput"/>,
+    /// read back the terminal output from <see cref="StandardOutput"/>. The child's stdout
 /// and stderr are merged into the one terminal stream; there is no separate stderr.
 /// </para>
 /// <para>
@@ -83,11 +83,11 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// </summary>
     public PtyStream BaseStream { get; }
 
-    /// <summary>Text writer to the child's input, like <see cref="System.Diagnostics.Process.StandardInput"/>. Auto-flushed so writes are visible to the child immediately.</summary>
+    /// <summary>Text writer to the child's terminal input, like <see cref="System.Diagnostics.Process.StandardInput"/>. Auto-flushed so writes are visible to the child immediately.</summary>
     public StreamWriter StandardInput { get; }
 
     /// <summary>
-    /// Text reader over the child's output, like <see cref="System.Diagnostics.Process.StandardOutput"/>.
+    /// Text reader over the child's terminal output, like <see cref="System.Diagnostics.Process.StandardOutput"/>.
     /// <para>A pty merges the child's stdout and stderr into this one reader. Prefer
     /// disposing the whole <see cref="PtyProcess"/> over disposing this reader alone.</para>
     /// </summary>
@@ -123,11 +123,19 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// <param name="info">The launch description.</param>
     /// <returns>The running <see cref="PtyProcess"/>.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="info"/> is null.</exception>
-    /// <exception cref="IOException">The pseudo-terminal could not be created or the child could not be launched.</exception>
+    /// <exception cref="ArgumentException"><paramref name="info"/>.<see cref="PtyStartInfo.FileName"/> is empty or whitespace.</exception>
+    /// <exception cref="FileNotFoundException">The executable could not be found.</exception>
+    /// <exception cref="DirectoryNotFoundException">A directory in the executable or working-directory path does not exist.</exception>
+    /// <exception cref="UnauthorizedAccessException">The executable could not be executed, or the working directory is not accessible.</exception>
+    /// <exception cref="IOException">The pseudo-terminal could not be created, or the child could not be launched for another reason.</exception>
     /// <exception cref="PlatformNotSupportedException">ConPTY is not available (Windows 10 1809 or earlier). Windows only.</exception>
     public static PtyProcess Start(PtyStartInfo info)
     {
         ArgumentNullException.ThrowIfNull(info);
+        // required only guards null; an empty FileName would otherwise fall through to
+        // posix_spawn/CreateProcess and surface as a confusing "not found" IOException.
+        if (string.IsNullOrWhiteSpace(info.FileName))
+            throw new ArgumentException("FileName must name an executable.", nameof(info));
         return StartCore(info.FileName, info.ResolveArguments(), info.WorkingDirectory, info.Environment,
             info.StandardInputEncoding, info.StandardOutputEncoding, info.InitialCols, info.InitialRows);
     }
@@ -139,10 +147,19 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// <param name="arguments">Command-line arguments for <paramref name="file"/>.</param>
     /// <param name="workingDirectory">Initial working directory of the child; the parent's current directory when null.</param>
     /// <returns>The running <see cref="PtyProcess"/>.</returns>
-    /// <exception cref="IOException">The pseudo-terminal could not be created or the child could not be launched.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="file"/> or <paramref name="arguments"/> is null.</exception>
+    /// <exception cref="ArgumentException"><paramref name="file"/> is empty or whitespace.</exception>
+    /// <exception cref="FileNotFoundException">The executable could not be found.</exception>
+    /// <exception cref="DirectoryNotFoundException">A directory in the executable or working-directory path does not exist.</exception>
+    /// <exception cref="UnauthorizedAccessException">The executable could not be executed, or the working directory is not accessible.</exception>
+    /// <exception cref="IOException">The pseudo-terminal could not be created, or the child could not be launched for another reason.</exception>
     /// <exception cref="PlatformNotSupportedException">ConPTY is not available (Windows 10 1809 or earlier). Windows only.</exception>
     public static PtyProcess Start(string file, string[] arguments, string? workingDirectory = null)
     {
+        ArgumentNullException.ThrowIfNull(file);
+        ArgumentNullException.ThrowIfNull(arguments);
+        if (string.IsNullOrWhiteSpace(file))
+            throw new ArgumentException("The executable name must not be empty.", nameof(file));
         return StartCore(file, arguments, workingDirectory, environment: null,
             inputEncoding: null, outputEncoding: null, initialCols: 120, initialRows: 30);
     }
@@ -151,6 +168,12 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         IDictionary<string, string?>? environment, Encoding? inputEncoding, Encoding? outputEncoding,
         int initialCols, int initialRows)
     {
+        // posix_spawn applies its chdir file action lazily at exec time, so a bad
+        // working directory would otherwise surface as an ambiguous spawn errno (the
+        // child cannot start at all) instead of a deterministically typed error.
+        if (workingDirectory is not null && !Directory.Exists(workingDirectory))
+            throw new DirectoryNotFoundException($"The working directory '{workingDirectory}' does not exist.");
+
         // Platform hook: posix_spawn on Unix, ConPTY (CreatePseudoConsole +
         // CreateProcessW) on Windows.
         return StartPlatform(file, arguments, workingDirectory, environment ?? ParentEnvironment(),
@@ -160,7 +183,9 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// <summary>
     /// Blocks until the child exits or <paramref name="timeout"/> elapses.
     /// <para>While waiting, output is drained continuously so the child never blocks
-    /// writing to a full pty buffer; the drained bytes remain readable afterward.
+    /// writing to a full pty buffer. The drain preserves the bytes: on Windows the
+    /// output pump keeps them buffered for a later read, while on Unix the drain
+    /// discards them, so output produced during the wait is not available afterward.
     /// Concurrent consumption of <see cref="StandardOutput"/> / <see cref="BaseStream"/>
     /// during the wait is not portable, so consume output before or after it.</para>
     /// <para>Reaping happens on the process-wide reaper thread; this method only observes

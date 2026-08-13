@@ -180,12 +180,12 @@ public sealed partial class PtyProcess
             {
                 var chdirRc = NativeMethods.posix_spawn_file_actions_addchdir_np(fileActions, workingDirectory);
                 if (chdirRc != 0)
-                    throw new IOException($"posix_spawn addchdir failed: errno={chdirRc}");
+                    throw TranslateChdirError(workingDirectory, chdirRc);
             }
 
             var spawnRc = NativeMethods.posix_spawn(out var pid, path, fileActions, attr, argv, envp);
             if (spawnRc != 0)
-                throw new IOException($"posix_spawn failed: errno={spawnRc}");
+                throw TranslateSpawnError(file, spawnRc);
 
             spawned = true;
             return new PtyProcess(stream, pid, inputEncoding, outputEncoding, processHandle: null);
@@ -243,11 +243,19 @@ public sealed partial class PtyProcess
         if (rc != 0)
             throw new IOException($"ptsname failed: errno={rc}");
         var len = buf.IndexOf((byte)0);
+        // A success without a NUL terminator means the buffer filled exactly (device
+        // paths are far shorter than PtsPathMax); take the whole buffer rather than
+        // crashing on a [..-1] slice.
+        if (len < 0)
+            len = buf.Length;
         return Encoding.UTF8.GetString(buf[..len]);
 #elif OSX
         lock (PtsnameLock)
         {
-            return Marshal.PtrToStringUTF8(NativeMethods.ptsname(masterFd)) ?? string.Empty;
+            var path = Marshal.PtrToStringUTF8(NativeMethods.ptsname(masterFd));
+            if (path is null)
+                throw new IOException($"ptsname failed: errno={Marshal.GetLastPInvokeError()}");
+            return path;
         }
 #else
 #error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
@@ -348,6 +356,43 @@ public sealed partial class PtyProcess
             exitCode = -1;
             return true;
         }
+    }
+
+    /// <summary>
+    /// Translates a posix_spawn errno into the BCL exception type that names the cause:
+    /// ENOENT/ENOTDIR/EACCES are the common launch mistakes (bad executable path, missing
+    /// permission), and naming them beats a generic IOException that only carries a number.
+    /// Every other errno stays an IOException carrying the code, like the pre-translation
+    /// contract. Windows maps its CreateProcessW error codes the same way
+    /// (see WindowsPty.TranslateCreateProcessError), so <see cref="PtyProcess.Start(PtyStartInfo)"/>
+    /// throws the same exception types for the same user mistakes on both platforms.
+    /// </summary>
+    private static Exception TranslateSpawnError(string file, int errno)
+    {
+        return errno switch
+        {
+            NativeMethods.ENoent => new FileNotFoundException($"The executable '{file}' was not found."),
+            NativeMethods.Enotdir => new DirectoryNotFoundException($"A component of the executable path '{file}' is not a directory."),
+            NativeMethods.Eacces => new UnauthorizedAccessException($"The executable '{file}' could not be executed: permission denied."),
+            _ => new IOException($"posix_spawn failed for '{file}': errno={errno}"),
+        };
+    }
+
+    /// <summary>
+    /// Working-directory variant of <see cref="TranslateSpawnError"/>: ENOENT there means
+    /// the requested directory is missing, so it maps to
+    /// <see cref="DirectoryNotFoundException"/> rather than <see cref="FileNotFoundException"/>.
+    /// </summary>
+    private static Exception TranslateChdirError(string workingDirectory, int errno)
+    {
+        return errno switch
+        {
+            NativeMethods.ENoent or NativeMethods.Enotdir =>
+                new DirectoryNotFoundException($"The working directory '{workingDirectory}' was not found."),
+            NativeMethods.Eacces =>
+                new UnauthorizedAccessException($"The working directory '{workingDirectory}' is not accessible."),
+            _ => new IOException($"posix_spawn addchdir failed: errno={errno}"),
+        };
     }
 
     /// <summary>Flattens the environment dictionary into the <c>KEY=VALUE</c> array posix_spawn expects, dropping null values.</summary>
