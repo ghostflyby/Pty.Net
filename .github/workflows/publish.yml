@@ -89,7 +89,10 @@ jobs:
           if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
               throw "tag '$env:GITHUB_REF_NAME' is not a valid vX.Y.Z[(-suffix)] version"
           }
-          $latest = (gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>$null)
+          # 'gh release list' exits 1 when no release exists yet (first publish); with
+          # $PSNativeCommandUseErrorActionPreference = $true that becomes a terminating
+          # error, so wrap it: an empty result means 'no previous release'.
+          $latest = try { gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>$null } catch { $null }
           if ($latest) {
               function Test-Newer([string]$candidate, [string]$previous) {
                   $c = $candidate -split '-'; $p = $previous -split '-'
