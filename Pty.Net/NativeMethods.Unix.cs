@@ -293,10 +293,17 @@ internal static partial class NativeMethods
     internal const int EfdCloexec = 0x80000;
     internal const int EfdNonblock = 0x800;
 
-    // struct epoll_event: uint32 events, then epoll_data_t (a union; stored here as a
-    // u64 so the caller can stash a pid or fd). Sequential layout pads to 8-byte
-    // alignment for the union, matching the kernel's 16-byte struct on all 64-bit arches.
+    // struct epoll_event. The kernel defines it as __attribute__((packed)) on x86_64
+    // (events + data = 12 bytes, no padding) but with the natural layout everywhere
+    // else (16 bytes on arm64). A mismatched C# layout makes epoll_wait write back
+    // events at the wrong offsets, so the reaper reads a corrupted data field and
+    // silently misses every pidfd exit event — this is why the event-driven reap only
+    // misbehaved on x64. The SDK defines X64 when building for x86_64.
+#if X64
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+#else
     [StructLayout(LayoutKind.Sequential)]
+#endif
     internal struct EpollEvent
     {
         internal uint Events;
