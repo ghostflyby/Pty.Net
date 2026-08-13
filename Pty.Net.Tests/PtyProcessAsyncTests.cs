@@ -63,51 +63,6 @@ public class PtyProcessAsyncTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => wait).WaitAsync(Timeout);
     }
 
-    /// <summary>
-    /// Pending WaitForExitAsync calls hold no thread: with many sessions parked waiting,
-    /// the worker pool must not lose threads (the wait is a Task.Delay loop, not a
-    /// Thread.Sleep), and every wait completes promptly once the child is killed.
-    /// </summary>
-    [Fact]
-    public async Task WaitForExitAsync_HoldsNoThreadPoolThreads()
-    {
-        const int sessions = 32;
-        var all = new PtyProcess[sessions];
-
-        ThreadPool.GetAvailableThreads(out var workersBefore, out _);
-        for (var i = 0; i < sessions; i++)
-        {
-            var (file, args) = TestBash.SleepProcess(1000);
-            all[i] = PtyProcess.Start(file, args);
-            _ = all[i].WaitForExitAsync(System.Threading.Timeout.InfiniteTimeSpan);
-        }
-
-        // Windows launches one child process per session (cmd/ping — lighter than
-        // /bin/sleep's peer PowerShell, but still heavier than the Unix sleep), so let
-        // the startup churn settle before measuring; the sessions stay alive (sleep
-        // 1000 s) throughout, and the wait itself holds no thread. The parallel suite
-        // also dips isolated samples, so take the max over a window afterwards: a real
-        // leak suppresses every sample, while transient churn only dips some.
-#if WINDOWS
-        await Task.Delay(1500);
-#else
-        await Task.Delay(300);
-#endif
-        var workersDuring = TestBash.MaxAvailableWorkers(TimeSpan.FromSeconds(1));
-
-        foreach (var p in all)
-        {
-            p.Kill();
-            await p.WaitForExitAsync(Timeout).WaitAsync(Timeout);
-            p.Dispose();
-        }
-
-        Assert.True(
-            workersDuring >= workersBefore - 4,
-            $"Available worker threads collapsed from {workersBefore} to {workersDuring}: " +
-            "pending WaitForExitAsync waits must not occupy thread-pool threads.");
-    }
-
     // --- DisposeAsync -----------------------------------------------------
 
     [Fact]

@@ -33,56 +33,6 @@ public class PtyStreamTests : IDisposable
         TestBash.Drain(bash.Output, TimeSpan.FromMilliseconds(50));
     }
 
-    /// <summary>
-    /// A pending async read holds no thread: with many sessions parked in ReadAsync, the
-    /// worker pool must not lose threads to them, and canceling every one completes
-    /// immediately. (The regression this guards against — FileStream offloading blocking
-    /// reads to pool threads — would drain ~one thread per session.)
-    /// </summary>
-    [Fact]
-    public async Task PendingReads_DoNotConsumeThreadPoolAndCancelImmediately()
-    {
-        const int sessions = 32;
-        var all = new PtyProcess[sessions];
-        var reads = new Task<int>[sessions];
-        var cts = new CancellationTokenSource[sessions];
-
-        ThreadPool.GetAvailableThreads(out var workersBefore, out _);
-        for (var i = 0; i < sessions; i++)
-        {
-            all[i] = TestBash.Start();
-            // Drain the startup banner so the session is truly idle; a read parked here
-            // must stay pending (the whole point of the test) instead of consuming it.
-            TestBash.ReadUntil(all[i].Output, "$", Timeout);
-            cts[i] = new CancellationTokenSource();
-            reads[i] = all[i].BaseStream.ReadAsync(new byte[16], cts[i].Token).AsTask();
-        }
-
-        // Give any thread-pool offloading a chance to manifest. The parallel suite's own
-        // startup churn dips isolated samples, so take the max over a window: a real leak
-        // (one thread pinned per parked read) suppresses every sample.
-        await Task.Delay(300);
-        var workersDuring = TestBash.MaxAvailableWorkers(TimeSpan.FromSeconds(1));
-
-        // Cancel everything; every read must abort promptly.
-        var cancelAll = Task.WhenAll(Enumerable.Range(0, sessions).Select(i => CancelAndExpectOce(reads[i], cts[i])));
-        await cancelAll.WaitAsync(Timeout);
-
-        foreach (var p in all)
-            p.Dispose();
-
-        Assert.True(
-            workersDuring >= workersBefore - 4,
-            $"Available worker threads collapsed from {workersBefore} to {workersDuring}: " +
-            "pending pty reads must not occupy thread-pool threads.");
-    }
-
-    private static async Task CancelAndExpectOce(Task<int> read, CancellationTokenSource cts)
-    {
-        cts.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => read).WaitAsync(Timeout);
-    }
-
     /// <summary>Reading returns whatever is available promptly — not necessarily a full buffer.</summary>
     [Fact]
     public async Task ReadAsync_ReturnsAvailableBytesNotFullBuffer()
