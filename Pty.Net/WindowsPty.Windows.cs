@@ -53,7 +53,7 @@ internal static partial class WindowsPty
     /// ownership of the parent pipe ends, pseudo console, and process handle to the caller.
     /// </summary>
     internal static unsafe WindowsPtyResult Start(
-        string file, string[] arguments, string? workingDirectory,
+        string file, IReadOnlyList<string> arguments, string? workingDirectory,
         IDictionary<string, string?> environment, int columns, int rows)
     {
         if (!IsSupported)
@@ -249,7 +249,7 @@ internal static partial class WindowsPty
         return true;
     }
 
-    private static string BuildCommandLine(string file, string[] arguments)
+    private static string BuildCommandLine(string file, IReadOnlyList<string> arguments)
     {
         var sb = new StringBuilder();
         AppendQuoted(sb, file);

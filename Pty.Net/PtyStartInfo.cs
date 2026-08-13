@@ -20,7 +20,7 @@ public sealed record PtyStartInfo
     public required string FileName { get; init; }
 
     /// <summary>Arguments passed to <see cref="FileName"/>.</summary>
-    public IReadOnlyList<string> ArgumentList { get; init; } = ImmutableArray<string>.Empty;
+    public IReadOnlyList<string> Arguments { get; init; } = ImmutableArray<string>.Empty;
 
     /// <summary>Initial working directory of the child; defaults to the parent's current directory.</summary>
     public string WorkingDirectory { get; init; } = System.Environment.CurrentDirectory;
@@ -38,10 +38,10 @@ public sealed record PtyStartInfo
     public Encoding OutputEncoding { get; init; } = Encoding.UTF8;
 
     /// <summary>Initial terminal width in character columns. Defaults to 120.</summary>
-    public int InitialCols { get; init; } = 120;
+    public int Cols { get; init; } = 120;
 
     /// <summary>Initial terminal height in character rows. Defaults to 30.</summary>
-    public int InitialRows { get; init; } = 30;
+    public int Rows { get; init; } = 30;
 
     /// <summary>
     /// Environment variables passed to the child.
@@ -91,13 +91,13 @@ public sealed record PtyStartInfo
             OutputEncoding = outputEncoding;
         foreach (var kv in psi.Environment)
             Environment[kv.Key] = kv.Value;
-        ArgumentList = psi.ArgumentList.Count == 0 ? ParseArguments(psi.Arguments) : [.. psi.ArgumentList];
+        Arguments = psi.ArgumentList.Count == 0 ? ParseArguments(psi.Arguments) : [.. psi.ArgumentList];
     }
 
     /// <summary>Resolves the effective argument list passed to the child.</summary>
     internal string[] ResolveArguments()
     {
-        return [.. ArgumentList];
+        return [.. Arguments];
     }
 
     /// <summary>

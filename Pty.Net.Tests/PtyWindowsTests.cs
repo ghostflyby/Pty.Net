@@ -102,7 +102,7 @@ public class PtyWindowsTests
         using var p = PtyProcess.Start(new PtyStartInfo
         {
             FileName = "powershell.exe",
-            ArgumentList =
+            Arguments =
             [
                 "-NoProfile",
                 "-Command",

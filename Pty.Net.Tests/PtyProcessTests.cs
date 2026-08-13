@@ -250,7 +250,7 @@ public class PtyProcessTests : IDisposable
         using var p = PtyProcess.Start(new PtyStartInfo
         {
             FileName = TestBash.BashPath,
-            ArgumentList = ["--noprofile", "--norc", "--noediting", "-i"],
+            Arguments = ["--noprofile", "--norc", "--noediting", "-i"],
             InputEncoding = latin1,
             OutputEncoding = latin1,
         });

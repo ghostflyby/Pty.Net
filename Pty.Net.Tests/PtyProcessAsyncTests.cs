@@ -138,7 +138,7 @@ public class PtyProcessAsyncTests
     {
         using var bash = TestBash.Start();
         var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
-        bash.Exited += (_, _) => tcs.TrySetResult(bash.ExitCode ?? -1);
+        bash.Exited += (code, _) => tcs.TrySetResult(code);
 
         bash.Input.WriteLine("exit");
 
@@ -151,7 +151,7 @@ public class PtyProcessAsyncTests
         var (file, args) = TestBash.ShortLivedProcess();
         using var p = PtyProcess.Start(file, args);
         var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
-        p.Exited += (_, _) => tcs.TrySetResult(p.ExitCode ?? -1);
+        p.Exited += (code, _) => tcs.TrySetResult(code);
 
         Assert.Equal(0, await tcs.Task.WaitAsync(Timeout));
     }
@@ -166,7 +166,7 @@ public class PtyProcessAsyncTests
         var tcs2 = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         p1.Exited += (_, _) => throw new InvalidOperationException("boom");
-        p2.Exited += (_, _) => tcs2.TrySetResult(p2.ExitCode ?? -1);
+        p2.Exited += (code, _) => tcs2.TrySetResult(code);
 
         try
         {

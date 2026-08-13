@@ -29,7 +29,7 @@ public sealed partial class PtyProcess
     private static readonly Lock DrainLock = new();
 
     private static partial PtyProcess StartPlatform(
-        string file, string[] arguments, string? workingDirectory,
+        string file, IReadOnlyList<string> arguments, string? workingDirectory,
         IDictionary<string, string?> environment, Encoding? inputEncoding, Encoding? outputEncoding,
         int initialCols, int initialRows)
     {

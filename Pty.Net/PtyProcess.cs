@@ -66,14 +66,16 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     public bool HasExited => ExitCode is not null;
 
     /// <summary>
-    /// Raised once the child has been reaped by the process-wide reaper.
-    /// <para>By then <see cref="ExitCode"/> is set and <see cref="HasExited"/> is true.
-    /// The handler runs on the shared reaper thread and must not block; exceptions it
-    /// throws are swallowed.</para>
+    /// Raised once the child has been reaped by the process-wide reaper, with the exit
+    /// code as the first argument — so a handler never needs the nullable
+    /// <see cref="ExitCode"/> property (which is set by then anyway, but only guaranteed
+    /// to be non-null here).
+    /// <para>The handler runs on the shared reaper thread and must not block; exceptions
+    /// it throws are swallowed.</para>
     /// <para>May fire after <see cref="Dispose"/> returned, when the child was still
     /// alive at dispose time and exited only after the bounded reap wait elapsed.</para>
     /// </summary>
-    public event EventHandler? Exited;
+    public event Action<int, PtyProcess>? Exited;
 
     /// <summary>
     /// The raw byte stream over the pty master — the single source of bytes for both
@@ -137,7 +139,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         if (string.IsNullOrWhiteSpace(info.FileName))
             throw new ArgumentException("FileName must name an executable.", nameof(info));
         return StartCore(info.FileName, info.ResolveArguments(), info.WorkingDirectory, info.Environment,
-            info.InputEncoding, info.OutputEncoding, info.InitialCols, info.InitialRows);
+            info.InputEncoding, info.OutputEncoding, info.Cols, info.Rows);
     }
 
     /// <summary>
@@ -154,7 +156,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// <exception cref="UnauthorizedAccessException">The executable could not be executed, or the working directory is not accessible.</exception>
     /// <exception cref="IOException">The pseudo-terminal could not be created, or the child could not be launched for another reason.</exception>
     /// <exception cref="PlatformNotSupportedException">ConPTY is not available (Windows 10 1809 or earlier). Windows only.</exception>
-    public static PtyProcess Start(string file, string[] arguments, string? workingDirectory = null)
+    public static PtyProcess Start(string file, IReadOnlyList<string> arguments, string? workingDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(file);
         ArgumentNullException.ThrowIfNull(arguments);
@@ -164,7 +166,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
             inputEncoding: null, outputEncoding: null, initialCols: 120, initialRows: 30);
     }
 
-    private static PtyProcess StartCore(string file, string[] arguments, string? workingDirectory,
+    private static PtyProcess StartCore(string file, IReadOnlyList<string> arguments, string? workingDirectory,
         IDictionary<string, string?>? environment, Encoding? inputEncoding, Encoding? outputEncoding,
         int initialCols, int initialRows)
     {
@@ -430,7 +432,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         exitSignal.Value.TrySetResult(true);
         try
         {
-            Exited?.Invoke(this, EventArgs.Empty);
+            Exited?.Invoke(code, this);
         }
         catch
         {
@@ -519,7 +521,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
 
     /// <summary>Launches the child attached to a pty and returns the new <see cref="PtyProcess"/>.</summary>
     private static partial PtyProcess StartPlatform(
-        string file, string[] arguments, string? workingDirectory,
+        string file, IReadOnlyList<string> arguments, string? workingDirectory,
         IDictionary<string, string?> environment, Encoding? inputEncoding, Encoding? outputEncoding,
         int initialCols, int initialRows);
 
