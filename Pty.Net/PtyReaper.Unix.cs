@@ -1,5 +1,11 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
+#if LINUX
+// Needed only by the eventfd wake-channel drain below (Unsafe.AsPointer), which the
+// macOS build does not compile. Guarded so IDE "remove unused usings" cleanups — run
+// under the macOS compile context, where this branch is absent — cannot see or delete it.
+using System.Runtime.CompilerServices;
+#endif
 
 namespace Ghostflyby.Pty;
 
