@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -63,10 +64,12 @@ internal static partial class PtyReaper
         // if it has not. A scan always touches every entry, so no process can starve
         // behind a persistently failing one.
         private readonly List<PtyProcess> retryWatch = [];
-        // Linux-only: pid -> pidfd, for unregistering a reaped process.
-        private readonly Dictionary<int, int> pidToFd = [];
 
 #if LINUX
+        // Linux-only: pid -> pidfd, for unregistering a reaped process. Kept out of the
+        // shared field block (where the macOS build would see it as never used).
+        private readonly Dictionary<int, int> pidToFd = [];
+
         // epoll_event is packed (12 bytes) on x86_64 and natural (16 bytes) elsewhere
         // (see NativeMethods.EpollIsPacked); the reaper selects the variant at runtime.
         private readonly NativeMethods.EpollEvent[] linuxEvents = new NativeMethods.EpollEvent[MaxEvents];
@@ -141,6 +144,7 @@ internal static partial class PtyReaper
 
         // ------------------------------------------------------------- loop
 
+        [DoesNotReturn]
         private void Loop()
         {
             // An unhandled exception here fails the process fast with the wait error
