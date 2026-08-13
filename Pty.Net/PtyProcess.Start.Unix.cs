@@ -21,8 +21,8 @@ public sealed partial class PtyProcess
     // one 4KB buffer instead of holding its own — memory stays O(1) however many
     // processes are draining concurrently. A dedicated lock serializes the drain across
     // instances (the per-process gate only orders one process's own calls); the
-    // critical section is a 0ms non-blocking read, so contention is negligible. Unix-
-    // only: the Windows DrainOutput is a no-op, so this lives here where Windows never
+    // critical section is a 0ms non-blocking read, so contention is negligible.
+    // Unix-only: the Windows DrainOutput is a no-op, so this lives here where Windows never
     // compiles it.
     private const int ReadBufferSize = 4096;
     private static readonly byte[] DrainBuffer = new byte[ReadBufferSize];
@@ -57,7 +57,7 @@ public sealed partial class PtyProcess
             throw new IOException($"posix_openpt/grantpt/unlockpt failed: errno={err}");
         }
 
-        var slavePath = Marshal.PtrToStringUTF8(NativeMethods.ptsname(masterFd)) ?? string.Empty;
+        var slavePath = ResolveSlavePath(masterFd);
         var slaveFd = NativeMethods.open(slavePath, NativeMethods.ORdwr | NativeMethods.ONoctty);
         if (slaveFd < 0)
         {
@@ -212,6 +212,46 @@ public sealed partial class PtyProcess
                     NativeMethods.close(masterFd);
             }
         }
+    }
+
+    // Serializes the ptsname(3) static-buffer read on macOS (which has no ptsname_r);
+    // see ResolveSlavePath. Linux uses ptsname_r instead, so the lock is macOS-only.
+#if OSX
+    private static readonly Lock PtsnameLock = new();
+#endif
+
+    /// <summary>
+    /// Resolves the slave device path for <paramref name="masterFd"/> in a thread-safe
+    /// way. ptsname(3) returns a pointer to libc's static buffer, which a concurrent
+    /// spawn's ptsname call overwrites mid-read — the truncated path (e.g. "/dev/pts/"
+    /// plus a stray NUL) then fails the open with EISDIR, and parallel spawns hit this
+    /// routinely. Linux uses ptsname_r with a caller-owned stack buffer; macOS has no
+    /// ptsname_r, so the static-buffer read is serialized with <c>PtsnameLock</c>.
+    /// </summary>
+    private static string ResolveSlavePath(int masterFd)
+    {
+#if LINUX
+        Span<byte> buf = stackalloc byte[NativeMethods.PtsPathMax];
+        int rc;
+        unsafe
+        {
+            fixed (byte* p = buf)
+            {
+                rc = NativeMethods.ptsname_r(masterFd, (IntPtr)p, (nuint)buf.Length);
+            }
+        }
+        if (rc != 0)
+            throw new IOException($"ptsname failed: errno={rc}");
+        var len = buf.IndexOf((byte)0);
+        return Encoding.UTF8.GetString(buf[..len]);
+#elif OSX
+        lock (PtsnameLock)
+        {
+            return Marshal.PtrToStringUTF8(NativeMethods.ptsname(masterFd)) ?? string.Empty;
+        }
+#else
+#error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
+#endif
     }
 
     /// <summary>

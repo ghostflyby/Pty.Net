@@ -165,9 +165,24 @@ internal static partial class NativeMethods
     // ptsname returns a pointer to a libc-owned static buffer. The runtime's string
     // return marshaling would try to free that pointer (interop treats returned char*
     // as allocated), corrupting every later call — so it is declared as IntPtr and
-    // converted with Marshal.PtrToStringUTF8 (which does not free) by the caller.
+    // converted with Marshal.PtrToStringUTF8 (which does not free) by the caller. The
+    // static buffer is NOT thread-safe: a concurrent ptsname overwrites it mid-read,
+    // so callers on Linux use ptsname_r (caller-owned buffer) and macOS serializes
+    // the read with a lock (see PtyProcess.Start.Unix.cs).
     [LibraryImport("libc", SetLastError = true)]
     internal static partial IntPtr ptsname(int fd);
+
+#if LINUX
+    // ptsname_r(3): thread-safe variant that writes into a caller-owned buffer (Linux
+    // only; Darwin has no ptsname_r). Returns 0 on success, or an errno (it does not
+    // set errno itself), so callers check the return value, not GetLastPInvokeError.
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int ptsname_r(int fd, IntPtr buf, nuint buflen);
+
+    // Max length of a ptsname buffer: the longest Linux device path (e.g. /dev/pts/999)
+    // plus the NUL terminator.
+    internal const int PtsPathMax = 64;
+#endif
 
     // Two-argument open(2) — the pty slave never needs O_CREAT, whose mode argument
     // would exercise the same broken variadic path as fcntl.
