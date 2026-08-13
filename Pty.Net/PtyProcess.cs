@@ -174,7 +174,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     }
 
     private static PtyProcess StartCore(string file, IReadOnlyList<string> arguments, string? workingDirectory,
-        IDictionary<string, string?>? environment, Encoding? inputEncoding, Encoding? outputEncoding,
+        IReadOnlyDictionary<string, string?>? environment, Encoding? inputEncoding, Encoding? outputEncoding,
         int initialCols, int initialRows)
     {
         // posix_spawn applies its chdir file action lazily at exec time, so a bad
@@ -183,9 +183,14 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         if (workingDirectory is not null && !Directory.Exists(workingDirectory))
             throw new DirectoryNotFoundException($"The working directory '{workingDirectory}' does not exist.");
 
+        // The child inherits the parent's environment, merged at launch time with the
+        // explicit overrides from PtyStartInfo.Environment (a null value removes the
+        // inherited variable).
+        var effectiveEnvironment = MergeWithParentEnvironment(environment);
+
         // Platform hook: posix_spawn on Unix, ConPTY (CreatePseudoConsole +
         // CreateProcessW) on Windows.
-        return StartPlatform(file, arguments, workingDirectory, environment ?? ParentEnvironment(),
+        return StartPlatform(file, arguments, workingDirectory, effectiveEnvironment,
             inputEncoding, outputEncoding, initialCols, initialRows);
     }
 
@@ -586,8 +591,29 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         return (int)Math.Clamp((deadline - DateTime.UtcNow).TotalMilliseconds, 0, 2);
     }
 
-    /// <summary>A snapshot of the parent's environment, for launches with no explicit <see cref="PtyStartInfo.Environment"/>.</summary>
-    private static Dictionary<string, string?> ParentEnvironment() => PtyStartInfo.SnapshotParentEnvironment();
+    /// <summary>
+    /// Merges the explicit environment overrides into a snapshot of the parent's
+    /// environment, taken at launch time: non-null entries override inherited variables,
+    /// null entries remove them. A null overrides set (the <see cref="Start(string, IReadOnlyList{string}, string)"/>
+    /// convenience overload) yields the plain parent environment.
+    /// </summary>
+    private static Dictionary<string, string?> MergeWithParentEnvironment(IReadOnlyDictionary<string, string?>? overrides)
+    {
+        var env = new Dictionary<string, string?>(StringComparer.Ordinal);
+        foreach (System.Collections.DictionaryEntry e in System.Environment.GetEnvironmentVariables())
+            env[(string)e.Key] = (string?)e.Value;
+
+        if (overrides is not null)
+            foreach (var (key, value) in overrides)
+            {
+                if (value is null)
+                    env.Remove(key);
+                else
+                    env[key] = value;
+            }
+
+        return env;
+    }
 
     /// <summary>Decodes a waitpid(2) status into an exit code: 0..255, or 128 + signal when killed.</summary>
     private static int ExtractExitCode(int status)

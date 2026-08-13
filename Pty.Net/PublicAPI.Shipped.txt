@@ -20,7 +20,8 @@ Ghostflyby.Pty.PtyStartInfo
 Ghostflyby.Pty.PtyStartInfo.<Clone>$() -> Ghostflyby.Pty.PtyStartInfo!
 Ghostflyby.Pty.PtyStartInfo.Arguments.get -> System.Collections.Generic.IReadOnlyList<string!>!
 Ghostflyby.Pty.PtyStartInfo.Arguments.init -> void
-Ghostflyby.Pty.PtyStartInfo.Environment.get -> System.Collections.Generic.IDictionary<string!, string?>!
+Ghostflyby.Pty.PtyStartInfo.Environment.get -> System.Collections.Generic.IReadOnlyDictionary<string!, string?>!
+Ghostflyby.Pty.PtyStartInfo.Environment.init -> void
 Ghostflyby.Pty.PtyStartInfo.Equals(Ghostflyby.Pty.PtyStartInfo? other) -> bool
 override Ghostflyby.Pty.PtyStartInfo.Equals(object? obj) -> bool
 Ghostflyby.Pty.PtyStartInfo.FileName.get -> string!

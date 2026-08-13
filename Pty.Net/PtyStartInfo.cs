@@ -44,21 +44,13 @@ public sealed record PtyStartInfo
     public int Row { get; init; } = 30;
 
     /// <summary>
-    /// Environment variables passed to the child.
-    /// <para>Defaults to a copy of the parent's environment.</para>
+    /// Environment variables for the child. Entries here override the inherited parent
+    /// environment at launch; a null value removes the inherited variable. Defaults to
+    /// empty, so the child inherits the parent's environment unchanged unless overridden.
+    /// Read-only to keep the record's value semantics: to add a variable, assign a new
+    /// dictionary, e.g. <c>with { Environment = ImmutableDictionary.Create&lt;string, string?&gt;().Add("K", "v") }</c>.
     /// </summary>
-    public IDictionary<string, string?> Environment => env.Value;
-
-    private readonly Lazy<IDictionary<string, string?>> env = new(SnapshotParentEnvironment);
-
-    /// <summary>A snapshot of the parent's environment, shared by <see cref="PtyProcess"/> for launches without an explicit one.</summary>
-    internal static Dictionary<string, string?> SnapshotParentEnvironment()
-    {
-        var env = new Dictionary<string, string?>(StringComparer.Ordinal);
-        foreach (System.Collections.DictionaryEntry e in System.Environment.GetEnvironmentVariables())
-            env[(string)e.Key] = (string?)e.Value;
-        return env;
-    }
+    public IReadOnlyDictionary<string, string?> Environment { get; init; } = ImmutableDictionary<string, string?>.Empty;
 
     /// <summary>Creates an empty launch description; set <see cref="FileName"/> before starting.</summary>
     public PtyStartInfo()
@@ -89,8 +81,7 @@ public sealed record PtyStartInfo
             InputEncoding = inputEncoding;
         if (psi.StandardOutputEncoding is { } outputEncoding)
             OutputEncoding = outputEncoding;
-        foreach (var kv in psi.Environment)
-            Environment[kv.Key] = kv.Value;
+        Environment = psi.Environment.ToImmutableDictionary(StringComparer.Ordinal);
         Arguments = psi.ArgumentList.Count == 0 ? ParseArguments(psi.Arguments) : [.. psi.ArgumentList];
     }
 

@@ -1,5 +1,6 @@
 namespace Ghostflyby.Pty.Tests;
 
+using System.Collections.Immutable;
 using System.Text;
 
 public class PtyProcessTests : IDisposable
@@ -247,6 +248,26 @@ public class PtyProcessTests : IDisposable
         Assert.True(p.WaitForExit(Timeout));
     }
 #endif
+
+    /// <summary>
+    /// Explicit environment overrides are merged into the parent environment at launch:
+    /// the child sees the overridden variable. (The null-value removal path is exercised
+    /// implicitly by the parent-inheritance default.)
+    /// </summary>
+    [Fact]
+    public void Environment_OverridesAreVisibleToChild()
+    {
+        var info = new PtyStartInfo(TestBash.BashPath)
+        {
+            Arguments = ["--noprofile", "--norc", "-c", "echo $PTY_TEST_OVERRIDE"],
+            Environment = ImmutableDictionary<string, string?>.Empty.Add("PTY_TEST_OVERRIDE", "visible-42"),
+        };
+
+        using var p = PtyProcess.Start(info);
+        var output = TestBash.ReadUntil(p.Output, "visible-42", Timeout);
+
+        Assert.Contains("visible-42", output);
+    }
 
     [Fact]
     public void WaitForExit_NoTimeout_ReturnsAfterChildExits()
