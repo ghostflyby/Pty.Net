@@ -86,12 +86,16 @@ public class PtyWindowsTests
             ["-NoProfile", "-Command",
              "$h=[Console]::WindowHeight; $w=[Console]::WindowWidth; [Console]::Out.Write($w.ToString()+','+$h.ToString()+'|A'); Start-Sleep -Seconds 5; $h=[Console]::WindowHeight; $w=[Console]::WindowWidth; [Console]::Out.Write($w.ToString()+','+$h.ToString()+'|B')"]);
 
-        var first = TestBash.ReadUntil(p.Output, "|A", Timeout);
+        // PowerShell cold start is the slow step here — it alone can exceed the class
+        // Timeout of 10 s under CI load (the first read also covers ConPTY setup), so
+        // this test waits with a longer budget than the smoke tests above.
+        var readTimeout = TimeSpan.FromSeconds(30);
+        var first = TestBash.ReadUntil(p.Output, "|A", readTimeout);
         Assert.Contains("120,30|A", first);
 
         p.Resize(80, 24);
 
-        var second = TestBash.ReadUntil(p.Output, "|B", Timeout);
+        var second = TestBash.ReadUntil(p.Output, "|B", readTimeout);
         Assert.Contains("80,24|B", second);
     }
 

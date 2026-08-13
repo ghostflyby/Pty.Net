@@ -43,9 +43,12 @@ public class PtyStreamTests : IDisposable
         var buf = new byte[1024];
         var n = await Stream.ReadAsync(buf).AsTask().WaitAsync(Timeout);
 
-        // Only ~30 bytes were produced; a stream that waited for a full 1024-byte buffer
-        // (blocking-read semantics) could never return this fast with this much data.
-        Assert.InRange(n, 1, 64);
+        // The payload is only ~30 bytes, but the Git Bash prompt and terminal control
+        // sequences add a variable prefix, so the exact count is not fixed (Windows CI
+        // has observed ~105). What the assertion pins down is partial-read semantics: a
+        // stream that waited for the full 1024-byte buffer could never return this fast
+        // with this much data.
+        Assert.InRange(n, 1, buf.Length - 1);
     }
 
     /// <summary>Data that is already available is read promptly even when a token is passed.</summary>
