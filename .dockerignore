@@ -1,8 +1,0 @@
-# Docker's pattern matching differs from .gitignore: patterns without ** only
-# match at the context root, so nested bin/obj dirs need explicit **/ forms.
-**/bin/
-**/obj/
-.git/
-.idea/
-*.DotSettings.user
-.DS_Store

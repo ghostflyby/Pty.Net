@@ -79,7 +79,7 @@ jobs:
   # 真实上界逼到 RLIMIT_NOFILE——若循环仍按固定 1024 跑，glibc addclose 对
   # fd >= 上限会报 EBADF 导致整个 spawn 失败，从而暴露硬编码上界的缺陷。
   # 容器默认以 root 运行，而测试用 bash 的 '$' 提示符作 ReadUntil 标记（root 下是
-  # '#'），所以建 testuser 并以该用户跑——与仓库根 Dockerfile 的做法一致。
+  # '#'），所以建 testuser 并以该用户跑。
   test-container:
     name: Test (${{ matrix.image }})
     runs-on: ubuntu-latest
