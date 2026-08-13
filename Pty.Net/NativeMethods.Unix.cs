@@ -293,22 +293,42 @@ internal static partial class NativeMethods
     internal const int EfdCloexec = 0x80000;
     internal const int EfdNonblock = 0x800;
 
-    // struct epoll_event. The kernel defines it as __attribute__((packed)) on x86_64
-    // (events + data = 12 bytes, no padding) but with the natural layout everywhere
-    // else (16 bytes on arm64). A mismatched C# layout makes epoll_wait write back
-    // events at the wrong offsets, so the reaper reads a corrupted data field and
-    // silently misses every pidfd exit event — this is why the event-driven reap only
-    // misbehaved on x64. The SDK defines X64 when building for x86_64.
-#if X64
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-#else
+    // struct epoll_event, two layout variants. The kernel defines the struct as
+    // __attribute__((packed)) on x86_64 (events + data = 12 bytes, no padding) but
+    // with the natural layout everywhere else (16 bytes on arm64). A mismatched
+    // layout makes epoll_wait write back events at the wrong offsets, so the reaper
+    // would read a corrupted data field and silently miss every pidfd exit event.
+    // Compile-time symbols cannot express this (AnyCPU builds define no architecture
+    // symbol), so the caller selects the variant at runtime — the same pattern as
+    // IoCtl's pad-register selection.
+    internal static bool EpollIsPacked => RuntimeInformation.ProcessArchitecture == Architecture.X64;
+
     [StructLayout(LayoutKind.Sequential)]
-#endif
     internal struct EpollEvent
     {
         internal uint Events;
         internal ulong Data;
     }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    internal struct EpollEventPacked
+    {
+        internal uint Events;
+        internal ulong Data;
+    }
+
+    // epoll_ctl / epoll_wait for each layout variant (same libc entry points).
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int epoll_ctl(int epfd, int op, int fd, ref EpollEvent ev);
+
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int epoll_wait(int epfd, [Out] EpollEvent[] events, int maxevents, int timeout);
+
+    [LibraryImport("libc", SetLastError = true, EntryPoint = "epoll_ctl")]
+    internal static partial int epoll_ctl_packed(int epfd, int op, int fd, ref EpollEventPacked ev);
+
+    [LibraryImport("libc", SetLastError = true, EntryPoint = "epoll_wait")]
+    internal static partial int epoll_wait_packed(int epfd, [Out] EpollEventPacked[] events, int maxevents, int timeout);
 
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int epoll_create1(int flags);

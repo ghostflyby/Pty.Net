@@ -67,7 +67,14 @@ internal static partial class PtyReaper
         private readonly Dictionary<int, int> pidToFd = [];
 
 #if LINUX
+        // epoll_event is packed (12 bytes) on x86_64 and natural (16 bytes) elsewhere
+        // (see NativeMethods.EpollIsPacked); the reaper selects the variant at runtime.
         private readonly NativeMethods.EpollEvent[] linuxEvents = new NativeMethods.EpollEvent[MaxEvents];
+        private readonly NativeMethods.EpollEventPacked[] linuxEventsPacked = new NativeMethods.EpollEventPacked[MaxEvents];
+        // epoll_ctl(EPOLL_CTL_DEL) needs a non-null event pointer on older kernels but
+        // ignores its contents; one reused struct per layout avoids per-reap construction.
+        private NativeMethods.EpollEvent nullEpollEvent;
+        private NativeMethods.EpollEventPacked nullEpollEventPacked;
 #elif OSX
         private readonly NativeMethods.Kevent[] macEvents = new NativeMethods.Kevent[MaxEvents];
 #else
@@ -87,9 +94,18 @@ internal static partial class PtyReaper
 
             // Register the wake channel: its data slot stores 0 — pids are always >= 1,
             // so the loop can unambiguously tell a wake event from a process event.
-            var wake = new NativeMethods.EpollEvent { Events = NativeMethods.EpollIn, Data = 0 };
-            if (NativeMethods.epoll_ctl(eventFd, NativeMethods.EpollCtlAdd, wakeFd, ref wake) != 0)
-                throw new IOException($"epoll_ctl (wake) failed: errno={Marshal.GetLastPInvokeError()}");
+            if (NativeMethods.EpollIsPacked)
+            {
+                var wakeP = new NativeMethods.EpollEventPacked { Events = NativeMethods.EpollIn, Data = 0 };
+                if (NativeMethods.epoll_ctl_packed(eventFd, NativeMethods.EpollCtlAdd, wakeFd, ref wakeP) != 0)
+                    throw new IOException($"epoll_ctl (wake) failed: errno={Marshal.GetLastPInvokeError()}");
+            }
+            else
+            {
+                var wake = new NativeMethods.EpollEvent { Events = NativeMethods.EpollIn, Data = 0 };
+                if (NativeMethods.epoll_ctl(eventFd, NativeMethods.EpollCtlAdd, wakeFd, ref wake) != 0)
+                    throw new IOException($"epoll_ctl (wake) failed: errno={Marshal.GetLastPInvokeError()}");
+            }
 #elif OSX
             eventFd = NativeMethods.kqueue();
             if (eventFd < 0)
@@ -240,8 +256,18 @@ internal static partial class PtyReaper
             {
                 pidToFd[pid] = pidfd;
             }
-            var ev = new NativeMethods.EpollEvent { Events = NativeMethods.EpollIn, Data = (ulong)pid };
-            if (NativeMethods.epoll_ctl(eventFd, NativeMethods.EpollCtlAdd, pidfd, ref ev) != 0)
+            var registered = false;
+            if (NativeMethods.EpollIsPacked)
+            {
+                var evP = new NativeMethods.EpollEventPacked { Events = NativeMethods.EpollIn, Data = (ulong)pid };
+                registered = NativeMethods.epoll_ctl_packed(eventFd, NativeMethods.EpollCtlAdd, pidfd, ref evP) == 0;
+            }
+            else
+            {
+                var ev = new NativeMethods.EpollEvent { Events = NativeMethods.EpollIn, Data = (ulong)pid };
+                registered = NativeMethods.epoll_ctl(eventFd, NativeMethods.EpollCtlAdd, pidfd, ref ev) == 0;
+            }
+            if (!registered)
             {
                 lock (sync)
                 {
@@ -332,7 +358,10 @@ internal static partial class PtyReaper
                 if (!pidToFd.Remove(pid, out pidfd))
                     return;
             }
-            NativeMethods.epoll_ctl(eventFd, NativeMethods.EpollCtlDel, pidfd, ref nullEpollEvent);
+            if (NativeMethods.EpollIsPacked)
+                NativeMethods.epoll_ctl_packed(eventFd, NativeMethods.EpollCtlDel, pidfd, ref nullEpollEventPacked);
+            else
+                NativeMethods.epoll_ctl(eventFd, NativeMethods.EpollCtlDel, pidfd, ref nullEpollEvent);
             NativeMethods.close(pidfd);
 #elif OSX
             var ev = new NativeMethods.Kevent
@@ -357,7 +386,9 @@ internal static partial class PtyReaper
                 var retryPending = retryWatch.Count > 0;
 #if LINUX
                 var timeout = retryPending ? RetryIntervalMs : -1;
-                var n = NativeMethods.epoll_wait(eventFd, linuxEvents, MaxEvents, timeout);
+                var n = NativeMethods.EpollIsPacked
+                    ? NativeMethods.epoll_wait_packed(eventFd, linuxEventsPacked, MaxEvents, timeout)
+                    : NativeMethods.epoll_wait(eventFd, linuxEvents, MaxEvents, timeout);
 #elif OSX
                 // kevent's timeout is a struct timespec*; null means block indefinitely.
                 var ts = new NativeMethods.TimeSpec
@@ -383,7 +414,9 @@ internal static partial class PtyReaper
 #if LINUX
             // The wake channel's data slot is 0 (see the constructor); pids are always
             // >= 1, so 0 unambiguously identifies the wake event.
-            return linuxEvents[i].Data == 0;
+            return NativeMethods.EpollIsPacked
+                ? linuxEventsPacked[i].Data == 0
+                : linuxEvents[i].Data == 0;
 #elif OSX
             return macEvents[i].Ident == WakeIdent && macEvents[i].Filter == NativeMethods.EvfilUser;
 #endif
@@ -392,7 +425,7 @@ internal static partial class PtyReaper
         private int EventPid(int i)
         {
 #if LINUX
-            return (int)linuxEvents[i].Data;
+            return (int)(NativeMethods.EpollIsPacked ? linuxEventsPacked[i].Data : linuxEvents[i].Data);
 #elif OSX
             return (int)macEvents[i].Ident;
 #endif
@@ -421,11 +454,5 @@ internal static partial class PtyReaper
             _ = NativeMethods.kevent(eventFd, [ev], 1, null, 0, IntPtr.Zero);
 #endif
         }
-
-#if LINUX
-        // epoll_ctl(EPOLL_CTL_DEL) needs a non-null event pointer on older kernels but
-        // ignores its contents; one reused struct avoids per-reap construction.
-        private NativeMethods.EpollEvent nullEpollEvent;
-#endif
     }
 }
