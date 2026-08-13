@@ -154,7 +154,15 @@ internal static partial class PtyReaper
                 for (var i = 0; i < n; i++)
                 {
                     if (IsWakeEvent(i))
-                        continue; // a new process is queued; the loop top drains it
+                    {
+                        // A new process is queued; the loop top drains it. On Linux the
+                        // wake eventfd must also be drained here: it is level-triggered
+                        // and every Wake() adds 1 to its counter, so without reading the
+                        // counter back to zero the channel stays readable forever and the
+                        // loop spins at 100% CPU from the first watched process on.
+                        DrainWake();
+                        continue;
+                    }
                     ReapProcess(EventPid(i));
                 }
             }
@@ -289,6 +297,22 @@ internal static partial class PtyReaper
             {
                 // Same fallback as above: the child exited between waitpid and kevent.
                 return TryReapProcess(process);
+            }
+
+            // The kernel does not backfill an already-fired NOTE_EXIT: if the child exited
+            // after the drain's waitpid but before the EV_ADD above, the knote registers on
+            // a zombie and no event will ever be delivered — the exit wait would hang
+            // forever. Re-check once after a successful registration; if the child is gone
+            // now, unregister and collect it (the kqueue keeps no memory of the exit).
+            if (process.TryReap(out var code))
+            {
+                Unregister(pid);
+                process.OnReaped(code);
+                lock (sync)
+                {
+                    byPid.Remove(process.Pid);
+                }
+                return true;
             }
             return true;
 #endif
@@ -452,6 +476,26 @@ internal static partial class PtyReaper
                 Fflags = NativeMethods.NoteTrigger,
             };
             _ = NativeMethods.kevent(eventFd, [ev], 1, null, 0, IntPtr.Zero);
+#endif
+        }
+
+        /// <summary>
+        /// Reads the wake channel back to zero. Linux-only: the eventfd counter accumulates
+        /// every <see cref="Wake"/> and the channel is level-triggered in the poll set, so
+        /// the loop must drain it after each wake event or it stays readable forever and
+        /// the loop spins. macOS needs no drain — EVFILT_USER is registered with EV_CLEAR
+        /// and resets on delivery.
+        /// </summary>
+        private void DrainWake()
+        {
+#if LINUX
+            // The value is a dummy: reading the eventfd counter back to zero is all that
+            // matters (the byte count is discarded).
+            ulong val = 0;
+            unsafe
+            {
+                _ = NativeMethods.read(wakeFd, (IntPtr)Unsafe.AsPointer(ref val), (nuint)sizeof(ulong));
+            }
 #endif
         }
     }

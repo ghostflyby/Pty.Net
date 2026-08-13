@@ -342,10 +342,9 @@ internal static partial class NativeMethods
     [LibraryImport("libc", SetLastError = true)]
     internal static partial long syscall(long number, int arg1, int arg2);
 
-    // __NR_pidfd_open is 434 on x86_64, i386, arm and aarch64 (verified on both
-    // libcs); only riscv64 differs (424). The library's Linux targets are x64 and
-    // arm64 (matching the CI matrix), so a single constant covers them; riscv64 is
-    // not a supported target.
+    // __NR_pidfd_open is 434 on x86_64, aarch64, i386 and arm (the asm-generic table
+    // used by arm64/arm also assigns 434; 424 is __NR_pidfd_send_signal, not pidfd_open).
+    // A single constant covers the library's Linux targets (x64 and arm64).
     internal const int PidfdOpenSyscallNumber = 434;
 
     // eventfd(2): the reaper's self-wake channel — a counter fd that stays writable, so
@@ -358,8 +357,10 @@ internal static partial class NativeMethods
     // ---- kqueue / kevent: the event-driven reaper (PtyReaper.Unix.cs) ----
     // kevent filters and flags from <sys/event.h> (Darwin). EVFILT_PROC reports NOTE_EXIT
     // when the watched process exits; EVFILT_USER is a self-wake channel (macOS 10.9+)
-    // triggered from any thread with NOTE_TRIGGER.
-    internal const short EvfilProc = -7;
+    // triggered from any thread with NOTE_TRIGGER. EVFILT_PROC is -5 (as on FreeBSD);
+    // -7 is EVFILT_TIMER — registering a process knote with -7 would create a 0 ms
+    // repeat timer instead of an exit event and spin the reaper forever.
+    internal const short EvfilProc = -5;
     internal const short EvfilUser = -10;
     internal const ushort EvAdd = 0x0001;
     internal const ushort EvDelete = 0x0002;
