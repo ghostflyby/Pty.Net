@@ -73,6 +73,10 @@ jobs:
       id-token: write
       contents: write
     steps:
+      # gh release create resolves the repository through git, so this job needs the
+      # checkout even though it builds nothing (artifacts come from the build jobs).
+      - uses: actions/checkout@v7
+
       - name: Download platform packages
         uses: actions/download-artifact@v4
         with:
