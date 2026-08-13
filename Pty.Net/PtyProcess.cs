@@ -25,7 +25,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// Completion signal for the exit wait: completed exactly once, by the process-wide
     /// reaper when it collects this child (see <see cref="OnReaped"/>). All exit waits —
     /// <see cref="WaitForExit(TimeSpan)"/>, <see cref="WaitForExitAsync(TimeSpan?, CancellationToken)"/>
-    /// and the bounded wait inside <see cref="Dispose"/>/<see cref="DisposeAsync"/> — observe
+    /// and the wait inside <see cref="Dispose"/>/<see cref="DisposeAsync"/> — observe
     /// this signal instead of polling <see cref="HasExited"/>, so a wait holds no timer tick
     /// and completes the moment the reaper collects the child. Lazy so a process that is
     /// never waited on (the common case) allocates no completion source.
@@ -35,6 +35,12 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         LazyThreadSafetyMode.ExecutionAndPublication);
 
     private bool disposed;
+
+    /// <summary>Set once a force kill has been issued (<see cref="Kill()"/> or the
+    /// graceful window in <see cref="Dispose"/>/<see cref="DisposeAsync"/> expired), so
+    /// later <see cref="Interrupt"/>/<see cref="Kill()"/> calls stay no-ops. Volatile:
+    /// written from the calling thread, read from any thread.</summary>
+    private int killRequested; // 0/1
 
     /// <summary>OS process id of the child.</summary>
     public int Pid { get; }
@@ -72,8 +78,9 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// to be non-null here).
     /// <para>The handler runs on the shared reaper thread and must not block; exceptions
     /// it throws are swallowed.</para>
-    /// <para>May fire after <see cref="Dispose"/> returned, when the child was still
-    /// alive at dispose time and exited only after the bounded reap wait elapsed.</para>
+    /// <para>Fires during <see cref="Dispose"/>/<see cref="DisposeAsync"/> for a child
+    /// that was still alive: the graceful window and force-kill make the reaper collect
+    /// it before dispose returns, so the event is raised from within the dispose call.</para>
     /// </summary>
     public event Action<int, PtyProcess>? Exited;
 
@@ -297,15 +304,54 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
+    /// How long <see cref="Dispose"/>/<see cref="DisposeAsync"/> wait for a still-alive
+    /// child to exit cleanly after the terminate signal (SIGHUP on Unix) before force
+    /// killing it with <see cref="Kill()"/>. Defaults to 30 seconds.
+    /// <para>Windows has no terminal signal, so the terminate step there kills the child
+    /// outright and this window is not exercised.</para>
+    /// </summary>
+    public TimeSpan GracefulExitTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Sends an interrupt to the child's foreground process group, like pressing Ctrl-C
+    /// in the terminal: on Unix the 0x03 byte makes the tty line discipline deliver
+    /// SIGINT; on Windows ConPTY the byte is forwarded to the console, which is best
+    /// effort for console applications. The child itself keeps running until it handles
+    /// the interrupt — this does not terminate the session.
+    /// <para>Fire-and-forget, matching <see cref="Kill()"/>: combine with
+    /// <see cref="WaitForExit(TimeSpan)"/> (or <see cref="WaitForExitAsync(TimeSpan?, CancellationToken)"/>)
+    /// for a graceful-termination pattern such as
+    /// <c>Interrupt(); if (!WaitForExit(5s)) Kill();</c>.</para>
+    /// <para>No-op once the child has exited, has been killed, or the process is
+    /// disposed.</para>
+    /// </summary>
+    /// <exception cref="ObjectDisposedException">The process is disposed.</exception>
+    /// <exception cref="IOException">The interrupt byte could not be written.</exception>
+    public void Interrupt()
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        if (HasExited || Volatile.Read(ref killRequested) != 0)
+            return;
+        // 0x03 = Ctrl-C: the tty line discipline turns it into SIGINT for the child's
+        // foreground process group on Unix; ConPTY forwards it to the console on Windows.
+        BaseStream.Write([0x03]);
+    }
+
+    /// <summary>
     /// Terminates the child immediately (SIGKILL on Unix, TerminateProcess on Windows),
     /// without giving it a chance to clean up — matching
     /// <see cref="System.Diagnostics.Process.Kill()"/>.
     /// <para>The child is not reaped here; call <see cref="WaitForExit()"/> or
     /// <see cref="Dispose"/> afterwards. Prefer <see cref="Dispose"/> for normal
     /// termination, which lets the shell exit cleanly.</para>
+    /// <para>No-op once the child has exited, has already been killed, or the process is
+    /// disposed.</para>
     /// </summary>
     public void Kill()
     {
+        if (disposed || HasExited || Volatile.Read(ref killRequested) != 0)
+            return;
+        Volatile.Write(ref killRequested, 1);
         // Platform hook: SIGKILL on Unix, TerminateProcess on Windows.
         KillPlatform();
     }
@@ -333,13 +379,18 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// Terminates the child and releases the pty resources.
-    /// <para>A still-running child is terminated first; output produced up to that point
-    /// remains readable through <see cref="BaseStream"/> / <see cref="Output"/>.
-    /// After this returns, all operations on the streams throw
-    /// <see cref="ObjectDisposedException"/>.</para>
-    /// <para>If the child has not been reaped within a bounded wait, the process-wide
-    /// reaper keeps watching it in the background, so it cannot linger as a zombie.</para>
+    /// Terminates the child and releases the pty resources, blocking until the cleanup
+    /// has actually completed.
+    /// <para>A still-alive child is first sent the graceful terminate signal (SIGHUP on
+    /// Unix, so an interactive shell can clean up and exit; TerminateProcess on Windows,
+    /// which has no terminal signal) and given <see cref="GracefulExitTimeout"/> to exit
+    /// on its own. If it does not, it is force-killed with <see cref="Kill()"/>. This
+    /// method returns only once the reaper has collected the child and the pty resources
+    /// are released; a child that ignores the graceful signal is therefore terminated,
+    /// not left running in the background.</para>
+    /// <para>Output produced up to that point remains readable through
+    /// <see cref="BaseStream"/> / <see cref="Output"/>. After this returns, all
+    /// operations on the streams throw <see cref="ObjectDisposedException"/>.</para>
     /// </summary>
     public void Dispose()
     {
@@ -350,10 +401,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
                 return;
             disposed = true;
 
-            // Platform hook: SIGHUP the still-alive child on Unix; on Windows terminate
-            // it so ClosePseudoConsole does not wait indefinitely (exited children are
-            // left alone so their final output is preserved).
-            TerminateChildIfAlive();
+            TerminateGracefully();
 
             // Disposing the stream aborts in-flight I/O and releases the terminal channels.
             // On Windows it keeps an async output drain active while ClosePseudoConsole
@@ -361,16 +409,13 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
             // operation reference is released.
             BaseStream.Dispose();
 
-            // Bounded wait for the reaper to collect the child. If it has not exited by
-            // the deadline, the process-wide reaper keeps watching in the background, so
-            // the child cannot linger as a zombie — only the reap completion is deferred
-            // past dispose (see <see cref="Exited"/>). A single wait on the exit signal
-            // replaces the old 10 ms poll loop: the calling thread parks for the whole
-            // bounded window instead of waking every 10 ms.
-            ExitSignal.Wait(TimeSpan.FromSeconds(2));
-
-            // The reaper may still be watching an un-exited child; only release the process
-            // handle once the wait is over, or the reaper would lose its wait target.
+            // Block until the reaper has collected the child, then release the process
+            // handle (releasing it earlier would lose the reaper's wait target). After
+            // the graceful window and the force kill above the child cannot stay alive,
+            // so this wait is bounded in practice; if it ever stalls — a child surviving
+            // even SIGKILL — that is a genuine platform failure we surface by blocking
+            // rather than silently deferring to the background reaper.
+            ExitSignal.Wait();
             if (HasExited)
                 ProcessHandle?.Dispose();
         }
@@ -381,8 +426,12 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// Asynchronous counterpart of <see cref="Dispose()"/>, with the same semantics and
+    /// Asynchronous counterpart of <see cref="Dispose()"/> with the same semantics,
     /// without blocking a thread while waiting. Safe to await from async code paths.
+    /// <para>Fire-and-forget by discarding the returned task (<c>_ = p.DisposeAsync()</c>);
+    /// the graceful window and force-kill inside still complete the cleanup. To impose an
+    /// outer deadline on the whole operation, <c>await p.DisposeAsync().AsTask().WaitAsync(t)</c>.
+    /// Cancellation abandons the wait, leaving cleanup running in the background.</para>
     /// </summary>
     /// <returns>A task that completes when the process is terminated and its resources are released.</returns>
     public async ValueTask DisposeAsync()
@@ -394,22 +443,83 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
                 return;
             disposed = true;
 
-            TerminateChildIfAlive();
-
+            await TerminateGracefullyAsync().ConfigureAwait(false);
             BaseStream.Dispose();
 
-            // Same bounded wait as <see cref="Dispose()"/>, without blocking a thread:
-            // the exit signal completes when the reaper collects the child. Timeout does
-            // not throw — the process-wide reaper keeps watching the child (see
-            // <see cref="Exited"/>), so only the reap completion is deferred.
-            await WaitForReapAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
-
+            await ExitSignal.ConfigureAwait(false);
             if (HasExited)
                 ProcessHandle?.Dispose();
         }
         finally
         {
             gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// The graceful-terminate step shared by <see cref="Dispose"/> and
+    /// <see cref="DisposeAsync"/>: signal a still-alive child, give it
+    /// <see cref="GracefulExitTimeout"/> to exit on its own, then force-kill it. Skipped
+    /// entirely for children that have already exited or been killed (e.g. by a manual
+    /// <see cref="Kill()"/>), so the dispose path never fights an earlier signal.
+    /// Called with <see cref="gate"/> held; the sync variant may block on the wait.
+    /// </summary>
+    private void TerminateGracefully()
+    {
+        if (HasExited || Volatile.Read(ref killRequested) != 0)
+            return;
+
+        // Platform hook: SIGHUP the still-alive child on Unix; on Windows terminate it
+        // so ClosePseudoConsole does not wait indefinitely (exited children are left
+        // alone so their final output is preserved).
+        TerminateChildIfAlive();
+        if (HasExited)
+            return;
+
+        var deadline = DateTime.UtcNow + GracefulExitTimeout;
+        while (!HasExited)
+        {
+            var remaining = deadline - DateTime.UtcNow;
+            if (remaining <= TimeSpan.Zero)
+                break;
+            ExitSignal.Wait(remaining);
+        }
+
+        if (!HasExited && Volatile.Read(ref killRequested) == 0)
+        {
+            Volatile.Write(ref killRequested, 1);
+            KillPlatform();
+        }
+    }
+
+    private async Task TerminateGracefullyAsync()
+    {
+        if (HasExited || Volatile.Read(ref killRequested) != 0)
+            return;
+
+        TerminateChildIfAlive();
+        if (HasExited)
+            return;
+
+        var deadline = DateTime.UtcNow + GracefulExitTimeout;
+        while (!HasExited)
+        {
+            var remaining = deadline - DateTime.UtcNow;
+            if (remaining <= TimeSpan.Zero)
+                break;
+            try
+            {
+                await ExitSignal.WaitAsync(remaining).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+            }
+        }
+
+        if (!HasExited && Volatile.Read(ref killRequested) == 0)
+        {
+            Volatile.Write(ref killRequested, 1);
+            KillPlatform();
         }
     }
 
@@ -445,26 +555,6 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
 
     /// <summary>The task completed by the reaper once this child is collected (see <see cref="OnReaped"/>).</summary>
     private Task<bool> ExitSignal => exitSignal.Value.Task;
-
-    /// <summary>
-    /// Awaits the reaper's exit signal for up to <paramref name="timeout"/>, without
-    /// throwing when the window elapses: the process-wide reaper keeps watching the child
-    /// in the background, so only the reap completion is deferred past dispose (see
-    /// <see cref="Exited"/>). Mirrors <see cref="WaitForExit(TimeSpan)"/>'s non-throwing
-    /// timeout — <see cref="Task.WaitAsync(TimeSpan)"/> would throw TimeoutException
-    /// instead, and in <see cref="DisposeAsync"/> that would skip the process-handle
-    /// release for a still-alive child (which the reaper is still waiting on).
-    /// </summary>
-    private async Task WaitForReapAsync(TimeSpan timeout)
-    {
-        try
-        {
-            await ExitSignal.WaitAsync(timeout).ConfigureAwait(false);
-        }
-        catch (TimeoutException)
-        {
-        }
-    }
 
     /// <summary>
     /// Awaits <paramref name="signal"/> for up to <paramref name="timeoutMs"/> ms,

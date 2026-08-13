@@ -92,40 +92,38 @@ public class PtyProcessAsyncTests
     }
 
     /// <summary>
-    /// A child that ignores SIGHUP survives the terminate step inside
-    /// <see cref="PtyProcess.DisposeAsync"/>: the bounded 2 s reap wait elapses with the
-    /// child still alive, and DisposeAsync must return normally (no TimeoutException)
-    /// while the process-wide reaper keeps watching the child in the background.
-    /// Unix-only: Windows TerminateProcess kills the child regardless of signal
-    /// handling, so the 2 s branch is unreachable there.
+    /// A child that ignores SIGHUP survives the graceful window inside
+    /// <see cref="PtyProcess.DisposeAsync"/> and is then force-killed: DisposeAsync
+    /// returns promptly once the reaper collects it, with no child left running in the
+    /// background. Unix-only: Windows TerminateProcess kills the child regardless of
+    /// signal handling, so the graceful branch is unreachable there.
     /// </summary>
 #if !WINDOWS
     [Fact]
-    public async Task DisposeAsync_SurvivingChild_CompletesAfterBoundedWait()
+    public async Task DisposeAsync_SurvivingChild_CompletesAfterGracefulTimeout()
     {
         // trap '' HUP makes the child ignore the hangup Dispose sends; sleep keeps it
-        // alive well past the 2 s bounded wait. Wait for the trap to be installed before
+        // alive well past the graceful window. Wait for the trap to be installed before
         // disposing: a SIGHUP landing before `trap` runs would terminate the fresh shell
-        // by default and the test would never reach the 2 s branch.
+        // by default and the test would never reach the force-kill branch.
         var p = PtyProcess.Start("/bin/sh", ["-c", "trap '' HUP; sleep 30"]);
+        p.GracefulExitTimeout = TimeSpan.FromSeconds(1);
         try
         {
             await Task.Delay(300);
             var sw = Stopwatch.StartNew();
-            await p.DisposeAsync(); // must complete, not throw TimeoutException
+            await p.DisposeAsync(); // graceful window elapses, then force-kill; completes, not TimeoutException
             sw.Stop();
 
-            // The bounded window is 2 s; the Stopwatch may straddle the WaitAsync timer
-            // by a sub-millisecond, so assert "the wait branch ran" with a comfortable
-            // margin (1.5 s) rather than the exact 2 s — a trap-install failure would
-            // return in ~0.3 s. The pre-fix behavior threw TimeoutException at 2 s.
-            Assert.True(sw.Elapsed >= TimeSpan.FromSeconds(1.5), $"returned too early: {sw.Elapsed}");
-            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(5), $"DisposeAsync took {sw.Elapsed}");
+            // The graceful window is 1 s; allow some scheduling slack on the upper bound.
+            Assert.True(sw.Elapsed >= TimeSpan.FromMilliseconds(700), $"returned too early: {sw.Elapsed}");
+            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(10), $"DisposeAsync took {sw.Elapsed}");
+            Assert.True(p.HasExited, "child must be reaped by dispose");
         }
         finally
         {
-            // Ensure the surviving child does not outlive the test: SIGKILL it; the
-            // reaper collects it in the background.
+            // Ensure the child does not outlive the test: SIGKILL it; the reaper
+            // collects it in the background.
             p.Kill();
         }
     }
