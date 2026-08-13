@@ -91,8 +91,15 @@ jobs:
           }
           # 'gh release list' exits 1 when no release exists yet (first publish); with
           # $PSNativeCommandUseErrorActionPreference = $true that becomes a terminating
-          # error, so wrap it: an empty result means 'no previous release'.
-          $latest = try { gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>$null } catch { $null }
+          # error, so wrap it. The catch must also reset $LASTEXITCODE: pwsh exits the
+          # script with the last external command's code, so a swallowed '1' would still
+          # fail the step.
+          $latest = try {
+              gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>$null
+          } catch {
+              $global:LASTEXITCODE = 0
+              $null
+          }
           if ($latest) {
               function Test-Newer([string]$candidate, [string]$previous) {
                   $c = $candidate -split '-'; $p = $previous -split '-'
@@ -113,6 +120,9 @@ jobs:
           } else {
               Write-Host 'no previous release; this is the first publish'
           }
+          # Normal path ends cleanly even if an external command left $LASTEXITCODE set;
+          # throw paths above terminate with a non-zero exit before reaching here.
+          exit 0
         env:
           GH_TOKEN: ${{ github.token }}
 
