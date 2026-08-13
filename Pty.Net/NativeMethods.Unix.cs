@@ -314,8 +314,18 @@ internal static partial class NativeMethods
 
     // pidfd_open(2) (kernel 5.3+): an fd that reports readable once the process exits.
     // The reaper listens for that with epoll — exit detection without touching SIGCHLD.
+    // musl (Alpine) does not export a pidfd_open wrapper, so it is invoked through the
+    // generic syscall(2) with the architecture's __NR_pidfd_open, which glibc and musl
+    // both export. The fixed (long, int, int) signature is safe: syscall(2) forwards its
+    // first three arguments in the same registers on x64 (rdi/rsi/rdx) and arm64 (x0/x1/x2).
     [LibraryImport("libc", SetLastError = true)]
-    internal static partial int pidfd_open(int pid, uint flags);
+    internal static partial long syscall(long number, int arg1, int arg2);
+
+    // __NR_pidfd_open is 434 on x86_64, i386, arm and aarch64 (verified on both
+    // libcs); only riscv64 differs (424). The library's Linux targets are x64 and
+    // arm64 (matching the CI matrix), so a single constant covers them; riscv64 is
+    // not a supported target.
+    internal const int PidfdOpenSyscallNumber = 434;
 
     // eventfd(2): the reaper's self-wake channel — a counter fd that stays writable, so
     // waking never blocks (unlike a pipe, which can fill).
@@ -347,6 +357,16 @@ internal static partial class NativeMethods
         internal uint Fflags;
         internal nint Data;
         internal IntPtr Udata;
+    }
+
+    // struct timespec (Darwin): the kevent(2) timeout, passed as a pointer (null = wait
+    // indefinitely). Only used to bound the reaper's wait while a registration retry is
+    // pending.
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct TimeSpec
+    {
+        internal long TvSec;
+        internal long TvNsec;
     }
 
     [LibraryImport("libc", SetLastError = true)]

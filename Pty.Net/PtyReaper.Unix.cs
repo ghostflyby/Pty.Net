@@ -20,6 +20,12 @@ namespace Ghostflyby.Pty;
 /// waitpid, and one that exits right after registration still fires the event — no
 /// process can be missed. The wake channel (eventfd on Linux, EVFILT_USER on macOS)
 /// interrupts the wait when a new process is queued.
+///
+/// A registration that fails while the child is still alive (transient fd pressure, an
+/// old kernel without pidfd) is re-queued and retried after a short bounded wait: the
+/// drain never spins on a failing registration, so a persistent failure degrades to a
+/// slow poll instead of stalling the whole reaper and leaving every other child
+/// unreaped.
 /// </summary>
 internal static partial class PtyReaper
 {
@@ -32,6 +38,11 @@ internal static partial class PtyReaper
     {
         private const int MaxEvents = 64;
         private const int Eintr = NativeMethods.Eintr;
+        // Wait window when a registration failed and needs a retry: long enough that a
+        // transient resource shortage usually clears, short enough that the child's exit
+        // is still collected promptly. Only active while a retry is pending — otherwise
+        // the wait blocks indefinitely.
+        private const int RetryIntervalMs = 100;
         // macOS-only: EVFILT_USER ident for the self-wake channel (any non-conflicting id).
         private const nuint WakeIdent = 1;
 
@@ -55,6 +66,11 @@ internal static partial class PtyReaper
 #else
 #error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
 #endif
+
+        // True while a failed registration sits in the pending queue waiting for a retry.
+        // Engine thread only. When set, the wait below uses a finite timeout so the retry
+        // actually happens; a clean drain clears it and the wait blocks indefinitely again.
+        private bool pendingForRetry;
 
         public ReaperThread()
         {
@@ -128,10 +144,14 @@ internal static partial class PtyReaper
         /// <summary>
         /// Registers every queued process: reaps those that already exited (the spawn-to-
         /// register window), registers the survivors for an exit event. Runs on the loop
-        /// thread, so no registration can interleave with event dispatch.
+        /// thread, so no registration can interleave with event dispatch. A registration
+        /// that fails while the process is still alive is returned to the queue and the
+        /// drain stops there — retried after <see cref="RetryIntervalMs"/> instead of
+        /// spinning on it, so the reaper keeps serving other processes.
         /// </summary>
         private void DrainPendingWatch()
         {
+            pendingForRetry = false;
             while (true)
             {
                 PtyProcess? process;
@@ -153,22 +173,30 @@ internal static partial class PtyReaper
                     continue;
                 }
 
-                Register(process);
+                if (!Register(process))
+                {
+                    // Still alive but could not be registered: retry shortly.
+                    EnqueueForRetry(process);
+                    return;
+                }
             }
         }
 
-        private void Register(PtyProcess process)
+        /// <summary>
+        /// Registers <paramref name="process"/> for an exit event. Returns true when it is
+        /// registered (or was collected); false when it is still alive but registration
+        /// failed and the caller should retry later.
+        /// </summary>
+        private bool Register(PtyProcess process)
         {
             var pid = process.Pid;
 #if LINUX
-            var pidfd = NativeMethods.pidfd_open(pid, 0);
+            var pidfd = (int)NativeMethods.syscall(NativeMethods.PidfdOpenSyscallNumber, pid, 0);
             if (pidfd < 0)
             {
-                // The child exited between the drain's waitpid and pidfd_open (or the
-                // kernel predates pidfd): reap directly instead of registering.
-                if (!TryReapOrRequeue(process))
-                    Requeue(process);
-                return;
+                // The child exited between the drain's waitpid and pidfd_open, or the
+                // kernel predates pidfd (ENOSYS): reap directly when possible.
+                return TryReapProcess(process);
             }
             lock (sync)
             {
@@ -182,11 +210,9 @@ internal static partial class PtyReaper
                     pidToFd.Remove(pid);
                 }
                 NativeMethods.close(pidfd);
-                // Registration failed (e.g. the fd set is full): reap directly if the
-                // child is gone, otherwise re-queue so a later attempt can register it.
-                if (!TryReapOrRequeue(process))
-                    Requeue(process);
+                return TryReapProcess(process);
             }
+            return true;
 #elif OSX
             var ev = new NativeMethods.Kevent
             {
@@ -198,14 +224,18 @@ internal static partial class PtyReaper
             if (NativeMethods.kevent(eventFd, [ev], 1, null, 0, IntPtr.Zero) != 0)
             {
                 // Same fallback as above: the child exited between waitpid and kevent.
-                if (!TryReapOrRequeue(process))
-                    Requeue(process);
+                return TryReapProcess(process);
             }
+            return true;
 #endif
         }
 
-        /// <summary>Reaps <paramref name="process"/> when it has exited; true when collected.</summary>
-        private bool TryReapOrRequeue(PtyProcess process)
+        /// <summary>
+        /// Reaps <paramref name="process"/> when it has exited; true when collected.
+        /// Called from the registration failure paths, where the child may have exited
+        /// between the drain's waitpid and the failed registration attempt.
+        /// </summary>
+        private bool TryReapProcess(PtyProcess process)
         {
             if (!process.TryReap(out var code))
                 return false;
@@ -217,14 +247,17 @@ internal static partial class PtyReaper
             return true;
         }
 
-        /// <summary>Returns a process whose registration failed back to the pending queue for a later attempt.</summary>
-        private void Requeue(PtyProcess process)
+        /// <summary>Returns a process whose registration failed back to the pending queue for a retry.</summary>
+        private void EnqueueForRetry(PtyProcess process)
         {
             lock (sync)
             {
                 pendingWatch.Enqueue(process);
             }
-            Wake(); // the loop may be blocked in the wait; wake it to drain the queue
+            // No Wake(): a retry is not urgent — the finite wait timeout (see
+            // WaitForEvents) wakes the loop after RetryIntervalMs, so a failing
+            // registration cannot spin the wake channel.
+            pendingForRetry = true;
         }
 
         /// <summary>
@@ -256,7 +289,8 @@ internal static partial class PtyReaper
             {
                 byPid[pid] = process;
             }
-            Register(process);
+            if (!Register(process))
+                EnqueueForRetry(process);
         }
 
         private void Unregister(int pid)
@@ -283,14 +317,24 @@ internal static partial class PtyReaper
 
         // -------------------------------------------------------- events
 
-        private int WaitForEvents()
+        private unsafe int WaitForEvents()
         {
             while (true)
             {
 #if LINUX
-                var n = NativeMethods.epoll_wait(eventFd, linuxEvents, MaxEvents, -1);
+                // A pending retry bounds the wait so the failed registration gets another
+                // chance; a clean state blocks indefinitely (no periodic wakeups).
+                var timeout = pendingForRetry ? RetryIntervalMs : -1;
+                var n = NativeMethods.epoll_wait(eventFd, linuxEvents, MaxEvents, timeout);
 #elif OSX
-                var n = NativeMethods.kevent(eventFd, null, 0, macEvents, MaxEvents, IntPtr.Zero);
+                // kevent's timeout is a struct timespec*; null means block indefinitely.
+                var ts = new NativeMethods.TimeSpec
+                {
+                    TvSec = RetryIntervalMs / 1000,
+                    TvNsec = (RetryIntervalMs % 1000) * 1_000_000,
+                };
+                var timeoutPtr = pendingForRetry ? (IntPtr)(&ts) : IntPtr.Zero;
+                var n = NativeMethods.kevent(eventFd, null, 0, macEvents, MaxEvents, timeoutPtr);
 #else
 #error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
 #endif
