@@ -8,6 +8,19 @@
              Pty.Net package on nuget.org. -->
         <AssemblyName>Ghostflyby.Pty</AssemblyName>
         <PackageId>Ghostflyby.Pty</PackageId>
+        <!-- NuGet package metadata. Description and tags mirror the GitHub repo
+             description and topics — keep them in sync. No <Version> here on purpose:
+             the version is derived from the git tag at publish time (vX.Y.Z → X.Y.Z),
+             so the tag is the single source of truth and this file never drifts. -->
+        <Authors>ghostflyby</Authors>
+        <Description>The multi-platform pty wrapper in pure C# with P/Invoke: drive interactive shells with a real terminal on Windows, macOS, and Linux.</Description>
+        <!-- SPDX expression: nuget.org renders the Apache-2.0 badge from it. The license
+             text itself lives at the repo root (LICENSE). -->
+        <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+        <RepositoryType>git</RepositoryType>
+        <RepositoryUrl>https://github.com/ghostflyby/Pty.Net</RepositoryUrl>
+        <PackageProjectUrl>https://github.com/ghostflyby/Pty.Net</PackageProjectUrl>
+        <PackageTags>pty;pseudo-terminal;conpty;csharp;dotnet;dotnet-library</PackageTags>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
