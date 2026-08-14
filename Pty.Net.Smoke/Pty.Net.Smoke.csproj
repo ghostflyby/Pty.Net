@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!-- Consumer-facing smoke test: consumes the real Ghostflyby.Pty package from
+         nuget.org exactly like a user, then runs one real pty session. Kept out of the
+         solution so it does not affect the library build/test. The publish workflow
+         runs it on the same OS matrix as the test suite and overrides the version with
+         the tag. -->
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net10.0</TargetFramework>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <!-- Default for local runs; the publish workflow overrides it with the tag
+             version (dotnet run -p:GhostflybyPtyVersion=$VERSION). -->
+        <GhostflybyPtyVersion Condition="'$(GhostflybyPtyVersion)' == ''">0.1.0</GhostflybyPtyVersion>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Ghostflyby.Pty" Version="$(GhostflybyPtyVersion)" />
+    </ItemGroup>
+
+</Project>
