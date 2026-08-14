@@ -188,13 +188,6 @@ jobs:
             if ($nuspec.Count -ne 1) { throw "expected exactly one nuspec, found $($nuspec.Count)" }
           } finally { $zip.Dispose() }
 
-      # Pre-publish gate: consume the assembled package from a local source exactly like
-      # a user would, before anything is pushed. This proves the RID layout resolves on
-      # this platform (linux-x64), the nuspec/metadata are intact, and a real pty session
-      # runs. A failure here aborts the release.
-      - name: Smoke test the assembled package (pre-publish gate)
-        run: "& .github/workflows/smoke.ps1 -SourceDir ."
-
       - name: NuGet login (OIDC → temporary API key)
         uses: NuGet/login@v1
         id: login
@@ -214,27 +207,32 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-  smoke:
-    # Post-publish verification: consume the artifact that actually shipped (downloaded
-    # from the GitHub release) on a real arm64 runner. This proves the linux-arm64 RID
-    # path resolves and the architecture-specific P/Invoke (AAPCS64 pad workaround) runs
-    # from the packaged dll. It runs after publish, so a failure marks the run red for
-    # manual review — the release itself has already happened.
-    name: Post-publish smoke (${{ matrix.os }})
+  package-smoke:
+    # Post-publish verification on the same OS matrix as the test suite: consume the
+    # real Ghostflyby.Pty package from nuget.org with a dedicated consumer project
+    # (Pty.Net.Smoke) and run one real pty session. This proves the shipped package —
+    # the cross-platform nupkg that was actually pushed — restores, resolves the right
+    # RID-specific dll on each platform, and works end to end, including the
+    # architecture-specific P/Invoke paths. Runs after publish, so a failure marks the
+    # run red for manual review; the release itself has already happened.
+    name: Package smoke (${{ matrix.os }})
     needs: publish
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04-arm]
+        os: [windows-latest, ubuntu-latest, macos-latest, ubuntu-24.04-arm]
     steps:
-      - uses: actions/checkout@v7 # for smoke.ps1
+      - uses: actions/checkout@v7 # for Pty.Net.Smoke
 
-      - name: Download published package from release
-        run: gh release download "$env:GITHUB_REF_NAME" --pattern '*.nupkg' --dir .
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
 
+      # Version comes from the tag; the consumer csproj defaults to 0.1.0 for local runs.
       - name: Smoke test the published package
-        run: "& .github/workflows/smoke.ps1 -SourceDir ."
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          dotnet run --project Pty.Net.Smoke -c Release -p:GhostflybyPtyVersion=$version
