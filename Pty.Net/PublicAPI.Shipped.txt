@@ -1,39 +1,5 @@
 #nullable enable
 Ghostflyby.Pty.PtyProcess
-Ghostflyby.Pty.PtyProcess.BaseStream.get -> Ghostflyby.Pty.PtyStream!
-Ghostflyby.Pty.PtyProcess.Dispose() -> void
-Ghostflyby.Pty.PtyProcess.DisposeAsync() -> System.Threading.Tasks.ValueTask
-Ghostflyby.Pty.PtyProcess.ExitCode.get -> int?
-Ghostflyby.Pty.PtyProcess.Exited -> System.Action<int, Ghostflyby.Pty.PtyProcess!>?
-Ghostflyby.Pty.PtyProcess.HasExited.get -> bool
-Ghostflyby.Pty.PtyProcess.Input.get -> System.IO.StreamWriter!
-Ghostflyby.Pty.PtyProcess.Kill() -> void
-Ghostflyby.Pty.PtyProcess.Output.get -> System.IO.StreamReader!
-Ghostflyby.Pty.PtyProcess.Pid.get -> int
-Ghostflyby.Pty.PtyProcess.Resize(int columns, int rows) -> void
-static Ghostflyby.Pty.PtyProcess.Start(Ghostflyby.Pty.PtyStartInfo! info) -> Ghostflyby.Pty.PtyProcess!
-static Ghostflyby.Pty.PtyProcess.Start(string! file, System.Collections.Generic.IReadOnlyList<string!>! arguments, string? workingDirectory = null) -> Ghostflyby.Pty.PtyProcess!
-Ghostflyby.Pty.PtyProcess.WaitForExit() -> void
-Ghostflyby.Pty.PtyProcess.WaitForExit(System.TimeSpan timeout) -> bool
-Ghostflyby.Pty.PtyProcess.WaitForExitAsync(System.TimeSpan? timeout = null, System.Threading.CancellationToken ct = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<bool>!
-Ghostflyby.Pty.PtyStartInfo
-Ghostflyby.Pty.PtyStartInfo.<Clone>$() -> Ghostflyby.Pty.PtyStartInfo!
-Ghostflyby.Pty.PtyStartInfo.Arguments.get -> System.Collections.Generic.IReadOnlyList<string!>!
-Ghostflyby.Pty.PtyStartInfo.Arguments.init -> void
-Ghostflyby.Pty.PtyStartInfo.Environment.get -> System.Collections.Generic.IReadOnlyDictionary<string!, string?>!
-Ghostflyby.Pty.PtyStartInfo.Environment.init -> void
-Ghostflyby.Pty.PtyStartInfo.Equals(Ghostflyby.Pty.PtyStartInfo? other) -> bool
-override Ghostflyby.Pty.PtyStartInfo.Equals(object? obj) -> bool
-Ghostflyby.Pty.PtyStartInfo.FileName.get -> string!
-Ghostflyby.Pty.PtyStartInfo.FileName.init -> void
-override Ghostflyby.Pty.PtyStartInfo.GetHashCode() -> int
-Ghostflyby.Pty.PtyStartInfo.Column.get -> int
-Ghostflyby.Pty.PtyStartInfo.Column.init -> void
-Ghostflyby.Pty.PtyStartInfo.Row.get -> int
-Ghostflyby.Pty.PtyStartInfo.Row.init -> void
-Ghostflyby.Pty.PtyStartInfo.InputEncoding.get -> System.Text.Encoding!
-Ghostflyby.Pty.PtyStartInfo.InputEncoding.init -> void
-Ghostflyby.Pty.PtyStartInfo.OutputEncoding.get -> System.Text.Encoding!
 Ghostflyby.Pty.PtyStartInfo.OutputEncoding.init -> void
 Ghostflyby.Pty.PtyStartInfo.PtyStartInfo() -> void
 Ghostflyby.Pty.PtyStartInfo.PtyStartInfo(System.Diagnostics.ProcessStartInfo! psi) -> void
@@ -60,3 +26,42 @@ override Ghostflyby.Pty.PtyStream.SetLength(long value) -> void
 override Ghostflyby.Pty.PtyStream.Write(System.ReadOnlySpan<byte> buffer) -> void
 override Ghostflyby.Pty.PtyStream.Write(byte[]! buffer, int offset, int count) -> void
 override Ghostflyby.Pty.PtyStream.WriteAsync(System.ReadOnlyMemory<byte> buffer, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Ghostflyby.Pty.PtyProcess.GracefulExitTimeout.get -> System.TimeSpan
+Ghostflyby.Pty.PtyProcess.GracefulExitTimeout.set -> void
+Ghostflyby.Pty.PtyProcess.RequestClose() -> void
+Ghostflyby.Pty.PtyStartInfo.OutputEncoding.get -> System.Text.Encoding!
+Ghostflyby.Pty.PtyStartInfo.InputEncoding.init -> void
+Ghostflyby.Pty.PtyStartInfo.InputEncoding.get -> System.Text.Encoding!
+Ghostflyby.Pty.PtyStartInfo.Row.init -> void
+Ghostflyby.Pty.PtyProcess.BaseStream.get -> Ghostflyby.Pty.PtyStream!
+Ghostflyby.Pty.PtyProcess.Dispose() -> void
+Ghostflyby.Pty.PtyProcess.DisposeAsync() -> System.Threading.Tasks.ValueTask
+Ghostflyby.Pty.PtyProcess.ExitCode.get -> int?
+Ghostflyby.Pty.PtyProcess.Exited -> System.Action<int, Ghostflyby.Pty.PtyProcess!>?
+Ghostflyby.Pty.PtyProcess.HasExited.get -> bool
+Ghostflyby.Pty.PtyProcess.Input.get -> System.IO.StreamWriter!
+Ghostflyby.Pty.PtyProcess.Kill() -> void
+Ghostflyby.Pty.PtyProcess.Output.get -> System.IO.StreamReader!
+Ghostflyby.Pty.PtyProcess.Pid.get -> int
+Ghostflyby.Pty.PtyProcess.Resize(int columns, int rows) -> void
+static Ghostflyby.Pty.PtyProcess.Start(Ghostflyby.Pty.PtyStartInfo! info) -> Ghostflyby.Pty.PtyProcess!
+static Ghostflyby.Pty.PtyProcess.Start(string! file, System.Collections.Generic.IReadOnlyList<string!>! arguments, string? workingDirectory = null) -> Ghostflyby.Pty.PtyProcess!
+Ghostflyby.Pty.PtyProcess.WaitForExit() -> void
+Ghostflyby.Pty.PtyStartInfo.InheritParentEnvironment.get -> bool
+Ghostflyby.Pty.PtyProcess.WaitForExit(System.TimeSpan timeout) -> bool
+Ghostflyby.Pty.PtyStartInfo
+Ghostflyby.Pty.PtyStartInfo.<Clone>$() -> Ghostflyby.Pty.PtyStartInfo!
+Ghostflyby.Pty.PtyStartInfo.Arguments.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Ghostflyby.Pty.PtyStartInfo.Arguments.init -> void
+Ghostflyby.Pty.PtyStartInfo.Environment.get -> System.Collections.Generic.IReadOnlyDictionary<string!, string?>!
+Ghostflyby.Pty.PtyStartInfo.Environment.init -> void
+Ghostflyby.Pty.PtyStartInfo.Equals(Ghostflyby.Pty.PtyStartInfo? other) -> bool
+override Ghostflyby.Pty.PtyStartInfo.Equals(object? obj) -> bool
+Ghostflyby.Pty.PtyStartInfo.FileName.get -> string!
+Ghostflyby.Pty.PtyStartInfo.FileName.init -> void
+override Ghostflyby.Pty.PtyStartInfo.GetHashCode() -> int
+Ghostflyby.Pty.PtyStartInfo.Column.get -> int
+Ghostflyby.Pty.PtyStartInfo.Column.init -> void
+Ghostflyby.Pty.PtyStartInfo.Row.get -> int
+Ghostflyby.Pty.PtyProcess.WaitForExitAsync(System.TimeSpan? timeout = null, System.Threading.CancellationToken ct = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<bool>!
+Ghostflyby.Pty.PtyStartInfo.InheritParentEnvironment.init -> void
