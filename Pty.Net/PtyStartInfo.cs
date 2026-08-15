@@ -52,6 +52,16 @@ public sealed record PtyStartInfo
     /// </summary>
     public IReadOnlyDictionary<string, string?> Environment { get; init; } = ImmutableDictionary<string, string?>.Empty;
 
+    /// <summary>
+    /// Whether the child inherits the parent's environment variables.
+    /// <para>True (default): <see cref="Environment"/> is an override set merged over
+    /// the parent's environment at launch. False: the child receives only the variables
+    /// explicitly listed in <see cref="Environment"/> — an allowlist, for environments
+    /// that must not leak host variables. (With no parent set to remove from, a null
+    /// value in <see cref="Environment"/> then simply does nothing.)</para>
+    /// </summary>
+    public bool InheritParentEnvironment { get; init; } = true;
+
     /// <summary>Creates an empty launch description; set <see cref="FileName"/> before starting.</summary>
     public PtyStartInfo()
     {
