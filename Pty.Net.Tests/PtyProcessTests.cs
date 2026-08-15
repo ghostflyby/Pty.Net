@@ -296,6 +296,40 @@ public class PtyProcessTests : IDisposable
 #endif
 
     /// <summary>
+    /// <see cref="PtyStartInfo.InheritParentEnvironment"/> = false turns the environment
+    /// into an allowlist: the listed variable is visible, while a host variable that is
+    /// deliberately absent (set on the parent, uniquely named, not listed) must not leak
+    /// into the child.
+    /// </summary>
+    [Fact]
+    public void Environment_AllowlistHidesHostVariables()
+    {
+        const string hostVar = "PTY_TEST_HOST_ONLY_8F2A";
+        var old = Environment.GetEnvironmentVariable(hostVar);
+        Environment.SetEnvironmentVariable(hostVar, "present");
+        try
+        {
+            var info = new PtyStartInfo(TestBash.BashPath)
+            {
+                Arguments = ["--noprofile", "--norc", "-c",
+                    "echo visible=$ALLOWLIST_VISIBLE host=$PTY_TEST_HOST_ONLY_8F2A; echo __DONE__"],
+                Environment = ImmutableDictionary<string, string?>.Empty.Add("ALLOWLIST_VISIBLE", "yes"),
+                InheritParentEnvironment = false,
+            };
+
+            using var p = PtyProcess.Start(info);
+            var output = TestBash.ReadUntil(p.Output, "__DONE__", Timeout);
+
+            Assert.Contains("visible=yes", output);
+            Assert.DoesNotContain("host=present", output);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(hostVar, old);
+        }
+    }
+
+    /// <summary>
     /// A bare file name (no slash) is resolved through PATH on every platform:
     /// posix_spawnp on Unix, CreateProcess on Windows. Guards the regression where Unix
     /// used plain posix_spawn and threw FileNotFoundException for a name like "bash".

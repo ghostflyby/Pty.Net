@@ -146,7 +146,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         if (string.IsNullOrWhiteSpace(info.FileName))
             throw new ArgumentException("FileName must name an executable.", nameof(info));
         return StartCore(info.FileName, info.ResolveArguments(), info.WorkingDirectory, info.Environment,
-            info.InputEncoding, info.OutputEncoding, info.Column, info.Row);
+            info.InheritParentEnvironment, info.InputEncoding, info.OutputEncoding, info.Column, info.Row);
     }
 
     /// <summary>
@@ -169,13 +169,13 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         ArgumentNullException.ThrowIfNull(arguments);
         if (string.IsNullOrWhiteSpace(file))
             throw new ArgumentException("The executable name must not be empty.", nameof(file));
-        return StartCore(file, arguments, workingDirectory, environment: null,
+        return StartCore(file, arguments, workingDirectory, environment: null, inheritParentEnvironment: true,
             inputEncoding: null, outputEncoding: null, initialCols: 120, initialRows: 30);
     }
 
     private static PtyProcess StartCore(string file, IReadOnlyList<string> arguments, string? workingDirectory,
-        IReadOnlyDictionary<string, string?>? environment, Encoding? inputEncoding, Encoding? outputEncoding,
-        int initialCols, int initialRows)
+        IReadOnlyDictionary<string, string?>? environment, bool inheritParentEnvironment, Encoding? inputEncoding,
+        Encoding? outputEncoding, int initialCols, int initialRows)
     {
         // posix_spawn applies its chdir file action lazily at exec time, so a bad
         // working directory would otherwise surface as an ambiguous spawn errno (the
@@ -183,10 +183,10 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         if (workingDirectory is not null && !Directory.Exists(workingDirectory))
             throw new DirectoryNotFoundException($"The working directory '{workingDirectory}' does not exist.");
 
-        // The child inherits the parent's environment, merged at launch time with the
-        // explicit overrides from PtyStartInfo.Environment (a null value removes the
-        // inherited variable).
-        var effectiveEnvironment = MergeWithParentEnvironment(environment);
+        // The child inherits the parent's environment unless PtyStartInfo.InheritParentEnvironment
+        // is false (allowlist mode); the explicit overrides are then merged over that base
+        // (or over nothing), with a null value removing an inherited variable.
+        var effectiveEnvironment = MergeWithParentEnvironment(environment, inheritParentEnvironment);
 
         // Platform hook: posix_spawn on Unix, ConPTY (CreatePseudoConsole +
         // CreateProcessW) on Windows.
@@ -592,20 +592,18 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// Merges the explicit environment overrides into a snapshot of the parent's
-    /// environment, taken at launch time: non-null entries override inherited variables,
-    /// null entries remove them. A null overrides set (the <see cref="Start(string, IReadOnlyList{string}, string)"/>
-    /// convenience overload) yields the plain parent environment.
-    /// <para>Key comparison is case-insensitive on Windows, where environment variables
-    /// are case-insensitive: overriding "PATH" must replace the inherited "Path" instead
-    /// of adding a second variable to the environment block. On Unix keys stay
-    /// case-sensitive, as the OS distinguishes them.</para>
+    /// Builds the child's environment: a snapshot of the parent's environment taken at
+    /// launch time (unless <paramref name="inheritParentEnvironment"/> is false, i.e.
+    /// allowlist mode — then the base is empty), merged with the explicit overrides:
+    /// non-null entries override inherited variables, null entries remove them.
     /// </summary>
-    private static Dictionary<string, string?> MergeWithParentEnvironment(IReadOnlyDictionary<string, string?>? overrides)
+    private static Dictionary<string, string?> MergeWithParentEnvironment(
+        IReadOnlyDictionary<string, string?>? overrides, bool inheritParentEnvironment)
     {
         var env = new Dictionary<string, string?>(EnvironmentKeyComparer);
-        foreach (System.Collections.DictionaryEntry e in Environment.GetEnvironmentVariables())
-            env[(string)e.Key] = (string?)e.Value;
+        if (inheritParentEnvironment)
+            foreach (System.Collections.DictionaryEntry e in System.Environment.GetEnvironmentVariables())
+                env[(string)e.Key] = (string?)e.Value;
 
         if (overrides is not null)
             foreach (var (key, value) in overrides)
@@ -619,6 +617,10 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         return env;
     }
 
+    /// <summary>Key comparison is case-insensitive on Windows, where environment variables
+    /// are case-insensitive: overriding "PATH" must replace the inherited "Path" instead
+    /// of adding a second variable to the environment block. On Unix keys stay
+    /// case-sensitive, as the OS distinguishes them.</summary>
     private static StringComparer EnvironmentKeyComparer =>
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 

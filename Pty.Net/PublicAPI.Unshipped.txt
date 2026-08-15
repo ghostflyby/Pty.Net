@@ -2,3 +2,5 @@
 Ghostflyby.Pty.PtyProcess.GracefulExitTimeout.get -> System.TimeSpan
 Ghostflyby.Pty.PtyProcess.GracefulExitTimeout.set -> void
 Ghostflyby.Pty.PtyProcess.RequestClose() -> void
+Ghostflyby.Pty.PtyStartInfo.InheritParentEnvironment.get -> bool
+Ghostflyby.Pty.PtyStartInfo.InheritParentEnvironment.init -> void
