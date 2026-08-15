@@ -75,7 +75,10 @@ jobs:
     steps:
       # gh release create resolves the repository through git, so this job needs the
       # checkout even though it builds nothing (artifacts come from the build jobs).
+      # fetch-depth: 0 so the housekeeping step can fetch main and inspect the tag commit.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Download platform packages
         uses: actions/download-artifact@v4
@@ -204,6 +207,48 @@ jobs:
           gh release create "$env:GITHUB_REF_NAME" --title "$env:GITHUB_REF_NAME" `
             --notes "Cross-platform pty library — see https://www.nuget.org/packages/Ghostflyby.Pty/$env:VERSION for package details." `
             "Ghostflyby.Pty.$env:VERSION.nupkg"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # Publish-time housekeeping: the API shipped in this release must move from
+      # Unshipped to Shipped, so Shipped stays an accurate record of what is published.
+      # The exact set is the Unshipped entries present on the tag commit (this checkout),
+      # merged into main's Shipped and removed from main's Unshipped — later additions on
+      # main stay unshipped. main is protected (pull_request ruleset), so this opens an
+      # auto-merged PR instead of pushing directly. The release itself is already done,
+      # so a failure here just marks the run red for manual follow-up.
+      - name: Move published API into Shipped (housekeeping PR)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          # The working tree is the tag commit: its Unshipped entries are what shipped.
+          $tagUnshipped = @(Get-Content 'Pty.Net/PublicAPI.Unshipped.txt' | Where-Object { $_ -and -not $_.StartsWith('#') })
+          if ($tagUnshipped.Count -eq 0) {
+              Write-Host 'no unshipped API on this tag; nothing to move'
+              exit 0
+          }
+          git fetch origin main
+          git checkout -b "housekeeping/shipped-v$env:VERSION" FETCH_HEAD
+          $shippedPath = 'Pty.Net/PublicAPI.Shipped.txt'
+          $unshippedPath = 'Pty.Net/PublicAPI.Unshipped.txt'
+          $shipped = @(Get-Content $shippedPath | Where-Object { $_ -and -not $_.StartsWith('#') })
+          $unshipped = @(Get-Content $unshippedPath | Where-Object { $_ -and -not $_.StartsWith('#') })
+          $newShipped = @(($shipped + $tagUnshipped) | Select-Object -Unique)
+          $newUnshipped = @($unshipped | Where-Object { $_ -notin $tagUnshipped })
+          # Sort by the stripped symbol key, matching the existing Shipped ordering.
+          $key = { param($s) ($s -replace '^(static |override )', '') }
+          $newShipped = @($newShipped | Sort-Object -Property @{Expression = $key})
+          $newUnshipped = @($newUnshipped | Sort-Object -Property @{Expression = $key})
+          "#nullable enable`n$($newShipped -join "`n")`n" | Set-Content -Path $shippedPath -NoNewline
+          "#nullable enable`n$($newUnshipped -join "`n")`n" | Set-Content -Path $unshippedPath -NoNewline
+          git add $shippedPath $unshippedPath
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' `
+            commit -m "chore: move shipped API to Shipped for $env:GITHUB_REF_NAME"
+          git push -u origin "housekeeping/shipped-v$env:VERSION"
+          gh pr create --base main --head "housekeeping/shipped-v$env:VERSION" `
+            --title "chore: move shipped API to Shipped for $env:GITHUB_REF_NAME" `
+            --body "Publish-time housekeeping: the API shipped in $env:GITHUB_REF_NAME moves from Unshipped to Shipped (the entries present on the tag commit)."
+          gh pr merge --auto --merge
         env:
           GH_TOKEN: ${{ github.token }}
 
