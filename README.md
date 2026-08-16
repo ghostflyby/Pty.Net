@@ -2,7 +2,7 @@
 
 The multi-platform pty wrapper in pure C# with P/Invoke: drive interactive shells with a real terminal on Windows, macOS, and Linux.
 
-NuGet package: **`Ghostflyby.Pty`** · License: [Apache-2.0](LICENSE)
+[![CI](https://github.com/ghostflyby/Pty.Net/actions/workflows/ci.yml/badge.svg)](https://github.com/ghostflyby/Pty.Net/actions/workflows/ci.yml) · [![NuGet Version](https://img.shields.io/nuget/v/Ghostflyby.Pty)](https://www.nuget.org/packages/Ghostflyby.Pty) · License: [Apache-2.0](LICENSE)
 
 ## Features
 
