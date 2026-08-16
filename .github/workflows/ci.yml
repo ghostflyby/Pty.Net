@@ -71,16 +71,6 @@ jobs:
             exit 1
           fi
 
-      - name: Raise pty allocation limit (macOS)
-        # The parallel suite peaks at ~90 live pty sessions (32-session thread-pool tests
-        # plus the 24-session concurrency test — xUnit runs test classes in parallel),
-        # which can exceed the macOS default kern.tty.ptmx_max of 127 and make
-        # posix_openpt fail with ENXIO ("posix_openpt/grantpt/unlockpt failed: errno=6"),
-        # flaking the suite. Runner sudo is passwordless, so raise the limit before
-        # testing; the key is writable (permission-gated, not read-only).
-        if: matrix.os == 'macos-latest'
-        run: sudo sysctl -w kern.tty.ptmx_max=1024
-
       - name: Test
         # The blame-hang collector is only meaningful on Windows, where ClosePseudoConsole
         # can block indefinitely (see PtyProcess.Dispose); if a test ever hangs again it
