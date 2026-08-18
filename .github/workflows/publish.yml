@@ -55,7 +55,7 @@ jobs:
         run: dotnet pack Pty.Net/Pty.Net.csproj -c Release --nologo -o pkg -p:Version=$env:VERSION
 
       - name: Upload platform package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pkg-${{ matrix.os }}
           path: pkg/
