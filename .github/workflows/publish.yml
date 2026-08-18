@@ -9,6 +9,17 @@ name: publish
 on:
   push:
     tags: ['v*.*.*']
+  # Manual post-publish verification of the package on nuget.org. nuget.org's search
+  # and feed caches are eventually consistent — a freshly pushed version becomes visible
+  # only after an unbounded, unobservable delay — so package-smoke is deliberately NOT
+  # part of the publish flow (automatic consumption right after push fails with NU1102).
+  # Run it once the version is confirmed available on nuget.org (see package-smoke job).
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Published Ghostflyby.Pty version to verify, e.g. 0.2.1'
+        required: true
+        type: string
 
 # A publish must never be cancelled mid-flight (a half-pushed release), and two pushes
 # of the same tag cannot happen — but guard anyway: same-ref publishes serialize.
@@ -304,10 +315,14 @@ jobs:
     # (Pty.Net.Smoke) and run one real pty session. This proves the shipped package —
     # the cross-platform nupkg that was actually pushed — restores, resolves the right
     # RID-specific dll on each platform, and works end to end, including the
-    # architecture-specific P/Invoke paths. Runs after publish, so a failure marks the
-    # run red for manual review; the release itself has already happened.
+    # architecture-specific P/Invoke paths.
+    #
+    # Triggered manually (workflow_dispatch, "Run workflow" → version input) AFTER the
+    # version is confirmed visible on nuget.org: the feed is eventually consistent, so
+    # running this automatically in lockstep with the publish would only race the
+    # visibility delay (NU1102). Pick the version from the package page or the GitHub
+    # release assets.
     name: Package smoke (${{ matrix.os }})
-    needs: publish
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -322,8 +337,7 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      # Version comes from the tag; the consumer csproj defaults to 0.1.0 for local runs.
+      # Version comes from the manual trigger; the consumer csproj defaults to 0.1.0
+      # for local runs.
       - name: Smoke test the published package
-        run: |
-          $version = $env:GITHUB_REF_NAME -replace '^v', ''
-          dotnet run --project Pty.Net.Smoke -c Release -p:GhostflybyPtyVersion=$version
+        run: dotnet run --project Pty.Net.Smoke -c Release -p:GhostflybyPtyVersion=${{ inputs.version }}
