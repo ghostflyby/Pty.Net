@@ -1,0 +1,49 @@
+name: smoke
+
+# Manual post-publish verification of the Ghostflyby.Pty package on nuget.org.
+# Kept out of the publish workflow: the feed is eventually consistent, and a freshly
+# pushed version becomes visible only after an unbounded, unobservable delay — so
+# smoke cannot run in lockstep with the release (it would fail with NU1102, and
+# there is no reliable way to wait for visibility). Trigger it manually once the
+# version is confirmed available on nuget.org; a failure here flags a packaging
+# problem that a release did not catch.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Published Ghostflyby.Pty version to verify, e.g. 0.2.2'
+        required: true
+        type: string
+
+# Every run: step uses pwsh (PowerShell Core), preinstalled on all three runners, so
+# the same script syntax works on Windows, macOS, and Linux — no bash-isms anywhere.
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  package-smoke:
+    # Same OS matrix as the test suite: consume the real Ghostflyby.Pty package from
+    # nuget.org with a dedicated consumer project (Pty.Net.Smoke) and run one real pty
+    # session. This proves the published package restores, resolves the right
+    # RID-specific dll on each platform, and works end to end, including the
+    # architecture-specific P/Invoke paths.
+    name: Package smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@v7 # for Pty.Net.Smoke
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      # The consumer csproj defaults to 0.1.0 for local runs; the manual trigger
+      # overrides it with the version being verified.
+      - name: Smoke test the published package
+        run: dotnet run --project Pty.Net.Smoke -c Release -p:GhostflybyPtyVersion=${{ inputs.version }}
