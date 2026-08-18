@@ -146,27 +146,57 @@ jobs:
           $version = $env:VERSION
           New-Item -ItemType Directory -Force -Path 'merged/lib/net10.0' | Out-Null
           # Each OS build fills both of its architecture RID folders (see build job).
+          #
+          # NuGet layout: per-RID dlls must live under runtimes/{rid}/lib/{tfm}/, the
+          # convention for RID-specific runtime assets — never under lib/{tfm}/{rid}/,
+          # which NuGet treats as non-asset content (a flat lib/{tfm}/{tfm}.dll is
+          # required for restore to find any compile asset). The runtime host picks the
+          # best runtimes/{rid}/ match from the RID graph, so a portable consumer still
+          # gets the right OS-specific dll on each platform.
+          #
+          # A flat lib/net10.0/Ghostflyby.Pty.dll is also shipped as the compile-time
+          # reference assembly. The public API surface is identical across the three OS
+          # builds (one shared PublicAPI.Shipped.txt contract; the OS files only add
+          # partial-class implementations of PtyProcess/PtyStream), so any one build's
+          # dll is a valid reference assembly and is never loaded at runtime where a
+          # runtimes/{rid}/ match exists.
           $rids = @{
             'pkg-windows-latest' = @('win-x64','win-arm64')
             'pkg-ubuntu-latest'  = @('linux-x64','linux-arm64')
             'pkg-macos-latest'   = @('osx-x64','osx-arm64')
           }
+          $flatCopied = $false
           foreach ($art in $rids.Keys) {
             $nupkg = Get-ChildItem -Path "pkgs/$art" -Filter '*.nupkg' -Recurse | Select-Object -First 1
             if (-not $nupkg) { throw "no nupkg found in $art" }
             $zip = [System.IO.Compression.ZipFile]::OpenRead($nupkg.FullName)
-            $entry = $zip.Entries | Where-Object { $_.FullName -like 'lib/net10.0/*.dll' } | Select-Object -First 1
-            if (-not $entry) { $zip.Dispose(); throw "no lib dll in $($nupkg.Name)" }
-            $tmp = [System.IO.Path]::GetTempFileName()
-            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $tmp, $true)
-            $zip.Dispose()
+            $dll = $zip.Entries | Where-Object { $_.FullName -eq 'lib/net10.0/Ghostflyby.Pty.dll' } | Select-Object -First 1
+            if (-not $dll) { $zip.Dispose(); throw "no lib/net10.0/Ghostflyby.Pty.dll in $($nupkg.Name)" }
+            $tmpDll = [System.IO.Path]::GetTempFileName()
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($dll, $tmpDll, $true)
             try {
               foreach ($rid in $rids[$art]) {
-                New-Item -ItemType Directory -Force -Path "merged/lib/net10.0/$rid" | Out-Null
-                Copy-Item -LiteralPath $tmp -Destination "merged/lib/net10.0/$rid/Ghostflyby.Pty.dll" -Force
+                New-Item -ItemType Directory -Force -Path "merged/runtimes/$rid/lib/net10.0" | Out-Null
+                Copy-Item -LiteralPath $tmpDll -Destination "merged/runtimes/$rid/lib/net10.0/Ghostflyby.Pty.dll" -Force
               }
-            } finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+              # Compile-time reference from the first OS processed (linux-x64 in the
+              # stable hashtable order); see the layout comment above.
+              if (-not $flatCopied) {
+                Copy-Item -LiteralPath $tmpDll -Destination 'merged/lib/net10.0/Ghostflyby.Pty.dll' -Force
+                $flatCopied = $true
+              }
+            } finally { Remove-Item -LiteralPath $tmpDll -Force -ErrorAction SilentlyContinue }
+            # Doc metadata for IntelliSense next to the flat compile asset.
+            $xml = $zip.Entries | Where-Object { $_.FullName -eq 'lib/net10.0/Ghostflyby.Pty.xml' } | Select-Object -First 1
+            if ($xml) {
+              $tmpXml = [System.IO.Path]::GetTempFileName()
+              [System.IO.Compression.ZipFileExtensions]::ExtractToFile($xml, $tmpXml, $true)
+              try { Copy-Item -LiteralPath $tmpXml -Destination 'merged/lib/net10.0/Ghostflyby.Pty.xml' -Force }
+              finally { Remove-Item -LiteralPath $tmpXml -Force -ErrorAction SilentlyContinue }
+            }
+            $zip.Dispose()
           }
+          if (-not $flatCopied) { throw 'no dll captured for the flat compile asset' }
           # Root package structure (nuspec, rels, content-types) from any single package.
           $base = Get-ChildItem -Path pkgs -Filter '*.nupkg' -Recurse | Select-Object -First 1
           $zip = [System.IO.Compression.ZipFile]::OpenRead($base.FullName)
@@ -178,7 +208,12 @@ jobs:
               [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
             }
           } finally { $zip.Dispose() }
-          Compress-Archive -Path 'merged/*' -DestinationPath "Ghostflyby.Pty.$version.nupkg" -Force
+          # ZipFile.CreateFromDirectory, not Compress-Archive: the pwsh wildcard
+          # 'merged/*' skips hidden files on Unix, silently dropping _rels/.rels — the
+          # OPC relationship file a NuGet package needs (nuget.org tolerates its absence,
+          # but some tooling rejects it). CreateFromDirectory packs everything under
+          # merged/ with contents at the archive root, including hidden files.
+          [System.IO.Compression.ZipFile]::CreateFromDirectory('merged', "Ghostflyby.Pty.$version.nupkg")
 
       - name: Verify assembled package
         run: |
@@ -187,11 +222,17 @@ jobs:
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $zip = [System.IO.Compression.ZipFile]::OpenRead("Ghostflyby.Pty.$env:VERSION.nupkg")
           try {
-            $dlls = @($zip.Entries | Where-Object { $_.FullName -like 'lib/net10.0/*/Ghostflyby.Pty.dll' })
+            $dlls = @($zip.Entries | Where-Object { $_.FullName -like 'runtimes/*/lib/net10.0/Ghostflyby.Pty.dll' })
             if ($dlls.Count -ne 6) {
-              $zip.Entries | Where-Object { $_.FullName -like 'lib/net10.0/*' } | ForEach-Object { Write-Host $_.FullName }
-              throw "expected 6 RID-specific dlls, found $($dlls.Count)"
+              $zip.Entries | Where-Object { $_.FullName -like 'runtimes/*' -or $_.FullName -like 'lib/*' } | ForEach-Object { Write-Host $_.FullName }
+              throw "expected 6 RID-specific runtimes dlls, found $($dlls.Count)"
             }
+            $flat = @($zip.Entries | Where-Object { $_.FullName -eq 'lib/net10.0/Ghostflyby.Pty.dll' })
+            if ($flat.Count -ne 1) { throw "expected exactly one flat lib/net10.0/Ghostflyby.Pty.dll, found $($flat.Count)" }
+            # Regression guard: lib/{tfm}/{rid}/ is not a valid NuGet layout — the dll
+            # must never land directly under lib/net10.0/ subfolders.
+            $legacy = @($zip.Entries | Where-Object { $_.FullName -like 'lib/net10.0/*/*' })
+            if ($legacy.Count -gt 0) { throw "found $($legacy.Count) legacy lib/net10.0/{rid}/ entries; runtimes/ layout required" }
             $nuspec = @($zip.Entries | Where-Object { $_.FullName -like '*.nuspec' })
             if ($nuspec.Count -ne 1) { throw "expected exactly one nuspec, found $($nuspec.Count)" }
           } finally { $zip.Dispose() }
