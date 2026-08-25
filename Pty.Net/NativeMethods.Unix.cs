@@ -105,13 +105,57 @@ internal static partial class NativeMethods
 #if OSX
     internal const int ONonblock = 0x0004;
     internal const int ONoctty = 0x20000;
+    // O_CLOEXEC for open(2): macOS uses 0x1000000 (Linux uses 0x80000; the value is
+    // per-platform, so it sits in the per-platform section).
+    internal const int OCloexec = 0x1000000;
 #elif LINUX
     internal const int ONonblock = 0x0800;
     internal const int ONoctty = 0x00100;
+    internal const int OCloexec = 0x80000;
 #else
 #error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
 #endif
     internal const int ORdwr = 0x0002;
+
+    // fork(2) + exec path. POSIX constants with fixed values that are identical on
+    // macOS and Linux (verified against the platform SDK headers and the kernel
+    // asm-generic ABI), so they live here once instead of in per-platform sections:
+    //   setsid(2)/TIOCSCTTY: no args; ioctl(fd, TIOCSCTTY) with a zero arg makes the
+    //   slave the controlling terminal of the calling (session leader) process.
+#if OSX
+    internal const nuint Tiocsctty = 0x20007461; // Darwin: _IOW('t', 122, int)
+#elif LINUX
+    internal const nuint Tiocsctty = 0x540E;     // asm-generic: _IO('t', 18)
+#else
+#error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
+#endif
+
+    // fcntl(2) commands used to set the close-on-exec bit after a raw open/openpty
+    // (macOS has no SOCK_CLOEXEC for socketpair; the pty master/slave fds from
+    // open/openpty need the same post-open treatment on both platforms). F_SETFD
+    // and FD_CLOEXEC are identical on macOS and Linux.
+    internal const int FSetfd = 2;
+    internal const int FdCloexec = 1;
+
+    // RLIMIT_NOFILE for the fork/exec fd sweep: the value differs per platform
+    // (macOS: 8, Linux asm-generic: 7).
+#if OSX
+    internal const int RlimitNofile = 8;
+#elif LINUX
+    internal const int RlimitNofile = 7;
+#else
+#error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
+#endif
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct RLimit
+    {
+        internal nuint Cur; // rlim_cur (soft limit)
+        internal nuint Max; // rlim_max (hard limit)
+    }
+
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int getrlimit(int resource, out RLimit rlim);
 
     // TIOCSWINSZ: the ioctl request that sets the terminal window size in characters.
     // macOS 0x80087467 (_IOW('t', 104, winsize), C-verified), Linux 0x5414
@@ -236,6 +280,75 @@ internal static partial class NativeMethods
         out int pid, IntPtr path, IntPtr fileActions, IntPtr attr,
         [In] IntPtr[] argv, [In] IntPtr[] envp);
 
+    // ---- fork(2)/exec(3) launch path ----
+    // The pty is created first (see PtyProcess.Start.Unix.cs), then fork + exec.
+    // fork(2) in a multithreaded .NET process is safe only when the child's post-fork
+    // work is pure libc (no allocations, no runtime locks): the spawn critical section
+    // therefore enters a no-GC region and pins all native pointers before forking. The
+    // parent and the child then diverge — the parent leaves the region immediately; the
+    // child runs ChildMain (libc only) and never returns.
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int fork();
+
+    // The no-return child side. __attribute__((noreturn)) is not visible to the
+    // marshaler, so it is declared as returning int and the caller ignores the value;
+    // a child that somehow returns falls through to an immediate _exit.
+    [LibraryImport("libc")]
+    internal static partial int _exit(int code);
+
+    // chdir(2) for the fork path (no file-actions layer; the child chdirs itself).
+    [LibraryImport("libc", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int chdir(string path);
+
+    // execve(2): the child's final step. The pointer arguments are pinned by the
+    // spawn critical section (see ToNative + the fixed in ChildMain), so the child
+    // performs no allocation between fork and exec.
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int execve(IntPtr path, IntPtr argv, IntPtr envp);
+
+    // setsid(2) and ioctl(TIOCSCTTY): in the fork path the child calls setsid() and
+    // then ioctl(slave, TIOCSCTTY, 0) to acquire the controlling terminal — the
+    // job-control foundation that posix_spawn's SETSID flag provided. ioctl is the
+    // same variadic call as the resize path; the IoCtl helper selects the Apple
+    // arm64 pad-register form.
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int setsid();
+
+    // fcntl(2) F_SETFD: set/clear the close-on-exec bit on an fd. fcntl is variadic
+    // (int fcntl(int, int, ...)), and on Apple arm64 the variadic argument must land on
+    // the stack, so the plain fixed signature misdelivers it — the same trap as ioctl.
+    // The Apple arm64 form pads the six general-purpose registers (x2-x7) so the real
+    // argument lands where va_arg looks for it (see the ioctl comment above).
+    [LibraryImport("libc", SetLastError = true, EntryPoint = "fcntl")]
+    internal static partial int fcntl(int fd, int cmd, int arg);
+
+    [LibraryImport("libc", SetLastError = true, EntryPoint = "fcntl")]
+    internal static partial int fcntlArm64(int fd, int cmd,
+        nint r2, nint r3, nint r4, nint r5, nint r6, nint r7, int arg);
+
+    /// <summary>Calls fcntl(fd, cmd, arg), selecting the pad-register form where the platform's variadic ABI requires it.</summary>
+    internal static int Fcntl(int fd, int cmd, int arg)
+    {
+        return OperatingSystem.IsMacOS() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64
+            ? fcntlArm64(fd, cmd, 0, 0, 0, 0, 0, 0, arg)
+            : fcntl(fd, cmd, arg);
+    }
+
+    // dup2(2): the child wires the pty slave onto 0/1/2 after fork. Takes raw fd
+    // numbers (the child is the only actor, no SafeHandle marshaling involved).
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int dup2(int from, int to);
+
+    // Upper bound for the child's per-fd close sweep in the fork path (and the
+    // spawn-path file-action loop on Linux): the loop runs to
+    // min(RLIMIT_NOFILE soft limit, this cap). The soft limit because closing an
+    // already-closed fd returns EBADF; the cap so a huge limit (servers/containers
+    // often run hundreds of thousands) cannot turn every spawn into a
+    // million-iteration loop. Fds above the cap would leak into the child, but .NET's
+    // own fds are all CLOEXEC (closed by the kernel at exec), so only non-CLOEXEC fds
+    // from P/Invoke could leak — those live in the low range in practice.
+    internal const int FdIsolationCap = 4096;
+
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int posix_spawn_file_actions_init(IntPtr fileActions);
 
@@ -257,33 +370,9 @@ internal static partial class NativeMethods
     internal static partial int posix_spawn_file_actions_addchdir_np(IntPtr fileActions, string path);
 
 #if LINUX
-    // Upper bound for the per-fd isolation loop in PtyProcess.StartCore. The loop runs
-    // to min(RLIMIT_NOFILE soft limit, this cap): the soft limit because glibc's addclose
-    // rejects fds >= sysconf(_SC_OPEN_MAX) with EBADF (musl accepts any non-negative fd
-    // and ignores EBADF at close time); the cap so a huge limit (servers/containers often
-    // run hundreds of thousands) cannot turn every spawn into a million-file-action loop.
-    // Fds above the cap would leak into the child, but .NET's own fds are all CLOEXEC
-    // (closed by the kernel at exec), so only non-CLOEXEC fds from P/Invoke could leak —
-    // those live in the low range in practice. A single closefrom call would be nicer
-    // (glibc's addclosefrom_np), but musl does not export it, so the portable addclose
-    // loop is used: both libcs execute FDOP_CLOSE in the child and ignore EBADF when
-    // closing an already-closed fd.
-    internal const int FdIsolationCap = 4096;
-
     // Linux: RLIMIT_NOFILE from <sys/resource.h>. Per-arch in musl/glibc (MIPS uses 5);
-    // 7 is the generic value on x86_64/aarch64. Sits in the LINUX section because macOS
-    // uses a different number.
-    internal const int RlimitNofile = 7;
-
-    [StructLayout(LayoutKind.Sequential)]
-    internal struct RLimit
-    {
-        internal nuint Cur; // rlim_cur (soft limit)
-        internal nuint Max; // rlim_max (hard limit)
-    }
-
-    [LibraryImport("libc", SetLastError = true)]
-    internal static partial int getrlimit(int resource, out RLimit rlim);
+    // 7 is the generic value on x86_64/aarch64. The RLimit struct and getrlimit live
+    // in the shared section (macOS uses RLIMIT_NOFILE = 8 for the fork/exec fd sweep).
 
     // Pointer form so the caller can pass a stackalloc'd sigset (pinned with fixed):
     // a byte[] overload would allocate a 128-byte array on every Linux spawn.
