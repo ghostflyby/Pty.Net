@@ -137,7 +137,28 @@ public class PtyProcessTests : IDisposable
     /// never acquires a controlling terminal. Unix-only; ConPTY has no POSIX
     /// session/foreground-group semantics.
     /// </summary>
+    /// <summary>
+    /// The kernel-level controlling-terminal check, with no external dependencies: a
+    /// process that has a ctty can open /dev/tty; without one the open fails with
+    /// ENXIO. This is the hard Unix guarantee that every launch shape must satisfy —
+    /// <see cref="Child_IsSessionLeaderWithControllingTerminal"/> adds the
+    /// tcgetpgrp precision where python3 is available.
+    /// </summary>
 #if !WINDOWS
+    [Fact]
+    public void Shell_ChildOpensDevTty()
+    {
+        // The fixture bash IS the child under test: it is a session leader whose
+        // stdio is the pty slave, so opening /dev/tty must succeed.
+        DisableEcho();
+        bash.Input.WriteLine("if : </dev/tty 2>/dev/null; then echo CTTY_OK; else echo CTTY_MISSING; fi; echo __DEVTTY_DONE__");
+
+        var output = TestBash.ReadUntil(bash.Output, "__DEVTTY_DONE__", Timeout);
+
+        Assert.Contains("CTTY_OK", output);
+        Assert.DoesNotContain("CTTY_MISSING", output);
+    }
+
     [Fact]
     public void Child_IsSessionLeaderWithControllingTerminal()
     {
@@ -148,9 +169,10 @@ public class PtyProcessTests : IDisposable
         using var p = PtyProcess.Start(file, args);
         var output = TestBash.ReadUntil(p.Output, "__CTTY_DONE__", Timeout);
 
-        // "isatty=True pgrp=<n> tcgetpgrp=<n>"
+        // "isatty=True sid=<n> pid=<n> pgrp=<n> tcgetpgrp=<n>"
         Assert.Contains("isatty=True", output);
-        Assert.Matches(@"pgrp=(\d+)\s+tcgetpgrp=\1", output);
+        Assert.Matches(@"sid=(\d+)\s+pid=\1", output);          // session leader
+        Assert.Matches(@"pgrp=(\d+)\s+tcgetpgrp=\1", output);   // foreground on the ctty
     }
 
     /// <summary>
@@ -185,7 +207,7 @@ public class PtyProcessTests : IDisposable
             return ("python3",
             [
                 "-c",
-                "import os; print(f'isatty={os.isatty(0)} pgrp={os.getpgrp()} tcgetpgrp={os.tcgetpgrp(0)}'); print('__CTTY_DONE__')",
+                "import os; print(f'isatty={os.isatty(0)} sid={os.getsid(0)} pid={os.getpid()} pgrp={os.getpgrp()} tcgetpgrp={os.tcgetpgrp(0)}'); print('__CTTY_DONE__')",
             ]);
         }
         catch (FileNotFoundException)
