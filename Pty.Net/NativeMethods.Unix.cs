@@ -57,35 +57,21 @@ internal static partial class NativeMethods
         Term = 15,
     }
 
-    // posix_spawnattr flags. The SETSID value differs per libc — macOS defines
-    // POSIX_SPAWN_SETSID as 0x0400 (Darwin-specific), glibc as 0x0080. Using the wrong
-    // value silently fails to create the session, which breaks ctty acquisition and
-    // job control. (On macOS 0x0800 is _POSIX_SPAWN_RESLIDE; on glibc it maps to a flag
-    // no code path reads.)
+    // posix_spawnattr flags (Apple). SETEXEC (0x0040, from sys/spawn.h) makes
+    // posix_spawn replace the calling process — the property the fork child relies
+    // on. CLOEXEC_DEFAULT (0x4000) makes the kernel close every fd the file actions
+    // did not create — the fd sweep itself, no manual loop, fds above any cap
+    // included. SETSID (0x0400) is deliberately not set: the fork child does its own
+    // setsid() before the spawn call (see ChildMain).
+#if OSX
     [Flags]
     internal enum PosixSpawnFlags : short
     {
         None = 0,
-#if OSX
-        // Apple-specific: inherited fds default to close-on-exec in the child unless
-        // a file action explicitly keeps them (our dup2 of the pty slave to 0/1/2).
         CloexecDefault = 0x4000,
-        Setsid = 0x0400,
-        // Apple-only: posix_spawn replaces the *calling* process image instead of
-        // spawning a child — a "more featureful execve". Used inside the fork child so
-        // the kernel's spawn machinery (session/ctty via SETSID, CLOEXEC_DEFAULT fd
-        // isolation) applies in place, and no post-fork libc setup is hand-rolled.
         Setexec = 0x0040,
-#elif LINUX
-        // Linux no longer uses posix_spawn (the fork child does the setup itself, and
-        // the SIG_IGN-disposition gap SETSIGDEF closed is handled with libc signal()
-        // calls in ChildMain). The value is kept for reference.
-        Setsigdef = 0x0004,
-        Setsid = 0x0080,
-#else
-#error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
-#endif
     }
+#endif
 
     // errno values used in the poll/read/write retry logic.
     // EINTR and EIO are identical on macOS and Linux; EAGAIN differs.
@@ -282,23 +268,6 @@ internal static partial class NativeMethods
     // live in the low range in practice.
     internal const int FdIsolationCap = 4096;
 
-    [LibraryImport("libc", SetLastError = true)]
-    internal static partial int posix_spawn_file_actions_init(IntPtr fileActions);
-
-    [LibraryImport("libc", SetLastError = true)]
-    internal static partial int posix_spawn_file_actions_destroy(IntPtr fileActions);
-
-    // These fd numbers must be the exact values (they are referenced by the file
-    // actions inside the child), so callers pass raw handle values — SafeHandle
-    // auto-marshaling could pass a duplicated fd number instead.
-    [LibraryImport("libc", SetLastError = true)]
-    internal static partial int posix_spawn_file_actions_adddup2(IntPtr fileActions, int from, int to);
-
-    // Path is marshaled as UTF-8 (StringMarshalling) so LibraryImport stays AOT/trim
-    // compatible, and the POSIX chdir file action takes const char* paths.
-    [LibraryImport("libc", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial int posix_spawn_file_actions_addchdir_np(IntPtr fileActions, string path);
-
 #if LINUX
     // ---- epoll / pidfd / eventfd: the event-driven reaper (PtyReaper.Unix.cs) ----
     // epoll(2) event and control constants (identical across Linux architectures).
@@ -424,6 +393,7 @@ internal static partial class NativeMethods
     internal static partial int kevent(int kq, [In] Kevent[]? changelist, int nchanges, [Out] Kevent[]? eventlist, int nevents, IntPtr timeout);
 #endif
 
+#if OSX
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int posix_spawnattr_init(IntPtr attr);
 
@@ -432,6 +402,7 @@ internal static partial class NativeMethods
 
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int posix_spawnattr_setflags(IntPtr attr, PosixSpawnFlags flags);
+#endif
 
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int kill(int pid, Signals sig);

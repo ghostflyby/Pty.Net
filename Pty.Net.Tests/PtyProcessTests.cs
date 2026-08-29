@@ -130,6 +130,93 @@ public class PtyProcessTests : IDisposable
         Assert.Contains("sleep 0.5", jobs);
     }
 
+    /// <summary>
+    /// The child must be a session leader with the pty as its controlling terminal: that
+    /// is what makes stdin a real terminal (isatty), and what makes the foreground process
+    /// group equal to the shell's own group (tcgetpgrp). Inheriting a parent-opened fd
+    /// never acquires a controlling terminal. Unix-only; ConPTY has no POSIX
+    /// session/foreground-group semantics.
+    /// </summary>
+    /// <summary>
+    /// The kernel-level controlling-terminal check, with no external dependencies: a
+    /// process that has a ctty can open /dev/tty; without one the open fails with
+    /// ENXIO. This is the hard Unix guarantee that every launch shape must satisfy —
+    /// <see cref="Child_IsSessionLeaderWithControllingTerminal"/> adds the
+    /// tcgetpgrp precision where python3 is available.
+    /// </summary>
+#if !WINDOWS
+    [Fact]
+    public void Shell_ChildOpensDevTty()
+    {
+        // The fixture bash IS the child under test: it is a session leader whose
+        // stdio is the pty slave, so opening /dev/tty must succeed.
+        DisableEcho();
+        bash.Input.WriteLine("if : </dev/tty 2>/dev/null; then echo CTTY_OK; else echo CTTY_MISSING; fi; echo __DEVTTY_DONE__");
+
+        var output = TestBash.ReadUntil(bash.Output, "__DEVTTY_DONE__", Timeout);
+
+        Assert.Contains("CTTY_OK", output);
+        Assert.DoesNotContain("CTTY_MISSING", output);
+    }
+
+    [Fact]
+    public void Child_IsSessionLeaderWithControllingTerminal()
+    {
+        var (file, args) = TryPythonProbe();
+        if (file is null)
+            return; // python3 unavailable on this host; CI installs it (see ci.yml)
+
+        using var p = PtyProcess.Start(file, args);
+        var output = TestBash.ReadUntil(p.Output, "__CTTY_DONE__", Timeout);
+
+        // "isatty=True sid=<n> pid=<n> pgrp=<n> tcgetpgrp=<n>"
+        Assert.Contains("isatty=True", output);
+        Assert.Matches(@"sid=(\d+)\s+pid=\1", output);          // session leader
+        Assert.Matches(@"pgrp=(\d+)\s+tcgetpgrp=\1", output);   // foreground on the ctty
+    }
+
+    /// <summary>
+    /// End-to-end confirmation from the shell's perspective: tty(1) resolves fd 0 to a
+    /// terminal device path ("not a tty" otherwise). The deep controlling-terminal
+    /// semantics (isatty + tcgetpgrp) are asserted by Child_IsSessionLeaderWithControllingTerminal;
+    /// this only checks that an interactive shell is wired to a real terminal device.
+    /// </summary>
+    [Fact]
+    public void Shell_SeesItsControllingTerminal()
+    {
+        DisableEcho();
+        bash.Input.WriteLine($"tty; echo {Done}");
+        var output = TestBash.ReadUntil(bash.Output, Done, Timeout);
+
+        Assert.Matches(@"(/dev/ttys\d+|/dev/pts/\d+)", output);
+    }
+
+    private static (string? File, string[] Args) TryPythonProbe()
+    {
+        // Probe for python3 without letting a missing interpreter fail the whole suite:
+        // the library must work on hosts without python3, but the ctty assertion needs it.
+        try
+        {
+            using var probe = PtyProcess.Start("python3", ["--version"]);
+            if (!probe.WaitForExit(TimeSpan.FromSeconds(5)))
+            {
+                probe.Kill();
+                probe.WaitForExit(TimeSpan.FromSeconds(5));
+                return (null, []);
+            }
+            return ("python3",
+            [
+                "-c",
+                "import os; print(f'isatty={os.isatty(0)} sid={os.getsid(0)} pid={os.getpid()} pgrp={os.getpgrp()} tcgetpgrp={os.tcgetpgrp(0)}'); print('__CTTY_DONE__')",
+            ]);
+        }
+        catch (FileNotFoundException)
+        {
+            return (null, []);
+        }
+    }
+#endif
+
     // --- window size -------------------------------------------------------
 
 #if !WINDOWS

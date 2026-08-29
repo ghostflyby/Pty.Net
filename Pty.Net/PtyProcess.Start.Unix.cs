@@ -56,14 +56,13 @@ public sealed partial class PtyProcess
         var slavePath = ResolveSlavePath(masterFd);
         var slavePathPtr = Marshal.StringToHGlobalAnsi(slavePath);
 
-        // Open the slave here and keep it open across the fork. On macOS it is the
-        // dup2 source for the child's posix_spawn file actions, so it must NOT carry
-        // O_CLOEXEC: with CLOEXEC_DEFAULT the kernel can drop it before the file
-        // actions run (observed EBADF). CLOEXEC_DEFAULT still removes it from the
-        // spawned image, and the parent closes its copy after the exec result. On
-        // Linux the child re-opens the slave itself after setsid; this fd only keeps
-        // the tty side initialized so the winsize set below survives. O_NOCTTY: the
-        // parent must never acquire the terminal.
+        // Open the slave here and keep it open across the fork: the master only
+        // accepts TIOCSWINSZ once the slave side has been opened, and closing the last
+        // slave fd resets the tty on macOS, losing the size. The child's stdio is
+        // wired by an addopen spawn file action (below), so this fd is never used by
+        // the child — CLOEXEC_DEFAULT removes it from the spawned image, and the
+        // parent closes its copy after the exec result arrives. O_NOCTTY: the parent
+        // must never acquire the terminal.
 #if OSX
         var slaveFd = NativeMethods.open(slavePath, NativeMethods.ORdwr | NativeMethods.ONoctty);
 #elif LINUX
@@ -141,43 +140,31 @@ public sealed partial class PtyProcess
         }
 
         var spawned = false;
-        // macOS: the child's posix_spawn(SETEXEC) call consumes these parent-built
-        // spawn attribute / file-actions buffers, so they live across the fork and are
-        // destroyed in the finally below. Linux does its setup in the child directly.
-        var fileActions = IntPtr.Zero;
+        // macOS: the child's posix_spawn(SETEXEC) call consumes this parent-built spawn
+        // attribute buffer, so it lives across the fork and is destroyed in the finally
+        // below. No file actions are used: the fork child wires its own stdio (see
+        // ChildMain), so file_actions is passed as NULL. Linux does its setup in the
+        // child directly and execve()s without posix_spawn.
         var spawnAttr = IntPtr.Zero;
         try
         {
 #if OSX
-            // Build the spawn description once, in the parent: the pty slave dup2'd onto
-            // stdio, an optional working directory, and the attribute set that makes the
-            // child's posix_spawn call
-            //   * SETEXEC — replace the calling (forked) process instead of spawning,
-            //   * SETSID — create the session + controlling terminal kernel-side, the
-            //     shape that does not hit the userspace-setsid exit block on macOS,
-            //   * CLOEXEC_DEFAULT — every inherited fd above stdio closes automatically.
-            fileActions = Marshal.AllocHGlobal(NativeMethods.PosixSpawnFileActionsSize);
+            // POSIX_SPAWN_SETEXEC makes posix_spawn replace the *calling* (forked)
+            // process instead of spawning a grandchild — the fork child stays the
+            // direct child of this process, so the reaper's waitpid keeps ownership.
+            // The ctty itself is NOT acquired here: the child does setsid() + open the
+            // slave (no O_NOCTTY) before the spawn call (see ChildMain) — the classic
+            // login idiom. No SETSID flag (the child is already a session leader by
+            // then) and no CLOEXEC_DEFAULT (the child wired stdio itself; the fd sweep
+            // is done manually in the child).
             spawnAttr = Marshal.AllocHGlobal(NativeMethods.PosixSpawnAttrSize);
-            if (NativeMethods.posix_spawn_file_actions_init(fileActions) != 0 ||
-                NativeMethods.posix_spawnattr_init(spawnAttr) != 0)
+            if (NativeMethods.posix_spawnattr_init(spawnAttr) != 0)
             {
-                throw new IOException($"posix_spawn init failed: errno={Marshal.GetLastPInvokeError()}");
-            }
-
-            foreach (var target in new[] { 0, 1, 2 })
-            {
-                if (NativeMethods.posix_spawn_file_actions_adddup2(fileActions, slaveFd, target) != 0)
-                    throw new IOException($"posix_spawn adddup2({target}) failed: errno={Marshal.GetLastPInvokeError()}");
-            }
-            if (workingDirectory is not null &&
-                NativeMethods.posix_spawn_file_actions_addchdir_np(fileActions, workingDirectory) != 0)
-            {
-                throw new IOException($"posix_spawn addchdir failed: errno={Marshal.GetLastPInvokeError()}");
+                throw new IOException($"posix_spawnattr_init failed: errno={Marshal.GetLastPInvokeError()}");
             }
             var flagsRc = NativeMethods.posix_spawnattr_setflags(
                 spawnAttr,
                 NativeMethods.PosixSpawnFlags.Setexec |
-                NativeMethods.PosixSpawnFlags.Setsid |
                 NativeMethods.PosixSpawnFlags.CloexecDefault);
             if (flagsRc != 0)
                 throw new IOException($"posix_spawnattr_setflags failed: errno={flagsRc}");
@@ -228,7 +215,6 @@ public sealed partial class PtyProcess
                                     (IntPtr)envpP,
                                     workingDirectoryPath,
                                     slavePathPtr,
-                                    fileActions,
                                     spawnAttr,
                                     errPipe[1],
                                     ChildApi);
@@ -278,11 +264,6 @@ public sealed partial class PtyProcess
         finally
         {
 #if OSX
-            if (fileActions != IntPtr.Zero)
-            {
-                NativeMethods.posix_spawn_file_actions_destroy(fileActions);
-                Marshal.FreeHGlobal(fileActions);
-            }
             if (spawnAttr != IntPtr.Zero)
             {
                 NativeMethods.posix_spawnattr_destroy(spawnAttr);
@@ -340,9 +321,16 @@ public sealed partial class PtyProcess
             Write = (delegate* unmanaged[Cdecl]<int, IntPtr, nuint, nint>)NativeLibrary.GetExport(process, "write"),
             Exit = (delegate* unmanaged[Cdecl]<int, int>)NativeLibrary.GetExport(process, "_exit"),
 #if OSX
-            // The kernel-side spawn machinery does the whole setup (see ChildMain);
-            // only posix_spawn, the failure write and _exit run in the forked child.
             PosixSpawn = (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, IntPtr, IntPtr, IntPtr, int>)NativeLibrary.GetExport(process, "posix_spawn"),
+            FileActionsInit = (delegate* unmanaged[Cdecl]<IntPtr, int>)NativeLibrary.GetExport(process, "posix_spawn_file_actions_init"),
+            FileActionsAddDup2 = (delegate* unmanaged[Cdecl]<IntPtr, int, int, int>)NativeLibrary.GetExport(process, "posix_spawn_file_actions_adddup2"),
+            Dup2 = (delegate* unmanaged[Cdecl]<int, int, int>)NativeLibrary.GetExport(process, "dup2"),
+            Setsid = (delegate* unmanaged[Cdecl]<int>)NativeLibrary.GetExport(process, "setsid"),
+            Open = (delegate* unmanaged[Cdecl]<IntPtr, int, int>)NativeLibrary.GetExport(process, "open"),
+            Chdir = (delegate* unmanaged[Cdecl]<IntPtr, int>)NativeLibrary.GetExport(process, "chdir"),
+            Signal = (delegate* unmanaged[Cdecl]<int, IntPtr, IntPtr>)NativeLibrary.GetExport(process, "signal"),
+            Error = (delegate* unmanaged[Cdecl]<int*>)NativeLibrary.GetExport(process, "__error"),
+            Close = (delegate* unmanaged[Cdecl]<int, int>)NativeLibrary.GetExport(process, "close"),
 #elif LINUX
             Dup2 = (delegate* unmanaged[Cdecl]<int, int, int>)NativeLibrary.GetExport(process, "dup2"),
             Setsid = (delegate* unmanaged[Cdecl]<int>)NativeLibrary.GetExport(process, "setsid"),
@@ -374,29 +362,32 @@ public sealed partial class PtyProcess
     /// </summary>
     private static unsafe void WarmUpChildSignatures(IntPtr process, ChildNativeApi api)
     {
-#if OSX
-        // posix_spawn validates its arguments before doing anything: all-null inputs
-        // return EINVAL without touching processes. The SETEXEC attribute is not needed
-        // for the warm-up — only the call signature (VASigCookie) must be compiled.
-        // _exit itself must never be warmed by calling it; close(int)->int shares its
-        // signature (Exit is declared int-returning, which is ABI-invisible for a
-        // call that never returns).
-        _ = api.PosixSpawn(IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
-        _ = api.Write(-1, IntPtr.Zero, 0);
-        var close = (delegate* unmanaged[Cdecl]<int, int>)NativeLibrary.GetExport(process, "close");
-        _ = close(-1);
-#elif LINUX
         var getpid = (delegate* unmanaged[Cdecl]<int>)NativeLibrary.GetExport(process, "getpid");
 
         _ = api.Dup2(-1, -1);
         _ = getpid(); // shares Setsid's int(void) signature
         _ = api.Open((IntPtr)1, 0);
         _ = api.Chdir(IntPtr.Zero);
-        _ = api.Execve(IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
         _ = api.Write(-1, IntPtr.Zero, 0);
-        _ = api.Close(-1);
         _ = api.Error();
         _ = api.Signal(23 /* SIGURG, default action: ignore */, IntPtr.Zero);
+#if OSX
+        // posix_spawn validates its arguments before doing anything: all-null inputs
+        // return EINVAL without touching processes. The SETEXEC attribute is not needed
+        // for the warm-up — only the call signature (VASigCookie) must be compiled.
+        // The file-actions object is a stack buffer; adddup2 with an invalid fd fails
+        // registration harmlessly. _exit itself must never be warmed by calling it;
+        // close(int)->int shares its signature (Exit is declared int-returning, which
+        // is ABI-invisible for a call that never returns).
+        _ = api.PosixSpawn(IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+        var fileActions = stackalloc byte[NativeMethods.PosixSpawnFileActionsSize];
+        _ = api.FileActionsInit((IntPtr)fileActions);
+        _ = api.FileActionsAddDup2((IntPtr)fileActions, -1, -1);
+        var close = (delegate* unmanaged[Cdecl]<int, int>)NativeLibrary.GetExport(process, "close");
+        _ = close(-1);
+#elif LINUX
+        _ = api.Execve(IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+        _ = api.Close(-1);
         _ = api.Syscall(-1, 0, 0, IntPtr.Zero);
 #endif
     }
@@ -407,8 +398,19 @@ public sealed partial class PtyProcess
         internal delegate* unmanaged[Cdecl]<int, IntPtr, nuint, nint> Write;
         internal delegate* unmanaged[Cdecl]<int, int> Exit;
         // posix_spawn(pid*, path, file_actions, attr, argv, envp) — with the SETEXEC
-        // attr flag this replaces the calling (forked) process in place.
+        // attr flag this replaces the calling (forked) process in place; with
+        // CLOEXEC_DEFAULT the kernel closes every fd the file actions did not create.
         internal delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, IntPtr, IntPtr, IntPtr, int> PosixSpawn;
+        internal delegate* unmanaged[Cdecl]<IntPtr, int> FileActionsInit;
+        internal delegate* unmanaged[Cdecl]<IntPtr, int, int, int> FileActionsAddDup2;
+        internal delegate* unmanaged[Cdecl]<int, int, int> Dup2;
+        internal delegate* unmanaged[Cdecl]<int> Setsid;
+        internal delegate* unmanaged[Cdecl]<IntPtr, int, int> Open;
+        internal delegate* unmanaged[Cdecl]<IntPtr, int> Chdir;
+        internal delegate* unmanaged[Cdecl]<int, IntPtr, IntPtr> Signal;
+        internal delegate* unmanaged[Cdecl]<int*> Error;
+        // The macOS fd sweep is always the manual loop (no close_range on Darwin).
+        internal delegate* unmanaged[Cdecl]<int, int> Close;
     }
 #elif LINUX
     private unsafe struct ChildNativeApi
@@ -432,7 +434,7 @@ public sealed partial class PtyProcess
 
     private unsafe delegate void ChildMainDelegate(
         IntPtr path, IntPtr argv, IntPtr envp, IntPtr workingDirectory,
-        IntPtr ptySlavePath, IntPtr fileActions, IntPtr spawnAttr, int errWrite, ChildNativeApi api);
+        IntPtr ptySlavePath, IntPtr spawnAttr, int errWrite, ChildNativeApi api);
 
     private unsafe delegate void ReportChildErrorDelegate(ChildNativeApi api, int errWrite, int errno);
 
@@ -443,85 +445,124 @@ public sealed partial class PtyProcess
     /// calli stubs were warmed up in the parent before the fork: a lazily-generated
     /// stub would JIT inside the forked child under the inherited CoreCLR code-heap
     /// lock and hang the spawn.
-    /// <para>macOS: a single posix_spawn call with the Apple SETEXEC attribute —
-    /// the kernel-side spawn machinery applies the parent-built file actions (pty
-    /// slave onto 0/1/2, optional chdir), creates the session and controlling terminal
-    /// (SETSID — the shape that does not hit the userspace-setsid exit block), closes
-    /// every other inherited fd (CLOEXEC_DEFAULT) and replaces this image, all in
-    /// place. On failure it returns the errno, which goes to the parent's pipe.</para>
-    /// <para>Linux: glibc/musl have no SETEXEC/CLOEXEC_DEFAULT, so the libc-only setup
-    /// is done directly: setsid(), then open the pty slave (no O_NOCTTY) so the session
-    /// leader acquires it as the controlling terminal, dup2 it onto 0/1/2, reset the
-    /// inherited SIG_IGN dispositions (exec only resets *caught* signals — the same
-    /// gap main's POSIX_SPAWN_SETSIGDEF covered), a close sweep over the inherited fds
-    /// above stdio (close_range(2) when available), chdir when requested, execve.
-    /// On failure writes errno to the pipe and _exit(127).</para>
+    /// <para>Both platforms, the same libc-only sequence: setsid(), then open the pty
+    /// slave (no O_NOCTTY) so the session leader acquires it as the controlling
+    /// terminal (a dup2 of a parent-opened fd never does — the python ctty probe
+    /// caught exactly that), dup2 it onto 0/1/2, reset the inherited SIG_IGN
+    /// dispositions (exec only resets *caught* signals — the same gap main's
+    /// POSIX_SPAWN_SETSIGDEF covered), close the inherited fds above stdio, chdir when
+    /// requested, exec.</para>
+    /// <para>macOS: the exec is posix_spawn with Apple's SETEXEC attribute plus
+    /// CLOEXEC_DEFAULT — the child builds its own file actions (adddup2 of the ctty fd
+    /// onto 0/1/2, on a stack buffer) because under CLOEXEC_DEFAULT only
+    /// file-action-created fds survive, and the parent cannot know the fd number the
+    /// child's open returned. The kernel closes every other fd; the
+    /// controlling-terminal link lives in the session and survives the exec. On
+    /// failure posix_spawn returns the errno, which goes to the parent's pipe.</para>
+    /// <para>Linux: glibc/musl have no SETEXEC/CLOEXEC_DEFAULT — the exec is execve and
+    /// the sweep is close_range(2) (kernel 5.9+) with a bounded loop fallback. On any
+    /// failure writes errno to the pipe and _exit(127).</para>
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static unsafe void ChildMain(
         IntPtr path, IntPtr argv, IntPtr envp, IntPtr workingDirectory,
-        IntPtr ptySlavePath, IntPtr fileActions, IntPtr spawnAttr, int errWrite, ChildNativeApi api)
+        IntPtr ptySlavePath, IntPtr spawnAttr, int errWrite, ChildNativeApi api)
     {
-#if OSX
-        int spawnedPid = 0;
-        var rc = api.PosixSpawn(
-            (IntPtr)(&spawnedPid), path, fileActions, spawnAttr, argv, envp);
-        // SETEXEC success never returns here; a failure returns the errno.
-        ReportChildError(api, errWrite, rc);
-        api.Exit(127);
-#elif LINUX
         if (api.Setsid() < 0)
         {
             ReportChildError(api, errWrite, *api.Error());
             api.Exit(127);
         }
 
-        var cttyFd = api.Open(ptySlavePath, NativeMethods.ORdwr | NativeMethods.OCloexec);
-        if (cttyFd < 0)
-        {
-            ReportChildError(api, errWrite, *api.Error());
-            api.Exit(127);
-        }
-
-        if (api.Dup2(cttyFd, 0) != 0 ||
-            api.Dup2(cttyFd, 1) != 1 ||
-            api.Dup2(cttyFd, 2) != 2)
-        {
-            ReportChildError(api, errWrite, *api.Error());
-            api.Exit(127);
-        }
-
         // Reset the dispositions exec(2) preserves: caught signals are already reset
-        // to SIG_DFL by exec, but SIG_IGN survives (glibc/musl spawn lacks macOS's
-        // automatic reset, and .NET ignores SIGPIPE) — the gap main's
-        // POSIX_SPAWN_SETSIGDEF covered for the pre-fork implementation.
+        // to SIG_DFL by exec, but SIG_IGN survives (.NET ignores SIGPIPE) — the same
+        // gap main's POSIX_SPAWN_SETSIGDEF covered for the pre-fork implementation.
         api.Signal((int)NativeMethods.Signals.Hup, IntPtr.Zero);
         api.Signal((int)NativeMethods.Signals.Int, IntPtr.Zero);
         api.Signal((int)NativeMethods.Signals.Quit, IntPtr.Zero);
         api.Signal((int)NativeMethods.Signals.Pipe, IntPtr.Zero);
         api.Signal((int)NativeMethods.Signals.Term, IntPtr.Zero);
 
-        // Close every inherited fd above stdio except the error pipe: the fork child
-        // inherits the parent's whole fd table, and non-CLOEXEC fds (sockets from
-        // native libraries, the reaper's kqueue) would leak into the exec'd program —
-        // the same hole POSIX_SPAWN_CLOEXEC_DEFAULT closes on macOS. Prefer
-        // close_range(2) (syscall 436, kernel 5.9+) — one syscall instead of a loop
-        // bounded by FdIsolationCap, so fds above the cap are closed too; errWrite
-        // must survive (it carries the exec-failure errno), so it is excluded by
-        // splitting the range. Any failure (ENOSYS on old kernels, EINVAL) falls back
-        // to the bounded loop, which harmlessly re-closes already-closed fds.
-        var swept = true;
+        // Close every inherited fd above stdio except the error pipe (it carries the
+        // exec-failure errno). Linux-only: on macOS CLOEXEC_DEFAULT does this
+        // kernel-side at exec (the whole reason posix_spawn is used there). The sweep
+        // runs BEFORE the ctty open below, so no exclusion for it is needed.
+#if LINUX
+        // Prefer close_range(2) (syscall 436, kernel 5.9+) — one syscall instead of a
+        // loop bounded by FdIsolationCap, so fds above the cap are closed too. Any
+        // failure (ENOSYS on old kernels, EINVAL) falls back to the bounded loop,
+        // which harmlessly re-closes already-closed fds.
+        var sweepManually = true;
         if (errWrite > 3)
-            swept = api.Syscall(NativeMethods.CloseRangeSyscallNumber, 3, (uint)(errWrite - 1), IntPtr.Zero) == 0;
-        if (swept && errWrite < int.MaxValue - 1)
-            swept = api.Syscall(NativeMethods.CloseRangeSyscallNumber, (uint)Math.Max(errWrite + 1, 3), uint.MaxValue, IntPtr.Zero) == 0;
-        if (!swept)
+            sweepManually = api.Syscall(NativeMethods.CloseRangeSyscallNumber, 3, (uint)(errWrite - 1), IntPtr.Zero) != 0;
+        if (!sweepManually && errWrite < int.MaxValue - 1)
+            sweepManually = api.Syscall(NativeMethods.CloseRangeSyscallNumber, (uint)Math.Max(errWrite + 1, 3), uint.MaxValue, IntPtr.Zero) != 0;
+        if (sweepManually)
         {
             for (var fd = 3; fd < NativeMethods.FdIsolationCap; fd++)
             {
                 if (fd != errWrite)
                     _ = api.Close(fd);
             }
+        }
+#endif
+
+        // Session leader opens the pty slave without O_NOCTTY — that is what assigns
+        // the tty as the session's controlling terminal (a dup2 of a parent-opened fd
+        // never does; the python ctty probe caught exactly that).
+        var cttyFd = api.Open(ptySlavePath, NativeMethods.ORdwr
+#if LINUX
+            | NativeMethods.OCloexec
+#endif
+        );
+        if (cttyFd < 0)
+        {
+            ReportChildError(api, errWrite, *api.Error());
+            api.Exit(127);
+        }
+
+#if OSX
+        // stdio: under CLOEXEC_DEFAULT only file-action-created fds survive the spawn,
+        // so the manually-opened ctty fd is dup2'd onto 0/1/2 by file actions — built
+        // here, on the stack, because the parent cannot know the fd number the open
+        // above returned. The kernel then closes every other fd (the ctty fd itself
+        // included); the controlling-terminal link lives in the session and survives
+        // the exec.
+        var fileActions = stackalloc byte[NativeMethods.PosixSpawnFileActionsSize];
+        if (api.FileActionsInit((IntPtr)fileActions) != 0)
+        {
+            ReportChildError(api, errWrite, *api.Error());
+            api.Exit(127);
+        }
+        if (api.FileActionsAddDup2((IntPtr)fileActions, cttyFd, 0) != 0 ||
+            api.FileActionsAddDup2((IntPtr)fileActions, cttyFd, 1) != 0 ||
+            api.FileActionsAddDup2((IntPtr)fileActions, cttyFd, 2) != 0)
+        {
+            ReportChildError(api, errWrite, *api.Error());
+            api.Exit(127);
+        }
+
+        if (workingDirectory != IntPtr.Zero && api.Chdir(workingDirectory) != 0)
+        {
+            ReportChildError(api, errWrite, *api.Error());
+            api.Exit(127);
+        }
+
+        // SETEXEC: exec this fork child in place (a grandchild would break the
+        // reaper's waitpid ownership). Success never returns here; a failure returns
+        // the errno (nothing was exec'd).
+        int spawnedPid = 0;
+        var rc = api.PosixSpawn(
+            (IntPtr)(&spawnedPid), path, (IntPtr)fileActions, spawnAttr, argv, envp);
+        ReportChildError(api, errWrite, rc);
+        api.Exit(127);
+#elif LINUX
+        if (api.Dup2(cttyFd, 0) != 0 ||
+            api.Dup2(cttyFd, 1) != 1 ||
+            api.Dup2(cttyFd, 2) != 2)
+        {
+            ReportChildError(api, errWrite, *api.Error());
+            api.Exit(127);
         }
 
         if (workingDirectory != IntPtr.Zero && api.Chdir(workingDirectory) != 0)

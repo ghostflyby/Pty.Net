@@ -13,8 +13,16 @@ namespace Ghostflyby.Pty;
 /// ports by changing only the factory call. Features that do not map to a pty launch
 /// (<c>RedirectStandardOutput</c>, <c>UseShellExecute</c>, …) are deliberately absent.
 /// </para>
+/// <para>
+/// Value semantics: <c>==</c>/<c>!=</c>, <see cref="Equals(PtyStartInfo?)"/> and
+/// <see cref="GetHashCode"/> compare by content — the collection properties
+/// (<see cref="Arguments"/>, <see cref="Environment"/>) entry-by-entry, not by
+/// reference. Properties are typed as read-only interfaces so a builder can hand over
+/// any collection implementation. This is a plain configuration object, not an
+/// immutable value: mutate the properties freely while building a launch.
+/// </para>
 /// </summary>
-public sealed record PtyStartInfo
+public sealed class PtyStartInfo : IEquatable<PtyStartInfo>
 {
     /// <summary>The executable to run, e.g. <c>/bin/bash</c> or <c>cmd.exe</c>.</summary>
     public required string FileName { get; init; }
@@ -47,8 +55,8 @@ public sealed record PtyStartInfo
     /// Environment variables for the child. Entries here override the inherited parent
     /// environment at launch; a null value removes the inherited variable. Defaults to
     /// empty, so the child inherits the parent's environment unchanged unless overridden.
-    /// Read-only to keep the record's value semantics: to add a variable, assign a new
-    /// dictionary, e.g. <c>with { Environment = ImmutableDictionary.Create&lt;string, string?&gt;().Add("K", "v") }</c>.
+    /// Read-only to keep launches reproducible: to add a variable, assign a new
+    /// dictionary, e.g. <c>info.Environment = ImmutableDictionary.Create&lt;string, string?&gt;().Add("K", "v")</c>.
     /// </summary>
     public IReadOnlyDictionary<string, string?> Environment { get; init; } = ImmutableDictionary<string, string?>.Empty;
 
@@ -77,7 +85,9 @@ public sealed record PtyStartInfo
 
     /// <summary>
     /// Creates a launch description from <paramref name="psi"/>.
-    /// <para>Copies the file name, arguments, working directory, environment and stream encodings.</para>
+    /// <para>Copies the file name, arguments, working directory, environment and stream encodings.
+    /// An empty <c>psi.WorkingDirectory</c> (ProcessStartInfo's default) is normalized to the
+    /// current directory, because an empty path is not a launchable directory.</para>
     /// </summary>
     /// <param name="psi">The <see cref="ProcessStartInfo"/> to copy.</param>
     /// <exception cref="ArgumentNullException"><paramref name="psi"/> is null.</exception>
@@ -86,7 +96,9 @@ public sealed record PtyStartInfo
     {
         ArgumentNullException.ThrowIfNull(psi);
         FileName = psi.FileName;
-        WorkingDirectory = psi.WorkingDirectory;
+        WorkingDirectory = psi.WorkingDirectory is { Length: > 0 }
+            ? psi.WorkingDirectory
+            : System.Environment.CurrentDirectory;
         if (psi.StandardInputEncoding is { } inputEncoding)
             InputEncoding = inputEncoding;
         if (psi.StandardOutputEncoding is { } outputEncoding)
@@ -104,7 +116,9 @@ public sealed record PtyStartInfo
     /// <summary>
     /// Splits a command line the way a shell splits words: whitespace separates, and
     /// single or double quotes group characters (including whitespace) into one word.
-    /// No escape sequences or expansion — just the quoting that launch configs use.
+    /// A quoted word that ends up empty is preserved as an empty argument
+    /// (<c>prog ""</c> passes one empty argument). No escape sequences or expansion —
+    /// just the quoting that launch configs use.
     /// </summary>
     private static string[] ParseArguments(string arguments)
     {
@@ -114,6 +128,7 @@ public sealed record PtyStartInfo
         var result = new List<string>();
         var current = new StringBuilder();
         var quote = '\0';
+        var hasWord = false;
 
         foreach (var c in arguments)
         {
@@ -129,23 +144,107 @@ public sealed record PtyStartInfo
                 {
                     case '\'' or '"':
                         quote = c;
+                        hasWord = true; // the word exists even if the quotes close empty
                         break;
                     case ' ' or '\t' or '\n' or '\r':
-                        if (current.Length > 0)
+                        if (hasWord)
                         {
                             result.Add(current.ToString());
                             current.Clear();
+                            hasWord = false;
                         }
 
                         break;
                     default:
                         current.Append(c);
+                        hasWord = true;
                         break;
                 }
         }
 
-        if (current.Length > 0)
+        if (hasWord)
             result.Add(current.ToString());
         return [.. result];
+    }
+
+    // --- content-based value equality ---------------------------------------
+    // A record's synthesized equality compares properties by reference, which is
+    // useless for the IReadOnlyList/IReadOnlyDictionary properties above. These
+    // overrides compare by content instead: collections entry-by-entry (Arguments in
+    // order; Environment as a set of ordinal key/value pairs), encodings by code page,
+    // the rest by value.
+
+    /// <inheritdoc />
+    public bool Equals(PtyStartInfo? other)
+    {
+        if (other is null)
+            return false;
+        if (ReferenceEquals(this, other))
+            return true;
+
+        return string.Equals(FileName, other.FileName, StringComparison.Ordinal)
+            && InheritParentEnvironment == other.InheritParentEnvironment
+            && Column == other.Column
+            && Row == other.Row
+            && InputEncoding.CodePage == other.InputEncoding.CodePage
+            && OutputEncoding.CodePage == other.OutputEncoding.CodePage
+            && string.Equals(WorkingDirectory, other.WorkingDirectory, StringComparison.Ordinal)
+            && Arguments.SequenceEqual(other.Arguments, StringComparer.Ordinal)
+            && EnvironmentContentsEqual(Environment, other.Environment);
+    }
+
+    /// <inheritdoc />
+    public override bool Equals(object? obj) => Equals(obj as PtyStartInfo);
+
+    /// <inheritdoc />
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(FileName, StringComparer.Ordinal);
+        hash.Add(InheritParentEnvironment);
+        hash.Add(Column);
+        hash.Add(Row);
+        hash.Add(InputEncoding.CodePage);
+        hash.Add(OutputEncoding.CodePage);
+        hash.Add(WorkingDirectory, StringComparer.Ordinal);
+        foreach (var argument in Arguments)
+            hash.Add(argument, StringComparer.Ordinal);
+        // Order-insensitive: the dictionary is a set of overrides, not a sequence.
+        var environmentHash = 0;
+        foreach (var (key, value) in Environment)
+            environmentHash = unchecked(environmentHash
+                + (StringComparer.Ordinal.GetHashCode(key) * 397) ^ (value?.GetHashCode() ?? 0));
+        hash.Add(environmentHash);
+        return hash.ToHashCode();
+    }
+
+    /// <inheritdoc />
+    public override string ToString()
+    {
+        return $"PtyStartInfo {{ FileName = {FileName}, Arguments = [{string.Join(", ", Arguments)}], Column = {Column}, Row = {Row} }}";
+    }
+
+    /// <summary>Content-based value equality (collections entry-by-entry; see the type documentation).</summary>
+    public static bool operator ==(PtyStartInfo? left, PtyStartInfo? right) =>
+        left is null ? right is null : left.Equals(right);
+
+    /// <summary>Content-based value inequality (collections entry-by-entry; see the type documentation).</summary>
+    public static bool operator !=(PtyStartInfo? left, PtyStartInfo? right) =>
+        !(left == right);
+
+    private static bool EnvironmentContentsEqual(
+        IReadOnlyDictionary<string, string?> left, IReadOnlyDictionary<string, string?> right)
+    {
+        if (left.Count != right.Count)
+            return false;
+        foreach (var (key, value) in left)
+        {
+            if (!right.TryGetValue(key, out var otherValue))
+                return false;
+            if (!string.Equals(value, otherValue, StringComparison.Ordinal))
+                return false;
+        }
+
+        return true;
     }
 }

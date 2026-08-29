@@ -33,7 +33,8 @@ using var bash = PtyProcess.Start("bash", ["--noprofile", "--norc", "-i"]);
 
 // Write a command and read until a marker proves the output landed.
 bash.Input.WriteLine("echo hello-from-pty; echo __DONE__");
-var output = ReadUntil(bash.Output, "__DONE__");   // contains "hello-from-pty"
+var output = ReadUntil(bash.Output, "__DONE__", TimeSpan.FromSeconds(10));
+                                                   // contains "hello-from-pty"
 ```
 
 `ReadUntil` is a small helper — the pty emits a prompt and terminal control

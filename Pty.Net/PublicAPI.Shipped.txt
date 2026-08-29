@@ -50,7 +50,6 @@ Ghostflyby.Pty.PtyProcess.WaitForExit() -> void
 Ghostflyby.Pty.PtyStartInfo.InheritParentEnvironment.get -> bool
 Ghostflyby.Pty.PtyProcess.WaitForExit(System.TimeSpan timeout) -> bool
 Ghostflyby.Pty.PtyStartInfo
-Ghostflyby.Pty.PtyStartInfo.<Clone>$() -> Ghostflyby.Pty.PtyStartInfo!
 Ghostflyby.Pty.PtyStartInfo.Arguments.get -> System.Collections.Generic.IReadOnlyList<string!>!
 Ghostflyby.Pty.PtyStartInfo.Arguments.init -> void
 Ghostflyby.Pty.PtyStartInfo.Environment.get -> System.Collections.Generic.IReadOnlyDictionary<string!, string?>!
