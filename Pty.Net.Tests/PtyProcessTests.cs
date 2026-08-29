@@ -130,6 +130,71 @@ public class PtyProcessTests : IDisposable
         Assert.Contains("sleep 0.5", jobs);
     }
 
+    /// <summary>
+    /// The child must be a session leader with the pty as its controlling terminal: that
+    /// is what makes stdin a real terminal (isatty), and what makes the foreground process
+    /// group equal to the shell's own group (tcgetpgrp). Inheriting a parent-opened fd
+    /// never acquires a controlling terminal. Unix-only; ConPTY has no POSIX
+    /// session/foreground-group semantics.
+    /// </summary>
+#if !WINDOWS
+    [Fact]
+    public void Child_IsSessionLeaderWithControllingTerminal()
+    {
+        var (file, args) = TryPythonProbe();
+        if (file is null)
+            return; // python3 unavailable on this host; CI installs it (see ci.yml)
+
+        using var p = PtyProcess.Start(file, args);
+        var output = TestBash.ReadUntil(p.Output, "__CTTY_DONE__", Timeout);
+
+        // "isatty=True pgrp=<n> tcgetpgrp=<n>"
+        Assert.Contains("isatty=True", output);
+        Assert.Matches(@"pgrp=(\d+)\s+tcgetpgrp=\1", output);
+    }
+
+    /// <summary>
+    /// End-to-end confirmation from the shell's perspective: tty(1) resolves fd 0 to a
+    /// terminal device path ("not a tty" otherwise). The deep controlling-terminal
+    /// semantics (isatty + tcgetpgrp) are asserted by Child_IsSessionLeaderWithControllingTerminal;
+    /// this only checks that an interactive shell is wired to a real terminal device.
+    /// </summary>
+    [Fact]
+    public void Shell_SeesItsControllingTerminal()
+    {
+        DisableEcho();
+        bash.Input.WriteLine($"tty; echo {Done}");
+        var output = TestBash.ReadUntil(bash.Output, Done, Timeout);
+
+        Assert.Matches(@"(/dev/ttys\d+|/dev/pts/\d+)", output);
+    }
+
+    private static (string? File, string[] Args) TryPythonProbe()
+    {
+        // Probe for python3 without letting a missing interpreter fail the whole suite:
+        // the library must work on hosts without python3, but the ctty assertion needs it.
+        try
+        {
+            using var probe = PtyProcess.Start("python3", ["--version"]);
+            if (!probe.WaitForExit(TimeSpan.FromSeconds(5)))
+            {
+                probe.Kill();
+                probe.WaitForExit(TimeSpan.FromSeconds(5));
+                return (null, []);
+            }
+            return ("python3",
+            [
+                "-c",
+                "import os; print(f'isatty={os.isatty(0)} pgrp={os.getpgrp()} tcgetpgrp={os.tcgetpgrp(0)}'); print('__CTTY_DONE__')",
+            ]);
+        }
+        catch (FileNotFoundException)
+        {
+            return (null, []);
+        }
+    }
+#endif
+
     // --- window size -------------------------------------------------------
 
 #if !WINDOWS
