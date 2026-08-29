@@ -61,6 +61,13 @@ internal static partial class PtyReaper
 
         private readonly Lock sync = new();
         private readonly Dictionary<int, PtyProcess> byPid = [];
+        // macOS-only: pids seen stuck mid-exit (tty teardown wait) -> first-seen tick.
+        // After StuckExitGraceMs the reaper closes the pty master to end the wait.
+        private readonly Dictionary<int, long> stuckExiting = [];
+        // Grace window before the reaper closes the master on a stuck mid-exit: long
+        // enough that a reader polling the output at a human cadence keeps draining,
+        // short enough that "wait for Exited without reading" stays responsive.
+        private const int StuckExitGraceMs = 2000;
         // Processes whose Watch arrived and are not yet registered. Drained every loop
         // iteration; a registration failure moves the process to retryWatch.
         private readonly Queue<PtyProcess> pendingWatch = [];
@@ -139,6 +146,7 @@ internal static partial class PtyReaper
 
         public void WatchProcess(PtyProcess process)
         {
+            PtyDiagnostics.Log($"watch enqueue pid={process.Pid}");
             lock (sync)
             {
                 byPid[process.Pid] = process;
@@ -174,6 +182,18 @@ internal static partial class PtyReaper
                     }
                     ReapProcess(EventPid(i));
                 }
+#if OSX
+                // Two macOS failure modes need a net below the knote:
+                //   1. EVFILT_PROC/NOTE_EXIT can stay silent for a registered child that
+                //      already exited (a plain waitpid(WNOHANG) collects it).
+                //   2. A session-leader child holding the ctty can park mid-exit — still
+                //      not waitpid-able — until the pty master is closed (see
+                //      PtyProcess.IsStuckExiting). The bounded wait below plus the scan
+                //      covers both: waitpid first, then a grace-windowed master close.
+                // The scan runs only on the reaper thread, so the single-reaper
+                // ownership of waitpid is preserved.
+                ScanRegisteredProcesses();
+#endif
             }
         }
 
@@ -195,10 +215,12 @@ internal static partial class PtyReaper
                         return;
                     process = pendingWatch.Dequeue();
                 }
+                PtyDiagnostics.Log($"watch drain pid={process.Pid}");
 
                 // Already exited before registration: collect it now, never register.
                 if (process.TryReap(out var code))
                 {
+                    PtyDiagnostics.Log($"watch drain reaped pid={process.Pid} code={code}");
                     process.OnReaped(code);
                     lock (sync)
                     {
@@ -209,6 +231,7 @@ internal static partial class PtyReaper
 
                 if (!Register(process))
                 {
+                    PtyDiagnostics.Log($"watch register deferred pid={process.Pid}");
                     lock (sync)
                     {
                         retryWatch.Add(process);
@@ -252,6 +275,7 @@ internal static partial class PtyReaper
         private bool Register(PtyProcess process)
         {
             var pid = process.Pid;
+            PtyDiagnostics.Log($"register begin pid={pid}");
 #if LINUX
             // A retry may follow a previous pidfd_open on the same pid (registration
             // failed after the fd was created): close the stale fd before opening a new
@@ -304,17 +328,20 @@ internal static partial class PtyReaper
             };
             if (NativeMethods.kevent(eventFd, [ev], 1, null, 0, IntPtr.Zero) != 0)
             {
+                var errno = Marshal.GetLastPInvokeError();
+                PtyDiagnostics.Log($"register kevent failed pid={pid} errno={errno}");
                 // Same fallback as above: the child exited between waitpid and kevent.
                 return TryReapProcess(process);
             }
+            PtyDiagnostics.Log($"register kevent succeeded pid={pid}");
 
             // The kernel does not backfill an already-fired NOTE_EXIT: if the child exited
             // after the drain's waitpid but before the EV_ADD above, the knote registers on
-            // a zombie and no event will ever be delivered — the exit wait would hang
-            // forever. Re-check once after a successful registration; if the child is gone
-            // now, unregister and collect it (the kqueue keeps no memory of the exit).
+            // a zombie and no event will ever be delivered. Re-check once after a successful
+            // registration; if the child is gone now, unregister and collect it.
             if (process.TryReap(out var code))
             {
+                PtyDiagnostics.Log($"register postcheck reaped pid={pid} code={code}");
                 Unregister(pid);
                 process.OnReaped(code);
                 lock (sync)
@@ -336,6 +363,7 @@ internal static partial class PtyReaper
         {
             if (!process.TryReap(out var code))
                 return false;
+            PtyDiagnostics.Log($"try-reap completed pid={process.Pid} code={code}");
             process.OnReaped(code);
             lock (sync)
             {
@@ -351,6 +379,7 @@ internal static partial class PtyReaper
         /// </summary>
         private void ReapProcess(int pid)
         {
+            PtyDiagnostics.Log($"reap event pid={pid}");
             PtyProcess? process;
             lock (sync)
             {
@@ -362,6 +391,7 @@ internal static partial class PtyReaper
 
             if (process.TryReap(out var code))
             {
+                PtyDiagnostics.Log($"reap event waitpid completed pid={pid} code={code}");
                 process.OnReaped(code);
                 return;
             }
@@ -377,6 +407,61 @@ internal static partial class PtyReaper
                 lock (sync)
                 {
                     retryWatch.Add(process);
+                }
+            }
+        }
+
+        /// <summary>
+        /// macOS safety net: reaps every registered child that has already exited, whether
+        /// or not its knote ever fired (see the loop comment). A child parked mid-exit on
+        /// the tty teardown wait (see <see cref="PtyProcess.IsStuckExiting"/>) gets a grace
+        /// window for a reader to drain the master; if none does, the master is closed to
+        /// end the wait — the child has already finished exiting at that point. Runs on
+        /// the reaper thread.
+        /// </summary>
+        private void ScanRegisteredProcesses()
+        {
+            PtyProcess[] snapshot;
+            lock (sync)
+            {
+                if (byPid.Count == 0)
+                    return;
+                snapshot = [.. byPid.Values];
+            }
+
+            foreach (var process in snapshot)
+            {
+                if (!process.TryReap(out var code))
+                {
+                    if (process.IsStuckExiting())
+                    {
+                        var now = Environment.TickCount64;
+                        lock (sync)
+                        {
+                            if (!stuckExiting.TryGetValue(process.Pid, out var firstSeen))
+                                stuckExiting[process.Pid] = firstSeen = now;
+                            if (now - firstSeen >= StuckExitGraceMs)
+                            {
+                                PtyDiagnostics.Log($"stuck-exit close-master pid={process.Pid} after={now - firstSeen}ms");
+                                process.CloseTerminalForStuckExit();
+                            }
+                            else
+                            {
+                                PtyDiagnostics.Log($"stuck-exit pending pid={process.Pid} grace={now - firstSeen}ms");
+                            }
+                        }
+                    }
+                    continue;
+                }
+                stuckExiting.Remove(process.Pid);
+                Unregister(process.Pid);
+                if (process.OnReaped(code))
+                {
+                    lock (sync)
+                    {
+                        byPid.Remove(process.Pid);
+                        retryWatch.Remove(process);
+                    }
                 }
             }
         }
@@ -415,26 +500,30 @@ internal static partial class PtyReaper
                 // While a registration retry is pending, bound the wait so the retry list
                 // gets its periodic scan; a clean state blocks indefinitely (no periodic
                 // wakeups).
-                var retryPending = retryWatch.Count > 0;
 #if LINUX
+                var retryPending = retryWatch.Count > 0;
                 var timeout = retryPending ? RetryIntervalMs : -1;
                 var n = NativeMethods.EpollIsPacked
                     ? NativeMethods.epoll_wait_packed(eventFd, linuxEventsPacked, MaxEvents, timeout)
                     : NativeMethods.epoll_wait(eventFd, linuxEvents, MaxEvents, timeout);
 #elif OSX
-                // kevent's timeout is a struct timespec*; null means block indefinitely.
+                // Always bounded on macOS: a dropped NOTE_EXIT (see the loop's scan
+                // comment) must not leave the wait blocked indefinitely.
                 var ts = new NativeMethods.TimeSpec
                 {
                     TvSec = RetryIntervalMs / 1000,
                     TvNsec = (RetryIntervalMs % 1000) * 1_000_000,
                 };
-                var timeoutPtr = retryPending ? (IntPtr)(&ts) : IntPtr.Zero;
+                var timeoutPtr = (IntPtr)(&ts);
                 var n = NativeMethods.kevent(eventFd, null, 0, macEvents, MaxEvents, timeoutPtr);
 #else
 #error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
 #endif
                 if (n >= 0)
+                {
+                    PtyDiagnostics.Log($"wait events result={n}");
                     return n;
+                }
                 if (Marshal.GetLastPInvokeError() == Eintr)
                     continue;
                 throw new IOException($"Pty.Net reaper wait failed: errno={Marshal.GetLastPInvokeError()}");
@@ -483,7 +572,20 @@ internal static partial class PtyReaper
                 Flags = 0,
                 Fflags = NativeMethods.NoteTrigger,
             };
-            _ = NativeMethods.kevent(eventFd, [ev], 1, null, 0, IntPtr.Zero);
+            while (true)
+            {
+                var result = NativeMethods.kevent(eventFd, [ev], 1, null, 0, IntPtr.Zero);
+                if (result == 0)
+                {
+                    PtyDiagnostics.Log("wake succeeded");
+                    return;
+                }
+
+                var errno = Marshal.GetLastPInvokeError();
+                PtyDiagnostics.Log($"wake failed result={result} errno={errno}");
+                if (errno != Eintr)
+                    return;
+            }
 #endif
         }
 

@@ -65,10 +65,16 @@ internal static partial class NativeMethods
     {
         None = 0,
 #if OSX
-        // Darwin-specific: inherited fds default to close-on-exec in the child unless
+        // Apple-specific: inherited fds default to close-on-exec in the child unless
         // a file action explicitly keeps them (our dup2 of the pty slave to 0/1/2).
         CloexecDefault = 0x4000,
         Setsid = 0x0400,
+        // Apple-only: posix_spawn replaces the *calling* process image instead of
+        // spawning a child — a "more featureful execve". Used inside the fork child so
+        // the kernel's spawn machinery (session/ctty via SETSID, CLOEXEC_DEFAULT fd
+        // isolation) applies in place, and no post-fork libc setup is hand-rolled.
+        Setexec = 0x0040,
+
 #elif LINUX
         // glibc: POSIX_SPAWN_SETSIGDEF — the signals in the "sigdefault" set are reset
         // to SIG_DFL in the child (POSIX spawn inherits SIG_IGN; macOS resets them
@@ -87,6 +93,7 @@ internal static partial class NativeMethods
     internal const int Eintr = 4;
     internal const int Eio = 5;
     internal const int Echild = 10;
+    internal const int Esrch = 3;
     internal const int ENoent = 2;
     internal const int Enotdir = 20;
     internal const int Eacces = 13;
@@ -296,9 +303,10 @@ internal static partial class NativeMethods
     [LibraryImport("libc")]
     internal static partial int _exit(int code);
 
-    // chdir(2) for the fork path (no file-actions layer; the child chdirs itself).
-    [LibraryImport("libc", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial int chdir(string path);
+    // chdir(2) for the fork path. The parent supplies a pre-marshaled pointer so the
+    // fork child does not enter a generated string-marshalling stub.
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int chdir(IntPtr path);
 
     // execve(2): the child's final step. The pointer arguments are pinned by the
     // spawn critical section (see ToNative + the fixed in ChildMain), so the child
@@ -527,6 +535,15 @@ internal static partial class NativeMethods
 
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int kill(int pid, Signals sig);
+
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int getpgid(int pid);
+
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int getsid(int pid);
+
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial IntPtr signal(Signals sig, IntPtr handler);
 
     internal static int poll(Span<PollFd> fds, int timeout)
     {

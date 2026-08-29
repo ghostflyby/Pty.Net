@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
@@ -5,21 +6,21 @@ using Microsoft.Win32.SafeHandles;
 namespace Ghostflyby.Pty;
 
 /// <summary>
-/// Unix half of <see cref="PtyProcess"/>: fork/exec-based launch (replacing the
-/// posix_spawn path), SIGHUP teardown and waitpid reaping. Compiled only on the
-/// non-Windows target (see csproj), so the shared <c>PtyProcess.cs</c> carries no
-/// platform conditionals.
+/// Unix half of <see cref="PtyProcess"/>: fork-based launch with in-place exec
+/// (macOS: posix_spawn's Apple SETEXEC attribute applies the session/ctty/fd
+/// isolation kernel-side; Linux: libc-only setsid + open + dup2 + execve),
+/// SIGHUP teardown and waitpid reaping. Compiled only on the non-Windows target
+/// (see csproj), so the shared <c>PtyProcess.cs</c> carries no platform
+/// conditionals.
 /// </summary>
 public sealed partial class PtyProcess
 {
-    // The stdio targets the pty slave is dup2'd onto in the child. A static array so
-    // each spawn does not allocate a fresh int[] for the loop below.
-    private static readonly int[] StdioTargets = [0, 1, 2];
-
     // Shared drain buffer, used by DrainOutput (the exit-wait loops call it every ~2 ms).
     private const int ReadBufferSize = 4096;
     private static readonly byte[] DrainBuffer = new byte[ReadBufferSize];
     private static readonly Lock DrainLock = new();
+    private static readonly ChildNativeApi ChildApi = ResolveChildNativeApi();
+    private static readonly bool ForkChildPathPrepared = PrepareForkChildPath();
 
     private static partial PtyProcess StartPlatform(
         string file, IReadOnlyList<string> arguments, string? workingDirectory,
@@ -27,9 +28,13 @@ public sealed partial class PtyProcess
         int initialCols, int initialRows)
     {
         // Prepare everything the child needs in the parent, before the no-GC region.
+        var executablePath = ResolveExecutablePath(file, environment);
         var envp = ToNative(BuildEnvironment(environment));
         var argv = ToNative([Path.GetFileName(file), .. arguments]);
-        var path = Marshal.StringToHGlobalAnsi(file);
+        var path = Marshal.StringToHGlobalAnsi(executablePath);
+        var workingDirectoryPath = workingDirectory is null
+            ? IntPtr.Zero
+            : Marshal.StringToHGlobalAnsi(workingDirectory);
 
         // Create the pty. The master fd is non-blocking from birth.
         PtyStream? stream = null;
@@ -42,30 +47,43 @@ public sealed partial class PtyProcess
             FreeNative(envp);
             FreeNative(argv);
             Marshal.FreeHGlobal(path);
+            Marshal.FreeHGlobal(workingDirectoryPath);
             if (masterFd >= 0)
                 NativeMethods.close(masterFd);
             throw new IOException($"posix_openpt/grantpt/unlockpt failed: errno={err}");
         }
 
         var slavePath = ResolveSlavePath(masterFd);
-        // O_NOCTTY: the child re-acquires the terminal itself via TIOCSCTTY after
-        // setsid(); opening it with O_NOCTTY here keeps the parent from ever attaching.
-        // O_CLOEXEC: the slave fd must not leak into the exec'd child — and it must not
-        // be explicitly closed in the fork child either (a close(2) on a live fd in the
-        // fork child hangs on macOS, where runtime fd bookkeeping locks are gone after
-        // fork). CLOEXEC lets the kernel close it at exec instead.
+        var slavePathPtr = Marshal.StringToHGlobalAnsi(slavePath);
+
+        // Open the slave here and keep it open across the fork. On macOS it is the
+        // dup2 source for the child's posix_spawn file actions, so it must NOT carry
+        // O_CLOEXEC: with CLOEXEC_DEFAULT the kernel can drop it before the file
+        // actions run (observed EBADF). CLOEXEC_DEFAULT still removes it from the
+        // spawned image, and the parent closes its copy after the exec result. On
+        // Linux the child re-opens the slave itself after setsid; this fd only keeps
+        // the tty side initialized so the winsize set below survives. O_NOCTTY: the
+        // parent must never acquire the terminal.
+#if OSX
+        var slaveFd = NativeMethods.open(slavePath, NativeMethods.ORdwr | NativeMethods.ONoctty);
+#elif LINUX
         var slaveFd = NativeMethods.open(slavePath, NativeMethods.ORdwr | NativeMethods.ONoctty | NativeMethods.OCloexec);
+#endif
         if (slaveFd < 0)
         {
             var err = Marshal.GetLastPInvokeError();
             FreeNative(envp);
             FreeNative(argv);
             Marshal.FreeHGlobal(path);
+            Marshal.FreeHGlobal(workingDirectoryPath);
+            Marshal.FreeHGlobal(slavePathPtr);
             NativeMethods.close(masterFd);
             throw new IOException($"open slave '{slavePath}' failed: errno={err}");
         }
 
-        // Apply the requested initial size before the child starts.
+        // Apply the requested initial size before the child starts, on the master like
+        // the master read/write path itself (the master accepts TIOCSWINSZ now that the
+        // slave side is open).
         Span<NativeMethods.Winsize> winsize = stackalloc NativeMethods.Winsize[1];
         winsize[0] = new NativeMethods.Winsize { Row = (ushort)initialRows, Col = (ushort)initialCols };
         int resizeRc;
@@ -79,11 +97,13 @@ public sealed partial class PtyProcess
         if (resizeRc != 0)
         {
             var err = Marshal.GetLastPInvokeError();
+            NativeMethods.close(slaveFd);
             FreeNative(envp);
             FreeNative(argv);
             Marshal.FreeHGlobal(path);
+            Marshal.FreeHGlobal(workingDirectoryPath);
+            Marshal.FreeHGlobal(slavePathPtr);
             NativeMethods.close(masterFd);
-            NativeMethods.close(slaveFd);
             throw new IOException($"pty resize failed: errno={err}");
         }
 
@@ -97,19 +117,72 @@ public sealed partial class PtyProcess
             FreeNative(envp);
             FreeNative(argv);
             Marshal.FreeHGlobal(path);
+            Marshal.FreeHGlobal(workingDirectoryPath);
+            Marshal.FreeHGlobal(slavePathPtr);
             NativeMethods.close(masterFd);
-            NativeMethods.close(slaveFd);
             throw new IOException($"pipe failed: errno={err}");
         }
-        // Fcntl helper: on Apple arm64 fcntl's variadic third argument must go through
-        // the pad-register form, or the CLOEXEC bit never lands and the error pipe's
-        // write end survives exec in the child — which makes the parent's exec-result
-        // read block forever (the child's exec does not close the pipe).
-        NativeMethods.Fcntl(errPipe[1], NativeMethods.FSetfd, NativeMethods.FdCloexec);
+        // All child-only copies close in the kernel at exec. The child never calls
+        // close(2) between fork and exec.
+        if (NativeMethods.Fcntl(masterFd, NativeMethods.FSetfd, NativeMethods.FdCloexec) != 0 ||
+            NativeMethods.Fcntl(errPipe[0], NativeMethods.FSetfd, NativeMethods.FdCloexec) != 0 ||
+            NativeMethods.Fcntl(errPipe[1], NativeMethods.FSetfd, NativeMethods.FdCloexec) != 0)
+        {
+            var err = Marshal.GetLastPInvokeError();
+            FreeNative(envp);
+            FreeNative(argv);
+            Marshal.FreeHGlobal(path);
+            Marshal.FreeHGlobal(workingDirectoryPath);
+            Marshal.FreeHGlobal(slavePathPtr);
+            NativeMethods.close(masterFd);
+            NativeMethods.close(errPipe[0]);
+            NativeMethods.close(errPipe[1]);
+            throw new IOException($"fcntl(FD_CLOEXEC) failed: errno={err}");
+        }
 
         var spawned = false;
+        // macOS: the child's posix_spawn(SETEXEC) call consumes these parent-built
+        // spawn attribute / file-actions buffers, so they live across the fork and are
+        // destroyed in the finally below. Linux does its setup in the child directly.
+        var fileActions = IntPtr.Zero;
+        var spawnAttr = IntPtr.Zero;
         try
         {
+#if OSX
+            // Build the spawn description once, in the parent: the pty slave dup2'd onto
+            // stdio, an optional working directory, and the attribute set that makes the
+            // child's posix_spawn call
+            //   * SETEXEC — replace the calling (forked) process instead of spawning,
+            //   * SETSID — create the session + controlling terminal kernel-side, the
+            //     shape that does not hit the userspace-setsid exit block on macOS,
+            //   * CLOEXEC_DEFAULT — every inherited fd above stdio closes automatically.
+            fileActions = Marshal.AllocHGlobal(NativeMethods.PosixSpawnFileActionsSize);
+            spawnAttr = Marshal.AllocHGlobal(NativeMethods.PosixSpawnAttrSize);
+            if (NativeMethods.posix_spawn_file_actions_init(fileActions) != 0 ||
+                NativeMethods.posix_spawnattr_init(spawnAttr) != 0)
+            {
+                throw new IOException($"posix_spawn init failed: errno={Marshal.GetLastPInvokeError()}");
+            }
+
+            foreach (var target in new[] { 0, 1, 2 })
+            {
+                if (NativeMethods.posix_spawn_file_actions_adddup2(fileActions, slaveFd, target) != 0)
+                    throw new IOException($"posix_spawn adddup2({target}) failed: errno={Marshal.GetLastPInvokeError()}");
+            }
+            if (workingDirectory is not null &&
+                NativeMethods.posix_spawn_file_actions_addchdir_np(fileActions, workingDirectory) != 0)
+            {
+                throw new IOException($"posix_spawn addchdir failed: errno={Marshal.GetLastPInvokeError()}");
+            }
+            var flagsRc = NativeMethods.posix_spawnattr_setflags(
+                spawnAttr,
+                NativeMethods.PosixSpawnFlags.Setexec |
+                NativeMethods.PosixSpawnFlags.Setsid |
+                NativeMethods.PosixSpawnFlags.CloexecDefault);
+            if (flagsRc != 0)
+                throw new IOException($"posix_spawnattr_setflags failed: errno={flagsRc}");
+#endif
+
             stream = new PtyStream(new SafeFileHandle(new IntPtr(masterFd), ownsHandle: true));
 
             // Fork critical section. A no-GC region pauses the GC for the duration of
@@ -124,6 +197,7 @@ public sealed partial class PtyProcess
             int pid;
             lock (ForkLock)
             {
+                _ = ForkChildPathPrepared;
                 if (!GC.TryStartNoGCRegion(ForkNoGcBudget, true))
                     throw new IOException("fork launch failed: the GC could not be paused (concurrent GC in progress).");
 
@@ -134,32 +208,35 @@ public sealed partial class PtyProcess
                     if (pid < 0)
                     {
                         var err = Marshal.GetLastPInvokeError();
-                        GC.EndNoGCRegion();
-                        inNoGcRegion = false;
-                        FreeNative(envp);
-                        FreeNative(argv);
-                        Marshal.FreeHGlobal(path);
-                        NativeMethods.close(errPipe[0]);
-                        NativeMethods.close(errPipe[1]);
-                        NativeMethods.close(slaveFd);
-                        stream.Dispose();
                         throw new IOException($"fork failed: errno={err}");
                     }
                     if (pid == 0)
                     {
-                        // Child: never returns, never allocates.
-                        NativeMethods.close(errPipe[0]);
-                        NativeMethods.close(masterFd);
+                        // Child: never returns, never allocates, and never closes an fd.
+                        // All libc calls below go through function pointers resolved in
+                        // the parent: the generated P/Invoke IL stub is compiled lazily
+                        // on first call, and under a concurrent fork it can block on an
+                        // inherited CoreCLR code-heap lock inside the forked child.
                         unsafe
                         {
                             fixed (IntPtr* argvP = argv)
                             fixed (IntPtr* envpP = envp)
                             {
-                                ChildMain(path, (IntPtr)argvP, (IntPtr)envpP, workingDirectory, errPipe[1], slaveFd);
+                                ChildMain(
+                                    path,
+                                    (IntPtr)argvP,
+                                    (IntPtr)envpP,
+                                    workingDirectoryPath,
+                                    slavePathPtr,
+                                    fileActions,
+                                    spawnAttr,
+                                    errPipe[1],
+                                    ChildApi);
+                                ChildApi.Exit(127); // unreachable
                             }
                         }
-                        NativeMethods._exit(127); // unreachable
                     }
+                    PtyDiagnostics.Log($"fork parent child-pid={pid} slave-path={slavePath}");
                     GC.EndNoGCRegion();
                     inNoGcRegion = false;
                 }
@@ -178,22 +255,47 @@ public sealed partial class PtyProcess
                 // and holding the lock keeps concurrent spawns from piling up a second
                 // no-GC region while this one is still draining.
                 NativeMethods.close(errPipe[1]);
+                errPipe[1] = -1;
                 var execErrno = ReadChildExecError(errPipe[0]);
                 if (execErrno >= 0)
+                {
+                    ReapFailedExec(pid);
                     throw TranslateSpawnError(file, execErrno);
+                }
 
                 NativeMethods.close(slaveFd);
+                slaveFd = -1;
             }
 
             spawned = true;
+            PtyDiagnostics.Log($"start published pid={pid}");
             return new PtyProcess(stream, pid, inputEncoding, outputEncoding, processHandle: null);
         }
         finally
         {
+#if OSX
+            if (fileActions != IntPtr.Zero)
+            {
+                NativeMethods.posix_spawn_file_actions_destroy(fileActions);
+                Marshal.FreeHGlobal(fileActions);
+            }
+            if (spawnAttr != IntPtr.Zero)
+            {
+                NativeMethods.posix_spawnattr_destroy(spawnAttr);
+                Marshal.FreeHGlobal(spawnAttr);
+            }
+#endif
             FreeNative(envp);
             FreeNative(argv);
             Marshal.FreeHGlobal(path);
-            NativeMethods.close(errPipe[0]);
+            Marshal.FreeHGlobal(workingDirectoryPath);
+            Marshal.FreeHGlobal(slavePathPtr);
+            if (errPipe[0] >= 0)
+                NativeMethods.close(errPipe[0]);
+            if (errPipe[1] >= 0)
+                NativeMethods.close(errPipe[1]);
+            if (slaveFd >= 0)
+                NativeMethods.close(slaveFd);
             if (!spawned)
             {
                 if (stream is not null)
@@ -216,58 +318,199 @@ public sealed partial class PtyProcess
     /// is held only for the duration of fork(2)).</summary>
     private const long ForkNoGcBudget = 32 * 1024 * 1024;
 
+    private static unsafe bool PrepareForkChildPath()
+    {
+        Prepare((ChildMainDelegate)ChildMain);
+        Prepare((ReportChildErrorDelegate)ReportChildError);
+        return true;
+
+        static void Prepare(Delegate method)
+            => RuntimeHelpers.PrepareMethod(method.Method.MethodHandle);
+    }
+
+    private static unsafe ChildNativeApi ResolveChildNativeApi()
+    {
+        var process = NativeLibrary.GetMainProgramHandle();
+        var api = new ChildNativeApi
+        {
+            Write = (delegate* unmanaged[Cdecl]<int, IntPtr, nuint, nint>)NativeLibrary.GetExport(process, "write"),
+            Exit = (delegate* unmanaged[Cdecl]<int, int>)NativeLibrary.GetExport(process, "_exit"),
+#if OSX
+            // The kernel-side spawn machinery does the whole setup (see ChildMain);
+            // only posix_spawn, the failure write and _exit run in the forked child.
+            PosixSpawn = (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, IntPtr, IntPtr, IntPtr, int>)NativeLibrary.GetExport(process, "posix_spawn"),
+#elif LINUX
+            Dup2 = (delegate* unmanaged[Cdecl]<int, int, int>)NativeLibrary.GetExport(process, "dup2"),
+            Setsid = (delegate* unmanaged[Cdecl]<int>)NativeLibrary.GetExport(process, "setsid"),
+            Open = (delegate* unmanaged[Cdecl]<IntPtr, int, int>)NativeLibrary.GetExport(process, "open"),
+            Chdir = (delegate* unmanaged[Cdecl]<IntPtr, int>)NativeLibrary.GetExport(process, "chdir"),
+            Execve = (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, int>)NativeLibrary.GetExport(process, "execve"),
+            Close = (delegate* unmanaged[Cdecl]<int, int>)NativeLibrary.GetExport(process, "close"),
+            Error = (delegate* unmanaged[Cdecl]<int*>)NativeLibrary.GetExport(process, "__errno_location"),
+#endif
+        };
+        WarmUpChildSignatures(api);
+        return api;
+    }
+
+    /// <summary>
+    /// Runs every calli signature the child uses once in the parent with harmless
+    /// arguments. The managed→native calli stub is generated lazily on the first call;
+    /// if that first call happened inside the forked child it would JIT under the
+    /// inherited CoreCLR code-heap lock and hang the child before exec (observed as
+    /// GenericPInvokeCalliStubWorker waiting in __psynch_mutexwait). Each warm-up call
+    /// fails harmlessly at the libc level (EBADF/EFAULT/EINVAL/ENOENT).
+    /// </summary>
+    private static unsafe void WarmUpChildSignatures(ChildNativeApi api)
+    {
+#if OSX
+        // posix_spawn validates its arguments before doing anything: all-null inputs
+        // return EINVAL without touching processes. The SETEXEC attribute is not needed
+        // for the warm-up — only the call signature (VASigCookie) must be compiled.
+        // _exit itself must never be warmed by calling it; close(int)->int shares its
+        // signature (Exit is declared int-returning, which is ABI-invisible for a
+        // call that never returns).
+        _ = api.PosixSpawn(IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+        _ = api.Write(-1, IntPtr.Zero, 0);
+        var close = (delegate* unmanaged[Cdecl]<int, int>)NativeLibrary.GetExport(NativeLibrary.GetMainProgramHandle(), "close");
+        _ = close(-1);
+#elif LINUX
+        _ = api.Dup2(-1, -1);
+        _ = api.Open((IntPtr)1, 0);
+        _ = api.Chdir(IntPtr.Zero);
+        _ = api.Execve(IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+        _ = api.Write(-1, IntPtr.Zero, 0);
+        _ = api.Close(-1);
+        _ = api.Error();
+#endif
+    }
+
+#if OSX
+    private unsafe struct ChildNativeApi
+    {
+        internal delegate* unmanaged[Cdecl]<int, IntPtr, nuint, nint> Write;
+        internal delegate* unmanaged[Cdecl]<int, int> Exit;
+        // posix_spawn(pid*, path, file_actions, attr, argv, envp) — with the SETEXEC
+        // attr flag this replaces the calling (forked) process in place.
+        internal delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, IntPtr, IntPtr, IntPtr, int> PosixSpawn;
+    }
+#elif LINUX
+    private unsafe struct ChildNativeApi
+    {
+        internal delegate* unmanaged[Cdecl]<int, int, int> Dup2;
+        internal delegate* unmanaged[Cdecl]<int> Setsid;
+        internal delegate* unmanaged[Cdecl]<IntPtr, int, int> Open;
+        internal delegate* unmanaged[Cdecl]<IntPtr, int> Chdir;
+        internal delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, int> Execve;
+        internal delegate* unmanaged[Cdecl]<int, IntPtr, nuint, nint> Write;
+        internal delegate* unmanaged[Cdecl]<int, int> Close;
+        internal delegate* unmanaged[Cdecl]<int, int> Exit;
+        internal delegate* unmanaged[Cdecl]<int*> Error;
+    }
+#endif
+
+    private unsafe delegate void ChildMainDelegate(
+        IntPtr path, IntPtr argv, IntPtr envp, IntPtr workingDirectory,
+        IntPtr ptySlavePath, IntPtr fileActions, IntPtr spawnAttr, int errWrite, ChildNativeApi api);
+
+    private unsafe delegate void ReportChildErrorDelegate(ChildNativeApi api, int errWrite, int errno);
+
     /// <summary>
     /// The child's post-fork entry point. Runs in the forked copy with the no-GC region
-    /// active: must not allocate managed objects, touch runtime locks, or return. Does
-    /// the libc-only setup that posix_spawn's file actions used to do:
-    ///   * dup2 the inherited slave fd onto 0/1/2;
-    ///   * setsid() + ioctl(0, TIOCSCTTY, 0) to acquire the controlling terminal;
-    ///   * chdir to the working directory when requested;
-    ///   * a per-fd close sweep (fd 3..RLIMIT_NOFILE);
-    ///   * execve. On failure writes errno to the pipe and _exit(127).
+    /// active: must not allocate managed objects, touch runtime locks, or return.
+    /// Signal dispositions are intentionally not touched: exec(2) resets every *caught*
+    /// signal to SIG_DFL and preserves *ignored* ones — the same state posix_spawn
+    /// produces. Every libc call goes through <paramref name="api"/>'s function
+    /// pointers, whose calli stubs were warmed up in the parent before the fork: a
+    /// lazily-generated stub would JIT inside the forked child under the inherited
+    /// CoreCLR code-heap lock and hang the spawn.
+    /// <para>macOS: a single posix_spawn call with the Apple SETEXEC attribute —
+    /// the kernel-side spawn machinery applies the parent-built file actions (pty
+    /// slave onto 0/1/2, optional chdir), creates the session and controlling terminal
+    /// (SETSID — the shape that does not hit the userspace-setsid exit block), closes
+    /// every other inherited fd (CLOEXEC_DEFAULT) and replaces this image, all in
+    /// place. On failure it returns the errno, which goes to the parent's pipe.</para>
+    /// <para>Linux: glibc/musl have no SETEXEC/CLOEXEC_DEFAULT, so the libc-only setup
+    /// is done directly: setsid(), then open the pty slave (no O_NOCTTY) so the session
+    /// leader acquires it as the controlling terminal, dup2 it onto 0/1/2, a per-fd
+    /// close sweep over the inherited fds above stdio, chdir when requested, execve.
+    /// On failure writes errno to the pipe and _exit(127).</para>
     /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
     private static unsafe void ChildMain(
-        IntPtr path, IntPtr argv, IntPtr envp, string? workingDirectory,
-        int errWrite, int slaveFd)
+        IntPtr path, IntPtr argv, IntPtr envp, IntPtr workingDirectory,
+        IntPtr ptySlavePath, IntPtr fileActions, IntPtr spawnAttr, int errWrite, ChildNativeApi api)
     {
-        foreach (var target in StdioTargets)
+#if OSX
+        int spawnedPid = 0;
+        var rc = api.PosixSpawn(
+            (IntPtr)(&spawnedPid), path, fileActions, spawnAttr, argv, envp);
+        // SETEXEC success never returns here; a failure returns the errno.
+        ReportChildError(api, errWrite, rc);
+        api.Exit(127);
+#elif LINUX
+        if (api.Setsid() < 0)
         {
-            if (NativeMethods.dup2(slaveFd, target) != target)
-            {
-                ReportChildError(errWrite, NativeMethods.Eacces);
-                NativeMethods._exit(127);
-            }
+            ReportChildError(api, errWrite, NativeMethods.Eacces);
+            api.Exit(127);
         }
 
-        if (NativeMethods.setsid() < 0 || NativeMethods.IoCtl(0, NativeMethods.Tiocsctty, IntPtr.Zero) != 0)
+        var cttyFd = api.Open(ptySlavePath, NativeMethods.ORdwr | NativeMethods.OCloexec);
+        if (cttyFd < 0)
         {
-            ReportChildError(errWrite, NativeMethods.Eacces);
-            NativeMethods._exit(127);
+            ReportChildError(api, errWrite, NativeMethods.ENoent);
+            api.Exit(127);
         }
 
-        if (workingDirectory is not null && NativeMethods.chdir(workingDirectory) != 0)
+        if (api.Dup2(cttyFd, 0) != 0 ||
+            api.Dup2(cttyFd, 1) != 1 ||
+            api.Dup2(cttyFd, 2) != 2)
         {
-            ReportChildError(errWrite, NativeMethods.ENoent);
-            NativeMethods._exit(127);
+            ReportChildError(api, errWrite, NativeMethods.Eacces);
+            api.Exit(127);
         }
 
-        // The inherited slave fd (dup2'd onto 0/1/2) and the error pipe are CLOEXEC,
-        // so the kernel closes them at exec. .NET's own fds are all CLOEXEC too, so no
-        // explicit close is needed here — and none is allowed: a close(2) on any live
-        // fd in the fork child hangs on macOS, where runtime fd bookkeeping locks are
-        // gone after fork.
+        // Close every inherited fd above stdio except the error pipe: the fork child
+        // inherits the parent's whole fd table, and non-CLOEXEC fds (sockets from
+        // native libraries, the reaper's kqueue) would leak into the exec'd program —
+        // the same hole POSIX_SPAWN_CLOEXEC_DEFAULT closes on macOS.
+        for (var fd = 3; fd < NativeMethods.FdIsolationCap; fd++)
+        {
+            if (fd != errWrite)
+                _ = api.Close(fd);
+        }
 
-        NativeMethods.execve(path, argv, envp);
-        ReportChildError(errWrite, Marshal.GetLastPInvokeError());
-        NativeMethods._exit(127);
+        if (workingDirectory != IntPtr.Zero && api.Chdir(workingDirectory) != 0)
+        {
+            ReportChildError(api, errWrite, NativeMethods.ENoent);
+            api.Exit(127);
+        }
+
+        // The ctty fd above was dup2'd onto 0/1/2; its original fd and the error pipe
+        // are CLOEXEC, so the kernel closes them at exec.
+        api.Execve(path, argv, envp);
+        ReportChildError(api, errWrite, *api.Error());
+        api.Exit(127);
+#else
+#error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
+#endif
     }
 
     /// <summary>Writes a single errno int into the exec-failure pipe (child side, no allocation).</summary>
-    private static unsafe void ReportChildError(int errWrite, int errno)
+    private static unsafe void ReportChildError(ChildNativeApi api, int errWrite, int errno)
     {
         var slot = stackalloc int[1];
         slot[0] = errno;
-        _ = NativeMethods.write(errWrite, (IntPtr)slot, (nuint)sizeof(int));
+        _ = api.Write(errWrite, (IntPtr)slot, (nuint)sizeof(int));
+    }
+
+    private static void ReapFailedExec(int pid)
+    {
+        while (NativeMethods.waitpid(pid, out _, NativeMethods.WaitOptions.None) < 0)
+        {
+            if (Marshal.GetLastPInvokeError() != NativeMethods.Eintr)
+                return;
+        }
     }
 
     /// <summary>
@@ -347,14 +590,24 @@ public sealed partial class PtyProcess
     /// </summary>
     private void SignalChildIfAlive()
     {
-        if (!HasExited)
-        {
-            RequestClosePlatform();
-        }
+        if (HasExited)
+            return;
+
+        RequestClosePlatform();
+        // Dispose is closing the terminal session, not merely sending a signal. Closing
+        // the master is what makes the slave hang up and lets an interactive shell finish
+        // its SIGHUP exit path. RequestClose() remains signal-only for callers that want
+        // to keep reading from the terminal while waiting explicitly.
+        BaseStream.Dispose();
     }
 
     /// <summary>Unix: SIGHUP the child — the terminal-hangup signal (see <see cref="PtyProcess.RequestClose"/>).</summary>
-    private partial void RequestClosePlatform() => NativeMethods.kill(Pid, NativeMethods.Signals.Hup);
+    private partial void RequestClosePlatform()
+    {
+        var result = NativeMethods.kill(Pid, NativeMethods.Signals.Hup);
+        var errno = result == 0 ? 0 : Marshal.GetLastPInvokeError();
+        PtyDiagnostics.Log($"sighup pid={Pid} result={result} errno={errno} state={DescribeUnixState()}");
+    }
 
     /// <summary>Unix: the pty stream is the facade stream; no transcoding is involved.</summary>
     private partial void CreateFacades(
@@ -366,7 +619,62 @@ public sealed partial class PtyProcess
     }
 
     /// <summary>Unix: SIGKILL the child.</summary>
-    private partial void KillPlatform() => NativeMethods.kill(Pid, NativeMethods.Signals.Kill);
+    private partial void KillPlatform()
+    {
+        var result = NativeMethods.kill(Pid, NativeMethods.Signals.Kill);
+        var errno = result == 0 ? 0 : Marshal.GetLastPInvokeError();
+        PtyDiagnostics.Log($"sigkill pid={Pid} result={result} errno={errno} state={DescribeUnixState()}");
+    }
+
+    /// <summary>
+    /// True while the child is stuck mid-exit: still visible to kill(0) but already
+    /// disassociated from its process group and not yet reapable. On macOS a fork-spawned
+    /// session leader holding the controlling terminal parks here indefinitely — the
+    /// final slave close inside the kernel's exit path waits (non-interruptibly) for the
+    /// tty output to drain to the pty master, and if nobody reads the master nothing
+    /// drains it. posix_spawn's in-kernel session setup does not hit this; closing the
+    /// master ends the wait.
+    /// </summary>
+    internal bool IsStuckExiting()
+    {
+        if (HasExited || BaseStream.IsClosed)
+            return false;
+        var probe = NativeMethods.kill(Pid, 0);
+        if (probe != 0)
+            return false;
+        var pgid = NativeMethods.getpgid(Pid);
+        return pgid < 0 && Marshal.GetLastPInvokeError() == NativeMethods.Esrch;
+    }
+
+    /// <summary>
+    /// Closes the pty master to end a stuck mid-exit (see <see cref="IsStuckExiting"/>).
+    /// The child has already finished its exit path; only the tty teardown is blocked.
+    /// Unread terminal output is abandoned — the same trade-off Dispose makes on Unix.
+    /// </summary>
+    internal void CloseTerminalForStuckExit()
+    {
+        try
+        {
+            BaseStream.Dispose();
+        }
+        catch
+        {
+            // Already closed by Dispose racing us: nothing left to do.
+        }
+    }
+
+    private static string DescribeUnixState(int pid)
+    {
+        var probe = NativeMethods.kill(pid, 0);
+        var probeErrno = probe == 0 ? 0 : Marshal.GetLastPInvokeError();
+        var pgid = NativeMethods.getpgid(pid);
+        var pgidErrno = pgid < 0 ? Marshal.GetLastPInvokeError() : 0;
+        var sid = NativeMethods.getsid(pid);
+        var sidErrno = sid < 0 ? Marshal.GetLastPInvokeError() : 0;
+        return $"alive-probe={probe} errno={probeErrno} pgid={pgid} pgid-errno={pgidErrno} sid={sid} sid-errno={sidErrno}";
+    }
+
+    private string DescribeUnixState() => DescribeUnixState(Pid);
 
     /// <summary>
     /// Non-blocking drain: reads whatever output is currently available and discards it.
@@ -413,6 +721,7 @@ public sealed partial class PtyProcess
             switch (r)
             {
                 case > 0:
+                    PtyDiagnostics.Log($"waitpid completed pid={Pid} result={r} status={status}");
                     exitCode = ExtractExitCode(status);
                     return true;
                 case 0:
@@ -424,8 +733,9 @@ public sealed partial class PtyProcess
             if (err == NativeMethods.Eintr)
                 continue;
 
+            PtyDiagnostics.Log($"waitpid pid={Pid} result={r} errno={err}");
             exitCode = -1;
-            return true;
+            return false;
         }
     }
 
@@ -441,6 +751,24 @@ public sealed partial class PtyProcess
             NativeMethods.Eacces => new UnauthorizedAccessException($"The executable '{file}' could not be executed: permission denied."),
             _ => new IOException($"fork/exec failed for '{file}': errno={errno}"),
         };
+    }
+
+    private static string ResolveExecutablePath(string file, IDictionary<string, string?> environment)
+    {
+        if (file.Contains(Path.DirectorySeparatorChar))
+            return file;
+
+        if (!environment.TryGetValue("PATH", out var path) || string.IsNullOrEmpty(path))
+            path = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+
+        foreach (var directory in path.Split(Path.PathSeparator))
+        {
+            var candidate = Path.Combine(directory.Length == 0 ? "." : directory, file);
+            if (File.Exists(candidate))
+                return candidate;
+        }
+
+        return file;
     }
 
     /// <summary>Flattens the environment dictionary into the <c>KEY=VALUE</c> array, dropping null values.</summary>
