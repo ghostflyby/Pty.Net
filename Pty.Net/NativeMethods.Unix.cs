@@ -5,8 +5,10 @@ namespace Ghostflyby.Pty;
 
 /// <summary>
 /// P/Invoke declarations for the libc functions used to set up a pseudo-terminal
-/// and run an interactive shell in it. Uses <c>posix_openpt(3)</c> + <c>posix_spawnp(2)</c>
-/// (not fork+exec) so spawning stays safe in a multithreaded process.
+/// and launch the child. The pty is created with <c>posix_openpt(3)</c>; the child
+/// comes from fork(2) plus an in-place exec (macOS: posix_spawn with the Apple
+/// SETEXEC attribute applied kernel-side — see PtyProcess.Start.Unix.cs), so the
+/// post-fork libc calls run through function pointers rather than the P/Invokes here.
 ///
 /// Unix-only: this file is compiled only by the non-Windows target (see csproj), so
 /// Windows-specific constants and branches are absent. pty setup returns raw fds
@@ -17,7 +19,7 @@ namespace Ghostflyby.Pty;
 /// <see cref="PtyStream"/> / <see cref="PtyIoEngine"/> (see <see cref="PtyProcess"/>).
 ///
 /// Constants are split per platform: macOS (OSX) and Linux glibc differ in the
-/// POSIX_SPAWN_SETSID value and the fd-closing mechanism.
+/// O_NOCTTY/O_CLOEXEC values and the fd-closing mechanism.
 /// </summary>
 // ReSharper disable IdentifierTypo
 // ReSharper disable CommentTypo
@@ -65,14 +67,19 @@ internal static partial class NativeMethods
     {
         None = 0,
 #if OSX
-        // Darwin-specific: inherited fds default to close-on-exec in the child unless
+        // Apple-specific: inherited fds default to close-on-exec in the child unless
         // a file action explicitly keeps them (our dup2 of the pty slave to 0/1/2).
         CloexecDefault = 0x4000,
         Setsid = 0x0400,
+        // Apple-only: posix_spawn replaces the *calling* process image instead of
+        // spawning a child — a "more featureful execve". Used inside the fork child so
+        // the kernel's spawn machinery (session/ctty via SETSID, CLOEXEC_DEFAULT fd
+        // isolation) applies in place, and no post-fork libc setup is hand-rolled.
+        Setexec = 0x0040,
 #elif LINUX
-        // glibc: POSIX_SPAWN_SETSIGDEF — the signals in the "sigdefault" set are reset
-        // to SIG_DFL in the child (POSIX spawn inherits SIG_IGN; macOS resets them
-        // automatically, glibc does not).
+        // Linux no longer uses posix_spawn (the fork child does the setup itself, and
+        // the SIG_IGN-disposition gap SETSIGDEF closed is handled with libc signal()
+        // calls in ChildMain). The value is kept for reference.
         Setsigdef = 0x0004,
         Setsid = 0x0080,
 #else
@@ -86,7 +93,7 @@ internal static partial class NativeMethods
     // PtyProcess.Start.Unix.cs and are identical on macOS and Linux.
     internal const int Eintr = 4;
     internal const int Eio = 5;
-    internal const int Echild = 10;
+    internal const int Esrch = 3;
     internal const int ENoent = 2;
     internal const int Enotdir = 20;
     internal const int Eacces = 13;
@@ -105,13 +112,24 @@ internal static partial class NativeMethods
 #if OSX
     internal const int ONonblock = 0x0004;
     internal const int ONoctty = 0x20000;
+    // O_CLOEXEC for open(2): macOS uses 0x1000000 (Linux uses 0x80000; the value is
+    // per-platform, so it sits in the per-platform section).
+    internal const int OCloexec = 0x1000000;
 #elif LINUX
     internal const int ONonblock = 0x0800;
     internal const int ONoctty = 0x00100;
+    internal const int OCloexec = 0x80000;
 #else
 #error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
 #endif
     internal const int ORdwr = 0x0002;
+
+    // fcntl(2) commands used to set the close-on-exec bit after a raw open/openpty
+    // (macOS has no SOCK_CLOEXEC for socketpair; the pty master/slave fds from
+    // open/openpty need the same post-open treatment on both platforms). F_SETFD
+    // and FD_CLOEXEC are identical on macOS and Linux.
+    internal const int FSetfd = 2;
+    internal const int FdCloexec = 1;
 
     // TIOCSWINSZ: the ioctl request that sets the terminal window size in characters.
     // macOS 0x80087467 (_IOW('t', 104, winsize), C-verified), Linux 0x5414
@@ -127,11 +145,6 @@ internal static partial class NativeMethods
     // Buffer sizes for the opaque spawn types: both are well under this on macOS.
     internal const int PosixSpawnFileActionsSize = 512;
     internal const int PosixSpawnAttrSize = 512;
-
-#if LINUX
-    // sizeof(sigset_t) on Linux (glibc): 16 unsigned longs = 128 bytes.
-    internal const int SigsetSize = 128;
-#endif
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct PollFd
@@ -228,13 +241,46 @@ internal static partial class NativeMethods
             : ioctl(fd, request, arg);
     }
 
-    // posix_spawnp searches PATH for a file name without a slash, matching
-    // Process.Start / CreateProcess on Windows; a path with a slash is executed
-    // directly, exactly like posix_spawn.
+    // ---- fork(2) + in-place exec launch path ----
+    // The pty is created first (see PtyProcess.Start.Unix.cs), then fork. fork(2) in a
+    // multithreaded .NET process is safe only when the child's post-fork work is pure
+    // libc (no allocations, no runtime locks): the spawn critical section therefore
+    // enters a no-GC region and pins all native pointers before forking. The parent and
+    // the child then diverge — the parent leaves the region immediately; the child runs
+    // ChildMain (macOS: posix_spawn with SETEXEC; Linux: libc-only setup) and never
+    // returns. ChildMain reaches libc exclusively through ChildNativeApi function
+    // pointers whose calli stubs are warmed in the parent — see PtyProcess.Start.Unix.cs.
     [LibraryImport("libc", SetLastError = true)]
-    internal static partial int posix_spawnp(
-        out int pid, IntPtr path, IntPtr fileActions, IntPtr attr,
-        [In] IntPtr[] argv, [In] IntPtr[] envp);
+    internal static partial int fork();
+
+    // fcntl(2) F_SETFD: set/clear the close-on-exec bit on an fd. fcntl is variadic
+    // (int fcntl(int, int, ...)), and on Apple arm64 the variadic argument must land on
+    // the stack, so the plain fixed signature misdelivers it — the same trap as ioctl.
+    // The Apple arm64 form pads the six general-purpose registers (x2-x7) so the real
+    // argument lands where va_arg looks for it (see the ioctl comment above).
+    [LibraryImport("libc", SetLastError = true, EntryPoint = "fcntl")]
+    internal static partial int fcntl(int fd, int cmd, int arg);
+
+    [LibraryImport("libc", SetLastError = true, EntryPoint = "fcntl")]
+    internal static partial int fcntlArm64(int fd, int cmd,
+        nint r2, nint r3, nint r4, nint r5, nint r6, nint r7, int arg);
+
+    /// <summary>Calls fcntl(fd, cmd, arg), selecting the pad-register form where the platform's variadic ABI requires it.</summary>
+    internal static int Fcntl(int fd, int cmd, int arg)
+    {
+        return OperatingSystem.IsMacOS() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64
+            ? fcntlArm64(fd, cmd, 0, 0, 0, 0, 0, 0, arg)
+            : fcntl(fd, cmd, arg);
+    }
+
+    // Upper bound for the Linux child's per-fd close sweep fallback (the primary path
+    // is close_range(2), see ChildMain): the loop runs to this cap so a huge
+    // RLIMIT_NOFILE (servers/containers often run hundreds of thousands) cannot turn
+    // every spawn into a million-iteration loop. Fds above the cap would leak into the
+    // child when the loop fallback runs, but .NET's own fds are all CLOEXEC (closed by
+    // the kernel at exec), so only non-CLOEXEC fds from P/Invoke could leak — those
+    // live in the low range in practice.
+    internal const int FdIsolationCap = 4096;
 
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int posix_spawn_file_actions_init(IntPtr fileActions);
@@ -248,65 +294,12 @@ internal static partial class NativeMethods
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int posix_spawn_file_actions_adddup2(IntPtr fileActions, int from, int to);
 
-    [LibraryImport("libc", SetLastError = true)]
-    internal static partial int posix_spawn_file_actions_addclose(IntPtr fileActions, int fd);
-
     // Path is marshaled as UTF-8 (StringMarshalling) so LibraryImport stays AOT/trim
     // compatible, and the POSIX chdir file action takes const char* paths.
     [LibraryImport("libc", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     internal static partial int posix_spawn_file_actions_addchdir_np(IntPtr fileActions, string path);
 
 #if LINUX
-    // Upper bound for the per-fd isolation loop in PtyProcess.StartCore. The loop runs
-    // to min(RLIMIT_NOFILE soft limit, this cap): the soft limit because glibc's addclose
-    // rejects fds >= sysconf(_SC_OPEN_MAX) with EBADF (musl accepts any non-negative fd
-    // and ignores EBADF at close time); the cap so a huge limit (servers/containers often
-    // run hundreds of thousands) cannot turn every spawn into a million-file-action loop.
-    // Fds above the cap would leak into the child, but .NET's own fds are all CLOEXEC
-    // (closed by the kernel at exec), so only non-CLOEXEC fds from P/Invoke could leak —
-    // those live in the low range in practice. A single closefrom call would be nicer
-    // (glibc's addclosefrom_np), but musl does not export it, so the portable addclose
-    // loop is used: both libcs execute FDOP_CLOSE in the child and ignore EBADF when
-    // closing an already-closed fd.
-    internal const int FdIsolationCap = 4096;
-
-    // Linux: RLIMIT_NOFILE from <sys/resource.h>. Per-arch in musl/glibc (MIPS uses 5);
-    // 7 is the generic value on x86_64/aarch64. Sits in the LINUX section because macOS
-    // uses a different number.
-    internal const int RlimitNofile = 7;
-
-    [StructLayout(LayoutKind.Sequential)]
-    internal struct RLimit
-    {
-        internal nuint Cur; // rlim_cur (soft limit)
-        internal nuint Max; // rlim_max (hard limit)
-    }
-
-    [LibraryImport("libc", SetLastError = true)]
-    internal static partial int getrlimit(int resource, out RLimit rlim);
-
-    // Pointer form so the caller can pass a stackalloc'd sigset (pinned with fixed):
-    // a byte[] overload would allocate a 128-byte array on every Linux spawn.
-    [LibraryImport("libc", SetLastError = true)]
-    internal static partial int posix_spawnattr_setsigdefault(IntPtr attr, IntPtr sigset);
-
-    /// <summary>
-    /// Fills <paramref name="set"/> as a glibc sigset_t: an all-zero buffer is
-    /// sigemptyset, and each signal N is bit (N-1) of the set (glibc __sigset_t,
-    /// LSB-first within the word). The caller supplies a stack-allocated buffer so a
-    /// Linux spawn performs no per-call allocation.
-    /// </summary>
-    internal static void BuildSignalSet(scoped Span<byte> set, scoped ReadOnlySpan<Signals> signals)
-    {
-        set.Clear();
-        foreach (var sig in signals)
-        {
-            var n = (int)sig;
-            if (n >= 1 && n <= SigsetSize * 8)
-                set[(n - 1) / 8] |= (byte)(1 << ((n - 1) % 8));
-        }
-    }
-
     // ---- epoll / pidfd / eventfd: the event-driven reaper (PtyReaper.Unix.cs) ----
     // epoll(2) event and control constants (identical across Linux architectures).
     internal const int EpollIn = 0x001;
@@ -373,6 +366,10 @@ internal static partial class NativeMethods
     // A single constant covers the library's Linux targets (x64 and arm64).
     internal const int PidfdOpenSyscallNumber = 434;
 
+    // __NR_close_range is 436 on the asm-generic table (x86_64, aarch64, arm, i386);
+    // kernel 5.9+. Used by the fork child's fd sweep (no libc wrapper needed on musl).
+    internal const int CloseRangeSyscallNumber = 436;
+
     // eventfd(2): the reaper's self-wake channel — a counter fd that stays writable, so
     // waking never blocks (unlike a pipe, which can fill).
     [LibraryImport("libc", SetLastError = true)]
@@ -438,6 +435,12 @@ internal static partial class NativeMethods
 
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int kill(int pid, Signals sig);
+
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int getpgid(int pid);
+
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int getsid(int pid);
 
     internal static int poll(Span<PollFd> fds, int timeout)
     {

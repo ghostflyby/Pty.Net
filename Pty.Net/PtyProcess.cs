@@ -42,6 +42,9 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// Volatile: written from the calling thread, read from any thread.</summary>
     private int killRequested; // 0/1
 
+    /// <summary>Set once by the reaper before publishing exit state and notifications.</summary>
+    private int reaped;
+
     /// <summary>OS process id of the child.</summary>
     public int Pid { get; }
 
@@ -177,9 +180,10 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         IReadOnlyDictionary<string, string?>? environment, bool inheritParentEnvironment, Encoding? inputEncoding,
         Encoding? outputEncoding, int initialCols, int initialRows)
     {
-        // posix_spawn applies its chdir file action lazily at exec time, so a bad
-        // working directory would otherwise surface as an ambiguous spawn errno (the
-        // child cannot start at all) instead of a deterministically typed error.
+        // A bad working directory would otherwise surface as an ambiguous spawn errno
+        // (the child cannot chdir, so it never starts) instead of a deterministically
+        // typed error. Pre-validated here so both platform launch paths report it the
+        // same way.
         if (workingDirectory is not null && !Directory.Exists(workingDirectory))
             throw new DirectoryNotFoundException($"The working directory '{workingDirectory}' does not exist.");
 
@@ -350,9 +354,10 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// </summary>
     public void Kill()
     {
-        if (disposed || HasExited || Volatile.Read(ref killRequested) != 0)
+        if (disposed || HasExited)
             return;
-        Volatile.Write(ref killRequested, 1);
+        if (Interlocked.CompareExchange(ref killRequested, 1, 0) != 0 || HasExited)
+            return;
         // Platform hook: SIGKILL on Unix, TerminateProcess on Windows.
         KillPlatform();
     }
@@ -402,6 +407,8 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
                 return;
             disposed = true;
 
+            PtyDiagnostics.Log($"dispose begin pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"}");
+
             TerminateGracefully();
 
             // Disposing the stream aborts in-flight I/O and releases the terminal channels.
@@ -416,7 +423,9 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
             // so this wait is bounded in practice; if it ever stalls — a child surviving
             // even SIGKILL — that is a genuine platform failure we surface by blocking
             // rather than silently deferring to the background reaper.
+            PtyDiagnostics.Log($"dispose waiting exit-signal pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"}");
             ExitSignal.Wait();
+            PtyDiagnostics.Log($"dispose exit-signal completed pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"}");
             if (HasExited)
                 ProcessHandle?.Dispose();
         }
@@ -444,10 +453,14 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
                 return;
             disposed = true;
 
+            PtyDiagnostics.Log($"dispose-async begin pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"}");
+
             await TerminateGracefullyAsync().ConfigureAwait(false);
             BaseStream.Dispose();
 
+            PtyDiagnostics.Log($"dispose-async waiting exit-signal pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"}");
             await ExitSignal.ConfigureAwait(false);
+            PtyDiagnostics.Log($"dispose-async exit-signal completed pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"}");
             if (HasExited)
                 ProcessHandle?.Dispose();
         }
@@ -474,6 +487,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         // async pseudo-console close, which sends CTRL_CLOSE_EVENT (exited children are
         // left alone so their final output is preserved).
         SignalChildIfAlive();
+        PtyDiagnostics.Log($"dispose graceful signal sent pid={Pid} exited={HasExited}");
         if (HasExited)
             return;
 
@@ -486,10 +500,12 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
             ExitSignal.Wait(remaining);
         }
 
-        if (!HasExited && Volatile.Read(ref killRequested) == 0)
+        PtyDiagnostics.Log($"dispose graceful timeout pid={Pid} exited={HasExited}");
+
+        if (!HasExited && Interlocked.CompareExchange(ref killRequested, 1, 0) == 0 && !HasExited)
         {
-            Volatile.Write(ref killRequested, 1);
             KillPlatform();
+            PtyDiagnostics.Log($"dispose force kill sent pid={Pid}");
         }
     }
 
@@ -499,6 +515,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
             return;
 
         SignalChildIfAlive();
+        PtyDiagnostics.Log($"dispose-async graceful signal sent pid={Pid} exited={HasExited}");
         if (HasExited)
             return;
 
@@ -517,10 +534,12 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
             }
         }
 
-        if (!HasExited && Volatile.Read(ref killRequested) == 0)
+        PtyDiagnostics.Log($"dispose-async graceful timeout pid={Pid} exited={HasExited}");
+
+        if (!HasExited && Interlocked.CompareExchange(ref killRequested, 1, 0) == 0 && !HasExited)
         {
-            Volatile.Write(ref killRequested, 1);
             KillPlatform();
+            PtyDiagnostics.Log($"dispose-async force kill sent pid={Pid}");
         }
     }
 
@@ -528,12 +547,21 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
 
     /// <summary>
     /// Called by the process-wide reaper once the child has been collected: records
-    /// the exit code and raises <see cref="Exited"/>. Runs on the shared reaper thread;
-    /// handler exceptions are swallowed so one misbehaving handler cannot stall reaping
-    /// for every other session.
+    /// the exit code and raises <see cref="Exited"/>. Returns true when this call was
+    /// the one that published the exit (false for duplicate notifications after the
+    /// idempotency guard). Runs on the shared reaper thread; handler exceptions are
+    /// swallowed so one misbehaving handler cannot stall reaping for every other
+    /// session.
     /// </summary>
-    internal void OnReaped(int code)
+    internal bool OnReaped(int code)
     {
+        if (Interlocked.Exchange(ref reaped, 1) != 0)
+        {
+            PtyDiagnostics.Log($"on-reaped duplicate ignored pid={Pid} code={code} published={ExitCode?.ToString() ?? "null"}");
+            return false;
+        }
+
+        PtyDiagnostics.Log($"on-reaped pid={Pid} code={code} previous-exit={ExitCode?.ToString() ?? "null"}");
         // Platform hook: Windows queues the pseudo-console close + final-frame drain
         // away from this shared reaper thread; Unix has no teardown work.
         OnReapedPlatform();
@@ -549,6 +577,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         {
             // A handler that throws must not kill the shared reaper thread.
         }
+        return true;
     }
 
     /// <summary>Single non-blocking reap attempt for this child; true when collected, with the exit code.</summary>

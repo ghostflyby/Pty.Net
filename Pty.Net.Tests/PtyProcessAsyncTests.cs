@@ -104,6 +104,21 @@ public class PtyProcessAsyncTests
     /// </summary>
 #if !WINDOWS
     [Fact]
+    public async Task DisposeAsync_InteractiveShell_ClosesTerminalPromptly()
+    {
+        var p = TestBash.Start();
+        p.GracefulExitTimeout = TimeSpan.FromSeconds(2);
+        TestBash.ReadUntil(p.Output, "$", Timeout);
+
+        var sw = Stopwatch.StartNew();
+        await p.DisposeAsync();
+        sw.Stop();
+
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(1), $"DisposeAsync took {sw.Elapsed}");
+        Assert.True(p.HasExited, "interactive shell must be reaped by dispose");
+    }
+
+    [Fact]
     public async Task DisposeAsync_SurvivingChild_CompletesAfterGracefulTimeout()
     {
         // trap '' HUP makes the child ignore the hangup Dispose sends; sleep keeps it
@@ -147,6 +162,31 @@ public class PtyProcessAsyncTests
         Assert.Equal(0, await tcs.Task.WaitAsync(Timeout));
     }
 
+    /// <summary>
+    /// The Exited flow with nobody reading the terminal. Regression: on macOS a
+    /// fork-spawned session leader parks mid-exit when its final tty output cannot
+    /// drain to an unread pty master, so without the reaper's stuck-exit close this
+    /// wait never completes. Allow ~3s for the reaper's stuck-exit grace window.
+    /// </summary>
+    [Fact]
+    public async Task Exited_Fires_WithoutReadingOutput()
+    {
+        var p = TestBash.Start();
+        try
+        {
+            var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            p.Exited += (code, _) => tcs.TrySetResult(code);
+
+            p.Input.WriteLine("exit");
+
+            Assert.Equal(0, await tcs.Task.WaitAsync(Timeout));
+        }
+        finally
+        {
+            await p.DisposeAsync();
+        }
+    }
+
     [Fact]
     public async Task Exited_FiresOnExternalDeath()
     {
@@ -179,6 +219,26 @@ public class PtyProcessAsyncTests
             p1.Dispose();
             p2.Dispose();
         }
+    }
+
+    [Fact]
+    public async Task OnReaped_DuplicateNotification_PublishesOnlyOnce()
+    {
+        var (file, args) = TestBash.ShortLivedProcess();
+        using var p = PtyProcess.Start(file, args);
+        var calls = 0;
+        var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        p.Exited += (code, _) =>
+        {
+            Interlocked.Increment(ref calls);
+            tcs.TrySetResult(code);
+        };
+
+        Assert.Equal(0, await tcs.Task.WaitAsync(Timeout));
+        p.OnReaped(42);
+
+        Assert.Equal(0, p.ExitCode);
+        Assert.Equal(1, Volatile.Read(ref calls));
     }
 
     /// <summary>The reaper sets ExitCode on its own — no explicit WaitForExit needed.</summary>
