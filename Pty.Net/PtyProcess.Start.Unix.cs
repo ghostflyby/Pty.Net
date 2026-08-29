@@ -163,7 +163,9 @@ public sealed partial class PtyProcess
                 throw new IOException($"posix_spawnattr_init failed: errno={Marshal.GetLastPInvokeError()}");
             }
             var flagsRc = NativeMethods.posix_spawnattr_setflags(
-                spawnAttr, NativeMethods.PosixSpawnFlags.Setexec);
+                spawnAttr,
+                NativeMethods.PosixSpawnFlags.Setexec |
+                NativeMethods.PosixSpawnFlags.CloexecDefault);
             if (flagsRc != 0)
                 throw new IOException($"posix_spawnattr_setflags failed: errno={flagsRc}");
 #endif
@@ -482,19 +484,19 @@ public sealed partial class PtyProcess
         api.Signal((int)NativeMethods.Signals.Term, IntPtr.Zero);
 
         // Close every inherited fd above stdio except the error pipe (it carries the
-        // exec-failure errno). This runs BEFORE the ctty open below, so no exclusion
-        // for it is needed and the sweep is identical on both platforms.
-        var sweepManually = true;
+        // exec-failure errno). Linux-only: on macOS CLOEXEC_DEFAULT does this
+        // kernel-side at exec (the whole reason posix_spawn is used there). The sweep
+        // runs BEFORE the ctty open below, so no exclusion for it is needed.
 #if LINUX
         // Prefer close_range(2) (syscall 436, kernel 5.9+) — one syscall instead of a
         // loop bounded by FdIsolationCap, so fds above the cap are closed too. Any
         // failure (ENOSYS on old kernels, EINVAL) falls back to the bounded loop,
         // which harmlessly re-closes already-closed fds.
+        var sweepManually = true;
         if (errWrite > 3)
             sweepManually = api.Syscall(NativeMethods.CloseRangeSyscallNumber, 3, (uint)(errWrite - 1), IntPtr.Zero) != 0;
         if (!sweepManually && errWrite < int.MaxValue - 1)
             sweepManually = api.Syscall(NativeMethods.CloseRangeSyscallNumber, (uint)Math.Max(errWrite + 1, 3), uint.MaxValue, IntPtr.Zero) != 0;
-#endif
         if (sweepManually)
         {
             for (var fd = 3; fd < NativeMethods.FdIsolationCap; fd++)
@@ -503,6 +505,7 @@ public sealed partial class PtyProcess
                     _ = api.Close(fd);
             }
         }
+#endif
 
         // Session leader opens the pty slave without O_NOCTTY — that is what assigns
         // the tty as the session's controlling terminal (a dup2 of a parent-opened fd

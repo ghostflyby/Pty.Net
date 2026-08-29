@@ -58,14 +58,17 @@ internal static partial class NativeMethods
     }
 
     // posix_spawnattr flags (Apple). SETEXEC (0x0040, from sys/spawn.h) makes
-    // posix_spawn replace the calling process — the property the fork child relies on;
-    // SETSID (0x0400) and CLOEXEC_DEFAULT (0x4000) are deliberately NOT set: the fork
-    // child does its own setsid + ctty open, and the fd sweep is manual (see ChildMain).
+    // posix_spawn replace the calling process — the property the fork child relies
+    // on. CLOEXEC_DEFAULT (0x4000) makes the kernel close every fd the file actions
+    // did not create — the fd sweep itself, no manual loop, fds above any cap
+    // included. SETSID (0x0400) is deliberately not set: the fork child does its own
+    // setsid() before the spawn call (see ChildMain).
 #if OSX
     [Flags]
     internal enum PosixSpawnFlags : short
     {
         None = 0,
+        CloexecDefault = 0x4000,
         Setexec = 0x0040,
     }
 #endif
