@@ -525,7 +525,10 @@ internal static partial class PtyReaper
 #endif
                 if (n >= 0)
                 {
-                    PtyDiagnostics.Log($"wait events result={n}");
+                    // Hot path: the bounded macOS wait returns up to ten times per
+                    // second per watched child — build the message only when enabled.
+                    if (PtyDiagnostics.Enabled)
+                        PtyDiagnostics.Log($"wait events result={n}");
                     return n;
                 }
                 if (Marshal.GetLastPInvokeError() == Eintr)

@@ -221,6 +221,30 @@ public class PtyProcessAsyncTests
         }
     }
 
+    /// <summary>
+    /// Handler isolation is per handler, not per event: with two subscribers on the
+    /// SAME process, a throw from the first must not stop the second from seeing the
+    /// exit (a whole-multicast try/catch would starve later subscribers).
+    /// </summary>
+    [Fact]
+    public async Task Exited_HandlerException_IsolatesLaterHandlersOnSameProcess()
+    {
+        var (file, args) = TestBash.ShortLivedProcess();
+        using var p = PtyProcess.Start(file, args);
+        var second = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstRan = 0;
+
+        p.Exited += (_, _) =>
+        {
+            Interlocked.Increment(ref firstRan);
+            throw new InvalidOperationException("boom");
+        };
+        p.Exited += (code, _) => second.TrySetResult(code);
+
+        Assert.Equal(0, await second.Task.WaitAsync(Timeout));
+        Assert.Equal(1, Volatile.Read(ref firstRan));
+    }
+
     [Fact]
     public async Task OnReaped_DuplicateNotification_PublishesOnlyOnce()
     {

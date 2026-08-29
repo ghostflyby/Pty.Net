@@ -569,13 +569,24 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         // Release every exit wait (WaitForExit / WaitForExitAsync / Dispose / DisposeAsync)
         // before raising the event, so a handler that blocks cannot stall them.
         exitSignal.Value.TrySetResult(true);
-        try
+        // Raise the event handler-by-handler: a multicast invocation runs all handlers
+        // as one delegate, so a throw from the first subscriber would prevent every
+        // later subscriber from seeing the exit. Each handler is isolated instead —
+        // exactly-once delivery per subscriber, exceptions swallowed per subscriber.
+        if (Exited is { } exited)
         {
-            Exited?.Invoke(code, this);
-        }
-        catch
-        {
-            // A handler that throws must not kill the shared reaper thread.
+            foreach (var handler in exited.GetInvocationList().Cast<Action<int, PtyProcess>>())
+            {
+                try
+                {
+                    handler(code, this);
+                }
+                catch
+                {
+                    // A handler that throws must not kill the shared reaper thread, nor
+                    // starve the remaining handlers of the notification.
+                }
+            }
         }
         return true;
     }
