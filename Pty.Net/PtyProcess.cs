@@ -180,9 +180,10 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         IReadOnlyDictionary<string, string?>? environment, bool inheritParentEnvironment, Encoding? inputEncoding,
         Encoding? outputEncoding, int initialCols, int initialRows)
     {
-        // posix_spawn applies its chdir file action lazily at exec time, so a bad
-        // working directory would otherwise surface as an ambiguous spawn errno (the
-        // child cannot start at all) instead of a deterministically typed error.
+        // A bad working directory would otherwise surface as an ambiguous spawn errno
+        // (the child cannot chdir, so it never starts) instead of a deterministically
+        // typed error. Pre-validated here so both platform launch paths report it the
+        // same way.
         if (workingDirectory is not null && !Directory.Exists(workingDirectory))
             throw new DirectoryNotFoundException($"The working directory '{workingDirectory}' does not exist.");
 

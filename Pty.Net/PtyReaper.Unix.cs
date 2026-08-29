@@ -221,6 +221,7 @@ internal static partial class PtyReaper
                 if (process.TryReap(out var code))
                 {
                     PtyDiagnostics.Log($"watch drain reaped pid={process.Pid} code={code}");
+                    stuckExiting.Remove(process.Pid);
                     process.OnReaped(code);
                     lock (sync)
                     {
@@ -253,6 +254,7 @@ internal static partial class PtyReaper
                 var process = retryWatch[i];
                 if (process.TryReap(out var code))
                 {
+                    stuckExiting.Remove(process.Pid);
                     process.OnReaped(code);
                     retryWatch.RemoveAt(i);
                     lock (sync)
@@ -364,6 +366,7 @@ internal static partial class PtyReaper
             if (!process.TryReap(out var code))
                 return false;
             PtyDiagnostics.Log($"try-reap completed pid={process.Pid} code={code}");
+            stuckExiting.Remove(process.Pid);
             process.OnReaped(code);
             lock (sync)
             {
@@ -392,6 +395,7 @@ internal static partial class PtyReaper
             if (process.TryReap(out var code))
             {
                 PtyDiagnostics.Log($"reap event waitpid completed pid={pid} code={code}");
+                stuckExiting.Remove(pid);
                 process.OnReaped(code);
                 return;
             }
