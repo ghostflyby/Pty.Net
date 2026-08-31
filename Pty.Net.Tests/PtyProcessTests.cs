@@ -417,6 +417,42 @@ public class PtyProcessTests : IDisposable
     }
 
     /// <summary>
+    /// Allowlist mode is strict: the library injects nothing (not even TERM). A TERM
+    /// the child sees is either listed explicitly or set by the shell itself — bash
+    /// falls back to TERM=dumb when the variable is absent.
+    /// </summary>
+    [Fact]
+    public void Environment_Allowlist_DoesNotInjectTerm()
+    {
+        // Explicit TERM passes through verbatim: allowlist is fully caller-controlled.
+        var explicitInfo = new PtyStartInfo(TestBash.BashPath)
+        {
+            Arguments = ["--noprofile", "--norc", "-c", "echo TERM=[$TERM]; echo __DONE__"],
+            Environment = ImmutableDictionary<string, string?>.Empty.Add("TERM", "custom-term-1"),
+            InheritParentEnvironment = false,
+        };
+        using (var p = PtyProcess.Start(explicitInfo))
+        {
+            var output = TestBash.ReadUntil(p.Output, "__DONE__", Timeout);
+            Assert.Contains("TERM=[custom-term-1]", output);
+        }
+
+        // Empty allowlist: no injection — TERM is whatever the shell falls back to
+        // (bash sets "dumb"), never the library's old implicit xterm-256color.
+        var emptyInfo = new PtyStartInfo(TestBash.BashPath)
+        {
+            Arguments = ["--noprofile", "--norc", "-c", "echo TERM=[$TERM]; echo __DONE__"],
+            Environment = ImmutableDictionary<string, string?>.Empty,
+            InheritParentEnvironment = false,
+        };
+        using (var p = PtyProcess.Start(emptyInfo))
+        {
+            var output = TestBash.ReadUntil(p.Output, "__DONE__", Timeout);
+            Assert.DoesNotContain("xterm-256color", output);
+        }
+    }
+
+    /// <summary>
     /// A bare file name (no slash) is resolved through PATH on every platform:
     /// posix_spawnp on Unix, CreateProcess on Windows. Guards the regression where Unix
     /// used plain posix_spawn and threw FileNotFoundException for a name like "bash".

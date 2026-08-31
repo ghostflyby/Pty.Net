@@ -143,8 +143,15 @@ a child that was still alive.
 - `Input`/`Output` (text) and `BaseStream` (raw bytes) read the same channel; never
   mix both on the same direction.
 - While `WaitForExit`/`WaitForExitAsync` run, output is drained so the child never
-  blocks on a full pty buffer — on Unix that drained output is discarded, on Windows
-  it stays buffered for a later read. Consume output before or after the wait.
+  blocks on a full pty buffer. The drained output is preserved and remains readable
+  after the wait, on every platform — the trade-off is memory: a child producing
+  pathological output volume while being waited on grows the buffer with its output.
+  For such children, consume the output concurrently instead of waiting.
+- The process owns the underlying stream: disposing `Input` or `Output` alone never
+  breaks the other facade or the process; `Dispose`/`DisposeAsync` closes everything.
+- `InheritParentEnvironment = false` (allowlist) is strict: the child receives exactly
+  the listed variables, nothing is injected implicitly. Terminal-aware programs need
+  `TERM` — add it explicitly, e.g. `Environment = new Dictionary<string, string?> { ["TERM"] = "xterm-256color" }`.
 
 ## License
 

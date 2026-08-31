@@ -90,6 +90,11 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// <para>Fires during <see cref="Dispose"/>/<see cref="DisposeAsync"/> for a child
     /// that was still alive: the graceful window and force-kill make the reaper collect
     /// it before dispose returns, so the event is raised from within the dispose call.</para>
+    /// <para>The event carries no history: a subscriber added after the child already
+    /// exited will never fire. Subscribe immediately after starting the process; late
+    /// observers should use <see cref="WaitForExitAsync(TimeSpan?, CancellationToken)"/>
+    /// (completes immediately when the child has already exited) or read
+    /// <see cref="ExitCode"/> instead.</para>
     /// </summary>
     public event Action<int, PtyProcess>? Exited;
 
@@ -101,13 +106,15 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// </summary>
     public PtyStream BaseStream { get; }
 
-    /// <summary>Text writer to the child's terminal input, like <see cref="System.Diagnostics.Process.StandardInput"/>. Auto-flushed so writes are visible to the child immediately.</summary>
+    /// <summary>Text writer to the child's terminal input, like <see cref="System.Diagnostics.Process.StandardInput"/>. Auto-flushed so writes are visible to the child immediately.
+    /// <para>The writer does not own the underlying stream: disposing it leaves the process usable. <see cref="PtyProcess.Dispose"/> closes everything.</para></summary>
     public StreamWriter Input { get; }
 
     /// <summary>
     /// Text reader over the child's terminal output, like <see cref="System.Diagnostics.Process.StandardOutput"/>.
-    /// <para>A pty merges the child's stdout and stderr into this one reader. Prefer
-    /// disposing the whole <see cref="PtyProcess"/> over disposing this reader alone.</para>
+    /// <para>A pty merges the child's stdout and stderr into this one reader. The reader
+    /// does not own the underlying stream: disposing it leaves the process usable.
+    /// <see cref="PtyProcess.Dispose"/> closes everything.</para>
     /// </summary>
     public StreamReader Output { get; }
 
@@ -121,13 +128,15 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         var effectiveInputEncoding = inputEncoding ?? new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
         var effectiveOutputEncoding = outputEncoding ?? Encoding.UTF8;
         // Platform hook: Windows wraps the raw stream in transcoding facades (ConPTY
-        // transports UTF-8 bytes); Unix uses the stream directly.
+        // transports UTF-8 bytes); Unix uses the stream directly. Facades never own
+        // the underlying stream (leaveOpen below): PtyProcess is the single owner and
+        // disposes it, so disposing one facade must not break its siblings.
         CreateFacades(effectiveInputEncoding, effectiveOutputEncoding, out var inputFacadeStream, out var outputFacadeStream);
-        Input = new StreamWriter(inputFacadeStream, effectiveInputEncoding)
+        Input = new StreamWriter(inputFacadeStream, effectiveInputEncoding, bufferSize: 1024, leaveOpen: true)
         {
             AutoFlush = true,
         };
-        Output = new StreamReader(outputFacadeStream, effectiveOutputEncoding);
+        Output = new StreamReader(outputFacadeStream, effectiveOutputEncoding, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
         Pid = pid;
         ProcessHandle = processHandle;
         // The process-wide reaper owns the exit wait for this child: it sets ExitCode and
@@ -214,11 +223,12 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// <summary>
     /// Blocks until the child exits or <paramref name="timeout"/> elapses.
     /// <para>While waiting, output is drained continuously so the child never blocks
-    /// writing to a full pty buffer. The drain preserves the bytes: on Windows the
-    /// output pump keeps them buffered for a later read, while on Unix the drain
-    /// discards them, so output produced during the wait is not available afterward.
-    /// Concurrent consumption of <see cref="Output"/> / <see cref="BaseStream"/>
-    /// during the wait is not portable, so consume output before or after it.</para>
+    /// writing to a full pty buffer. The drain preserves the bytes on every platform:
+    /// output produced during the wait remains readable through
+    /// <see cref="Output"/> / <see cref="BaseStream"/> afterward. The trade-off is
+    /// memory: a child that produces pathological output volume while being waited on
+    /// grows the buffer with its output — for such children, consume the output
+    /// concurrently instead of waiting.</para>
     /// <para>Reaping happens on the process-wide reaper thread; this method only observes
     /// the reaper's exit signal. Pass <see cref="Timeout.InfiniteTimeSpan"/> to wait
     /// indefinitely. For a thread-free equivalent see

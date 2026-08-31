@@ -54,6 +54,13 @@ public sealed partial class PtyStream
 
     internal bool IsClosed => Volatile.Read(ref disposed) != 0;
 
+    /// <summary>Windows has no exit-wait replay buffer — the pump preserves output in its queue — so async reads never serve replayed bytes.</summary>
+    private partial bool TryTakeReplayed(Memory<byte> buffer, out int read)
+    {
+        read = 0;
+        return false;
+    }
+
     /// <summary>There is no user-space buffering, so this does nothing beyond checking the stream is open.</summary>
     public override void Flush()
     {
