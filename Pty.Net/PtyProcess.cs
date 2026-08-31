@@ -42,9 +42,6 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// Volatile: written from the calling thread, read from any thread.</summary>
     private int killRequested; // 0/1
 
-    /// <summary>Set once by the reaper before publishing exit state and notifications.</summary>
-    private int reaped;
-
     /// <summary>OS process id of the child.</summary>
     public int Pid { get; }
 
@@ -54,20 +51,29 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// exist there. Owned by this process and disposed with it.
     /// </summary>
     private SafeProcessHandle? ProcessHandle { get; }
-    // Reaped exit code.
-    // int.MinValue means "not reaped yet"; afterward it is 0..255,
-    // 128 + signal, or -1 when the status could not be determined.
-    // Written by the
-    // process-wide reaper thread, read from any thread: Volatile keeps it visible.
-    private int exitCode = int.MinValue;
+    // Reaped exit code, valid once <see cref="reaped"/> is set. 0..255, 128 + signal,
+    // or -1 when the status could not be determined. Windows exit codes are full
+    // 32-bit values — notably 0x80000000 — so liveness MUST NOT be encoded as a
+    // sentinel inside the code itself (an earlier int.MinValue sentinel made
+    // HasExited permanently false for exactly that code). Written by the process-wide
+    // reaper thread, read from any thread.
+    private int exitCode;
+
+    /// <summary>
+    /// Set exactly once by the reaper before publishing <see cref="exitCode"/> and the
+    /// exit notification (see <see cref="OnReaped"/>). The reaper is the single waitpid
+    /// owner, so a plain flag suffices; <see cref="Volatile"/> keeps it visible.
+    /// </summary>
+    private bool reaped;
 
     /// <summary>Exit code of the child, once it has been reaped by the process-wide reaper; null while it is running.</summary>
     public int? ExitCode
     {
         get
         {
-            var value = Volatile.Read(ref exitCode);
-            return value == int.MinValue ? null : value;
+            if (!Volatile.Read(ref reaped))
+                return null;
+            return Volatile.Read(ref exitCode);
         }
     }
 
@@ -180,6 +186,13 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         IReadOnlyDictionary<string, string?>? environment, bool inheritParentEnvironment, Encoding? inputEncoding,
         Encoding? outputEncoding, int initialCols, int initialRows)
     {
+        // Same bounds as Resize (see there): Windows' COORD is short, so anything over
+        // short.MaxValue would wrap negative on that platform.
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(initialCols);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(initialRows);
+        if (initialCols > short.MaxValue || initialRows > short.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(initialCols), "Terminal dimensions are limited to 32767 per axis.");
+
         // A bad working directory would otherwise surface as an ambiguous spawn errno
         // (the child cannot chdir, so it never starts) instead of a deterministically
         // typed error. Pre-validated here so both platform launch paths report it the
@@ -358,8 +371,12 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
             return;
         if (Interlocked.CompareExchange(ref killRequested, 1, 0) != 0 || HasExited)
             return;
-        // Platform hook: SIGKILL on Unix, TerminateProcess on Windows.
-        KillPlatform();
+        // Platform hook: SIGKILL on Unix, TerminateProcess on Windows. On failure the
+        // reservation is rolled back so a later Kill()/dispose force-kill can retry —
+        // otherwise a failed signal would be silently swallowed and every subsequent
+        // cleanup would wait on a child that was never actually killed.
+        if (!KillPlatform())
+            Volatile.Write(ref killRequested, 0);
     }
 
     /// <summary>
@@ -376,11 +393,13 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// <exception cref="IOException">The terminal could not be resized.</exception>
     public void Resize(int columns, int rows)
     {
-        // Both platforms carry the size in 16-bit fields (ushort winsize / short COORD).
+        // The narrower of the two platform fields is Windows' COORD (short): values
+        // above short.MaxValue would wrap negative there, so the common validation
+        // clamps to it; Unix's ushort winsize accepts everything that passes.
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(columns);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(rows);
-        if (columns > ushort.MaxValue || rows > ushort.MaxValue)
-            throw new ArgumentOutOfRangeException(nameof(columns), "Terminal dimensions are limited to 16 bits per axis.");
+        if (columns > short.MaxValue || rows > short.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(columns), "Terminal dimensions are limited to 32767 per axis.");
         BaseStream.SetWindowSize(columns, rows);
     }
 
@@ -504,7 +523,10 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
 
         if (!HasExited && Interlocked.CompareExchange(ref killRequested, 1, 0) == 0 && !HasExited)
         {
-            KillPlatform();
+            // Roll the reservation back on failure so the reaper's stuck-exit safety
+            // net (or a user retry) can attempt the kill again.
+            if (!KillPlatform())
+                Volatile.Write(ref killRequested, 0);
             PtyDiagnostics.Log($"dispose force kill sent pid={Pid}");
         }
     }
@@ -538,7 +560,8 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
 
         if (!HasExited && Interlocked.CompareExchange(ref killRequested, 1, 0) == 0 && !HasExited)
         {
-            KillPlatform();
+            if (!KillPlatform())
+                Volatile.Write(ref killRequested, 0);
             PtyDiagnostics.Log($"dispose-async force kill sent pid={Pid}");
         }
     }
@@ -555,17 +578,23 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// </summary>
     internal bool OnReaped(int code)
     {
-        if (Interlocked.Exchange(ref reaped, 1) != 0)
+        // The reaper is the single caller with waitpid ownership, but re-registration
+        // paths can still re-enter; the flag makes publication exactly-once. Order
+        // matters: the code must be visible before reaped flips (ExitCode reads
+        // reaped first, then the code).
+        if (Volatile.Read(ref reaped))
         {
             PtyDiagnostics.Log($"on-reaped duplicate ignored pid={Pid} code={code} published={ExitCode?.ToString() ?? "null"}");
             return false;
         }
 
-        PtyDiagnostics.Log($"on-reaped pid={Pid} code={code} previous-exit={ExitCode?.ToString() ?? "null"}");
+        Volatile.Write(ref exitCode, code);
+        Volatile.Write(ref reaped, true);
+
+        PtyDiagnostics.Log($"on-reaped pid={Pid} code={code}");
         // Platform hook: Windows queues the pseudo-console close + final-frame drain
         // away from this shared reaper thread; Unix has no teardown work.
         OnReapedPlatform();
-        Volatile.Write(ref exitCode, code);
         // Release every exit wait (WaitForExit / WaitForExitAsync / Dispose / DisposeAsync)
         // before raising the event, so a handler that blocks cannot stall them.
         exitSignal.Value.TrySetResult(true);
@@ -686,8 +715,12 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         IDictionary<string, string?> environment, Encoding? inputEncoding, Encoding? outputEncoding,
         int initialCols, int initialRows);
 
-    /// <summary>Terminates the child: SIGKILL on Unix, TerminateProcess on Windows.</summary>
-    private partial void KillPlatform();
+    /// <summary>
+    /// Terminates the child: SIGKILL on Unix, TerminateProcess on Windows. Returns
+    /// false when the child still exists but the termination could not be issued —
+    /// the caller rolls back its kill bookkeeping so the attempt can be retried.
+    /// </summary>
+    private partial bool KillPlatform();
 
     /// <summary>Sends the terminal-close signal to the child: SIGHUP on Unix, async CTRL_CLOSE_EVENT on Windows.</summary>
     private partial void RequestClosePlatform();

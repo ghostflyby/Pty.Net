@@ -39,6 +39,56 @@ public class PtyWindowsTests
         Assert.Equal(3, p.ExitCode);
     }
 
+    /// <summary>
+    /// Windows exit codes are full 32-bit values. 0x80000000 (e.g. STATUS_INTEGER_OVERFLOW
+    /// bubbling out of a program) collides with the old int.MinValue liveness sentinel —
+    /// with that encoding HasExited stayed false forever. ExitCode must surface the code
+    /// and HasExited must be true.
+    /// </summary>
+    [Fact]
+    public void ExitCode_Full32BitValue_IsPublished()
+    {
+        // PowerShell's exit binding is 32-bit; [int]::MinValue reaches the process exit
+        // code as 0x80000000.
+        using var p = PtyProcess.Start("powershell.exe", ["-NoProfile", "-Command", "exit [int]::MinValue"]);
+
+        Assert.True(p.WaitForExit(Timeout), "process with exit code 0x80000000 must be observed as exited");
+        Assert.True(p.HasExited);
+        Assert.Equal(int.MinValue, p.ExitCode);
+    }
+
+    /// <summary>Empty-string arguments must survive command-line marshaling (as `""`).</summary>
+    [Fact]
+    public void Start_EmptyArgument_IsPreserved()
+    {
+        // cmd.exe: `echo` receives three arguments; the middle one is empty. If the
+        // empty argument were dropped, the marker would print mangled.
+        using var p = PtyProcess.Start("cmd.exe", ["/c", "echo a", "", "c & echo EMPTY_OK"]);
+        var output = TestBash.ReadUntil(p.Output, "EMPTY_OK", Timeout);
+
+        Assert.Contains("EMPTY_OK", output);
+        Assert.True(p.WaitForExit(Timeout));
+    }
+
+    /// <summary>Sizes above short.MaxValue are rejected instead of wrapping the COORD fields negative.</summary>
+    [Fact]
+    public void Resize_RejectsDimensionsAboveShortMaxValue()
+    {
+        using var p = PtyProcess.Start("cmd.exe", ["/c", "echo OVERSIZE_DONE"]);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => p.Resize(32768, 30));
+        Assert.Throws<ArgumentOutOfRangeException>(() => p.Resize(30, 32768));
+        TestBash.ReadUntil(p.Output, "OVERSIZE_DONE", Timeout);
+    }
+
+    /// <summary>StartInfo sizes above short.MaxValue are rejected at launch time.</summary>
+    [Fact]
+    public void Start_RejectsInitialSizeAboveShortMaxValue()
+    {
+        var info = new PtyStartInfo("cmd.exe") { Arguments = ["/c", "echo x"], Column = 32768 };
+        Assert.Throws<ArgumentOutOfRangeException>(() => PtyProcess.Start(info));
+    }
+
     /// <summary>Root exit closes ConPTY, preserves its final output, and publishes EOF.</summary>
     [Fact]
     public async Task RootExit_PreservesFinalOutputAndCompletesWithEof()

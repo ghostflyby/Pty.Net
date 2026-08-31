@@ -720,9 +720,26 @@ public sealed partial class PtyProcess
         BaseStream.Dispose();
     }
 
+    /// <summary>
+    /// True while the pid still belongs to <em>this</em> child and can be signaled:
+    /// every child this library spawns becomes a session leader, so its session id
+    /// equals its pid — a property a recycled pid of an unrelated process will almost
+    /// certainly not have. Guards every kill/signal call against the pid-reuse race
+    /// (child reaped, pid recycled, signal lands in a stranger).
+    /// </summary>
+    private bool IsOurSessionLeader()
+    {
+        return NativeMethods.getsid(Pid) == Pid;
+    }
+
     /// <summary>Unix: SIGHUP the child — the terminal-hangup signal (see <see cref="PtyProcess.RequestClose"/>).</summary>
     private partial void RequestClosePlatform()
     {
+        if (!IsOurSessionLeader())
+        {
+            PtyDiagnostics.Log($"sighup skipped pid={Pid} not-our-session-leader");
+            return;
+        }
         var result = NativeMethods.kill(Pid, NativeMethods.Signals.Hup);
         var errno = result == 0 ? 0 : Marshal.GetLastPInvokeError();
         PtyDiagnostics.Log($"sighup pid={Pid} result={result} errno={errno} state={DescribeUnixState()}");
@@ -737,12 +754,22 @@ public sealed partial class PtyProcess
         outputFacadeStream = BaseStream;
     }
 
-    /// <summary>Unix: SIGKILL the child.</summary>
-    private partial void KillPlatform()
+    /// <summary>
+    /// Unix: SIGKILL the child. Returns false when the signal could not be delivered
+    /// to a process that is still ours (session-leader check passed but kill failed,
+    /// e.g. EPERM from a sandbox) — the caller must not treat the child as killed.
+    /// </summary>
+    private partial bool KillPlatform()
     {
+        if (!IsOurSessionLeader())
+        {
+            PtyDiagnostics.Log($"sigkill skipped pid={Pid} not-our-session-leader");
+            return true; // pid no longer ours: nothing to kill, do not retry
+        }
         var result = NativeMethods.kill(Pid, NativeMethods.Signals.Kill);
         var errno = result == 0 ? 0 : Marshal.GetLastPInvokeError();
         PtyDiagnostics.Log($"sigkill pid={Pid} result={result} errno={errno} state={DescribeUnixState()}");
+        return result == 0;
     }
 
     /// <summary>

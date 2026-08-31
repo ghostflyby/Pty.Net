@@ -211,11 +211,20 @@ internal static partial class WindowsPty
             PipeBufferSize);
     }
 
-    /// <summary>Terminates the child (ConPTY has no signals).</summary>
-    internal static void Terminate(SafeProcessHandle processHandle)
+    /// <summary>
+    /// Terminates the child (ConPTY has no signals). Returns false when the process
+    /// still exists but TerminateProcess failed — the caller may retry; true covers
+    /// both "terminated" and "nothing to terminate" (invalid handle / already gone).
+    /// </summary>
+    internal static bool Terminate(SafeProcessHandle processHandle)
     {
-        if (!processHandle.IsInvalid)
-            TerminateProcess(processHandle, 1);
+        if (processHandle.IsInvalid)
+            return true;
+        if (TerminateProcess(processHandle, 1))
+            return true;
+        // ERROR_ACCESS_DENIED (5) can mean the process is already terminating and a
+        // retry is pointless; anything else is a real failure worth reporting.
+        return Marshal.GetLastWin32Error() == 5;
     }
 
     /// <summary>
@@ -263,7 +272,10 @@ internal static partial class WindowsPty
 
     private static void AppendQuoted(StringBuilder sb, string token)
     {
-        if (!token.Any(c => c is ' ' or '\t' or '"'))
+        // An empty token must still become `""` on the command line: appending
+        // nothing would make the argument vanish entirely (argv would be shorter
+        // than requested, shifting every later argument).
+        if (token.Length > 0 && !token.Any(c => c is ' ' or '\t' or '"'))
         {
             sb.Append(token);
             return;
