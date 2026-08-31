@@ -419,12 +419,13 @@ public class PtyProcessTests : IDisposable
     /// <summary>
     /// Allowlist mode is strict: the library injects nothing (not even TERM). A TERM
     /// the child sees is either listed explicitly or set by the shell itself — bash
-    /// falls back to TERM=dumb when the variable is absent.
+    /// falls back to TERM=dumb on macOS and Git Bash to xterm-256color on Windows.
     /// </summary>
     [Fact]
     public void Environment_Allowlist_DoesNotInjectTerm()
     {
         // Explicit TERM passes through verbatim: allowlist is fully caller-controlled.
+        // This is the cross-platform guarantee (the library never overrides or adds).
         var explicitInfo = new PtyStartInfo(TestBash.BashPath)
         {
             Arguments = ["--noprofile", "--norc", "-c", "echo TERM=[$TERM]; echo __DONE__"],
@@ -437,8 +438,13 @@ public class PtyProcessTests : IDisposable
             Assert.Contains("TERM=[custom-term-1]", output);
         }
 
-        // Empty allowlist: no injection — TERM is whatever the shell falls back to
-        // (bash sets "dumb"), never the library's old implicit xterm-256color.
+        // Empty allowlist, Unix-only negative assertion: the library's old implicit
+        // value was xterm-256color, and Unix shells fall back to anything but that
+        // (macOS bash sets "dumb"). Windows Git Bash's own fallback IS xterm-256color,
+        // so the assertion has no discriminative power there — and the Windows launch
+        // path never had injection logic to begin with (BuildEnvironmentBlock only
+        // serializes what the caller passed).
+#if !WINDOWS
         var emptyInfo = new PtyStartInfo(TestBash.BashPath)
         {
             Arguments = ["--noprofile", "--norc", "-c", "echo TERM=[$TERM]; echo __DONE__"],
@@ -450,6 +456,7 @@ public class PtyProcessTests : IDisposable
             var output = TestBash.ReadUntil(p.Output, "__DONE__", Timeout);
             Assert.DoesNotContain("xterm-256color", output);
         }
+#endif
     }
 
     /// <summary>
