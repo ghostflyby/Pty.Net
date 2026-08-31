@@ -39,8 +39,24 @@ public sealed partial class PtyProcess
             BaseStream, Encoding.UTF8, outputEncoding, leaveOpen: true);
     }
 
-    /// <summary>Windows: ConPTY has no POSIX signals; TerminateProcess is the SIGKILL analog.</summary>
-    private partial void KillPlatform() => WindowsPty.Terminate(ProcessHandle!);
+    /// <summary>
+    /// Windows: ConPTY has no POSIX signals; TerminateProcess is the SIGKILL analog.
+    /// Returns false when termination could not be issued (the handle is valid but the
+    /// TerminateProcess call failed) — the caller resets its kill bookkeeping so a
+    /// later attempt can retry. An invalid or missing handle means there is nothing to
+    /// terminate and no retry makes sense.
+    /// </summary>
+    private partial bool KillPlatform()
+    {
+        if (ProcessHandle is null || ProcessHandle.IsInvalid)
+            return true; // nothing to terminate; do not retry
+        if (!WindowsPty.Terminate(ProcessHandle))
+        {
+            PtyDiagnostics.Log($"terminate failed pid={Pid}");
+            return false;
+        }
+        return true;
+    }
 
     /// <summary>Windows: starts the async pseudo-console close, which sends CTRL_CLOSE_EVENT (see <see cref="PtyProcess.RequestClose"/>).</summary>
     private partial void RequestClosePlatform() => BaseStream.BeginAsyncClose();
