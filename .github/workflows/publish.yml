@@ -404,15 +404,13 @@ jobs:
       # already-published guard in the validation step catches the re-tag case
       # before anything builds.
       #
-      # The snupkg push KEEPS --skip-duplicate deliberately: the .NET 10 client
-      # issues its own second PUT for symbol packages (observed on 0.3.1: first
-      # PUT Created, then a duplicate that hit nuget.org's validation lag 409),
-      # so failing loudly there is a false alarm — a duplicate symbol package can
-      # never mask a different nupkg.
+      # The snupkg needs no separate command: since NuGet 7.0 (.NET 10) the client
+      # automatically pushes the symbol package sitting next to the nupkg
+      # (NuGet/Home#8016). On v0.3.1 an explicit second snupkg push after it hit
+      # the fresh upload's validation lag — 409 "another copy pending validation" —
+      # and failed the step after both files were already up.
       - name: Publish to nuget.org
-        run: |
-          dotnet nuget push "Ghostflyby.Pty.$env:VERSION.nupkg" --source https://api.nuget.org/v3/index.json --api-key "${{ steps.login.outputs.NUGET_API_KEY }}"
-          dotnet nuget push "Ghostflyby.Pty.$env:VERSION.snupkg" --source https://api.nuget.org/v3/index.json --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" --skip-duplicate
+        run: dotnet nuget push "Ghostflyby.Pty.$env:VERSION.nupkg" --source https://api.nuget.org/v3/index.json --api-key "${{ steps.login.outputs.NUGET_API_KEY }}"
 
       - name: Create GitHub release
         run: |
