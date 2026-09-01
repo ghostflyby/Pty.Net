@@ -15,10 +15,6 @@ namespace Ghostflyby.Pty;
 /// </summary>
 public sealed partial class PtyProcess
 {
-    // Shared drain buffer, used by DrainOutput (the exit-wait loops call it every ~2 ms).
-    private const int ReadBufferSize = 4096;
-    private static readonly byte[] DrainBuffer = new byte[ReadBufferSize];
-    private static readonly Lock DrainLock = new();
     private static readonly ChildNativeApi ChildApi = ResolveChildNativeApi();
     private static readonly bool ForkChildPathPrepared = PrepareForkChildPath();
 
@@ -745,7 +741,11 @@ public sealed partial class PtyProcess
         PtyDiagnostics.Log($"sighup pid={Pid} result={result} errno={errno} state={DescribeUnixState()}");
     }
 
-    /// <summary>Unix: the pty stream is the facade stream; no transcoding is involved.</summary>
+    /// <summary>
+    /// Unix: the pty stream doubles as both facade streams (no transcoding). The
+    /// StreamWriter/StreamReader wrapping it are constructed with leaveOpen, so
+    /// disposing a facade never closes the pty — PtyProcess owns BaseStream.
+    /// </summary>
     private partial void CreateFacades(
         Encoding inputEncoding, Encoding outputEncoding,
         out Stream inputFacadeStream, out Stream outputFacadeStream)
@@ -823,20 +823,15 @@ public sealed partial class PtyProcess
     private string DescribeUnixState() => DescribeUnixState(Pid);
 
     /// <summary>
-    /// Non-blocking drain: reads whatever output is currently available and discards it.
-    /// Used by <see cref="WaitForExit(TimeSpan)"/> so the child never blocks on a full pty buffer
-    /// while nobody is reading.
+    /// Non-blocking drain step: moves whatever output is currently available into the
+    /// stream's replay buffer, so the child never blocks on a full pty buffer during a
+    /// wait and the output remains readable after the wait — the same preserve contract
+    /// as the Windows pump (memory grows with the output produced during the wait).
     /// </summary>
     private partial void DrainOutput()
     {
-        lock (DrainLock)
+        while (BaseStream.DrainAvailableIntoReplay())
         {
-            while (true)
-            {
-                var n = BaseStream.Read(DrainBuffer, 0, out _);
-                if (n <= 0)
-                    return;
-            }
         }
     }
 
@@ -917,16 +912,20 @@ public sealed partial class PtyProcess
         return file;
     }
 
-    /// <summary>Flattens the environment dictionary into the <c>KEY=VALUE</c> array, dropping null values.</summary>
+    /// <summary>
+    /// Flattens the environment dictionary into the <c>KEY=VALUE</c> array, dropping
+    /// null values. No variable is injected implicitly: the caller controls the child's
+    /// environment exactly. In the default inherit mode a shell typically inherits
+    /// TERM from the parent anyway; in allowlist mode (<c>InheritParentEnvironment = false</c>)
+    /// users who run terminal-aware programs should add TERM themselves, e.g.
+    /// <c>Environment = new Dictionary&lt;string, string?&gt; { ["TERM"] = "xterm-256color" }</c>.
+    /// </summary>
     private static List<string> BuildEnvironment(IDictionary<string, string?> env)
     {
-        var result = env
+        return env
             .Where(kv => kv.Value is not null)
             .Select(kv => $"{kv.Key}={kv.Value}")
             .ToList();
-        if (!result.Any(e => e.StartsWith("TERM=", StringComparison.Ordinal)))
-            result.Add("TERM=xterm-256color");
-        return result;
     }
 
     private static IntPtr[] ToNative(IReadOnlyList<string> strs)

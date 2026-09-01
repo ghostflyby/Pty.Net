@@ -417,6 +417,49 @@ public class PtyProcessTests : IDisposable
     }
 
     /// <summary>
+    /// Allowlist mode is strict: the library injects nothing (not even TERM). A TERM
+    /// the child sees is either listed explicitly or set by the shell itself — bash
+    /// falls back to TERM=dumb on macOS and Git Bash to xterm-256color on Windows.
+    /// </summary>
+    [Fact]
+    public void Environment_Allowlist_DoesNotInjectTerm()
+    {
+        // Explicit TERM passes through verbatim: allowlist is fully caller-controlled.
+        // This is the cross-platform guarantee (the library never overrides or adds).
+        var explicitInfo = new PtyStartInfo(TestBash.BashPath)
+        {
+            Arguments = ["--noprofile", "--norc", "-c", "echo TERM=[$TERM]; echo __DONE__"],
+            Environment = ImmutableDictionary<string, string?>.Empty.Add("TERM", "custom-term-1"),
+            InheritParentEnvironment = false,
+        };
+        using (var p = PtyProcess.Start(explicitInfo))
+        {
+            var output = TestBash.ReadUntil(p.Output, "__DONE__", Timeout);
+            Assert.Contains("TERM=[custom-term-1]", output);
+        }
+
+        // Empty allowlist, Unix-only negative assertion: the library's old implicit
+        // value was xterm-256color, and Unix shells fall back to anything but that
+        // (macOS bash sets "dumb"). Windows Git Bash's own fallback IS xterm-256color,
+        // so the assertion has no discriminative power there — and the Windows launch
+        // path never had injection logic to begin with (BuildEnvironmentBlock only
+        // serializes what the caller passed).
+#if !WINDOWS
+        var emptyInfo = new PtyStartInfo(TestBash.BashPath)
+        {
+            Arguments = ["--noprofile", "--norc", "-c", "echo TERM=[$TERM]; echo __DONE__"],
+            Environment = ImmutableDictionary<string, string?>.Empty,
+            InheritParentEnvironment = false,
+        };
+        using (var p = PtyProcess.Start(emptyInfo))
+        {
+            var output = TestBash.ReadUntil(p.Output, "__DONE__", Timeout);
+            Assert.DoesNotContain("xterm-256color", output);
+        }
+#endif
+    }
+
+    /// <summary>
     /// A bare file name (no slash) is resolved through PATH on every platform:
     /// posix_spawnp on Unix, CreateProcess on Windows. Guards the regression where Unix
     /// used plain posix_spawn and threw FileNotFoundException for a name like "bash".

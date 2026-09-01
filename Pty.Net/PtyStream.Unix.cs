@@ -18,6 +18,15 @@ public sealed partial class PtyStream
 {
     private readonly SafeFileHandle handle;
 
+    // Exit-wait replay buffer: while a WaitForExit/Dispose wait drains the master (so
+    // the child never blocks on a full pty buffer), the drained bytes land here instead
+    // of being discarded, and every read path serves them before touching the fd again
+    // — output remains readable after the wait, matching the Windows pump contract.
+    // Unbounded by contract: memory grows with the output produced during the wait.
+    private readonly Lock replayLock = new();
+    private readonly List<byte[]> replayChunks = [];
+    private int replayBytes;
+
     /// <summary>Takes ownership of <paramref name="handle"/> (the non-blocking pty master).</summary>
     internal PtyStream(SafeFileHandle handle)
     {
@@ -68,6 +77,13 @@ public sealed partial class PtyStream
         eof = false;
         if (buffer.IsEmpty)
             return 0;
+
+        // Bytes drained during an exit wait come first — they were read from the fd
+        // earlier (to keep the child unblocked) and are preserved here.
+        var replayed = TakeReplayed(buffer);
+        if (replayed > 0)
+            return replayed;
+
         var fd = (int)handle.DangerousGetHandle();
 
         if (!WaitForPoll(fd, NativeMethods.PollEvents.Pollin, timeoutMs, out var revents))
@@ -136,12 +152,115 @@ public sealed partial class PtyStream
         Interlocked.Increment(ref pendingAsyncReads);
         try
         {
+            // Output drained during an exit wait is preserved (see DrainAvailableIntoReplay):
+            // serve it before polling the device again. This is the drain/reader handoff —
+            // the sync-vs-async mixing check above does not apply to it.
+            var replayed = TakeReplayed(buffer.Span);
+            if (replayed > 0)
+                return replayed;
+
             return await PtyIoEngine.ReadAsync(handle, buffer, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             Interlocked.Decrement(ref pendingAsyncReads);
         }
+    }
+
+    // --------------------------------------------------- exit-wait replay buffer
+
+    /// <summary>
+    /// One non-blocking step of the exit-wait drain: appends whatever is immediately
+    /// available on the master to the replay buffer instead of discarding it. Returns
+    /// false when nothing more is available right now (or the master is closed).
+    /// </summary>
+    internal bool DrainAvailableIntoReplay()
+    {
+        if (handle.IsClosed)
+            return false;
+        var fd = (int)handle.DangerousGetHandle();
+        if (!WaitForPoll(fd, NativeMethods.PollEvents.Pollin, 0, out var revents))
+            return false; // nothing available right now
+
+        var hungUp = (revents & (NativeMethods.PollEvents.Pollhup | NativeMethods.PollEvents.Pollerr)) != 0;
+        Span<byte> chunk = stackalloc byte[8192];
+        unsafe
+        {
+            fixed (byte* p = chunk)
+            {
+                while (true)
+                {
+                    var r = NativeMethods.read(fd, (IntPtr)p, (nuint)chunk.Length);
+                    switch (r)
+                    {
+                        case > 0:
+                            AppendReplayed(chunk[..(int)r]);
+                            return true;
+                        case 0:
+                            return false; // EOF
+                    }
+
+                    var err = Marshal.GetLastPInvokeError();
+                    switch (err)
+                    {
+                        case NativeMethods.Eintr:
+                            continue;
+                        case NativeMethods.Eagain:
+                            return false; // spurious wakeup
+                        case NativeMethods.Eio:
+                            return false; // slave gone: EOF
+                        default:
+                            throw new IOException($"pty read failed: errno={err}");
+                    }
+                }
+            }
+        }
+    }
+
+    private void AppendReplayed(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.IsEmpty)
+            return;
+        var copy = bytes.ToArray();
+        lock (replayLock)
+        {
+            replayChunks.Add(copy);
+            replayBytes += copy.Length;
+        }
+    }
+
+    /// <summary>Serves up to <paramref name="target"/>.Length bytes from the replay buffer; 0 when it is empty.</summary>
+    private int TakeReplayed(Span<byte> target)
+    {
+        if (target.IsEmpty)
+            return 0;
+        lock (replayLock)
+        {
+            if (replayBytes == 0)
+                return 0;
+            var copied = 0;
+            while (copied < target.Length && replayChunks.Count > 0)
+            {
+                var chunk = replayChunks[0];
+                var n = Math.Min(chunk.Length, target.Length - copied);
+                chunk.AsSpan(0, n).CopyTo(target.Slice(copied));
+                copied += n;
+                if (n == chunk.Length)
+                    replayChunks.RemoveAt(0);
+                else
+                    replayChunks[0] = chunk[n..].ToArray();
+                replayBytes -= n;
+            }
+
+            return copied;
+        }
+    }
+
+    /// <summary>Async hook for the replay buffer: serves buffered bytes before the engine polls the fd. Windows has no replay buffer.</summary>
+    private partial bool TryTakeReplayed(Memory<byte> buffer, out int read)
+    {
+        read = TakeReplayed(buffer.Span);
+        return read > 0;
     }
 
     // -------------------------------------------------------------------- write
