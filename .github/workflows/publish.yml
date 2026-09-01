@@ -398,14 +398,21 @@ jobs:
           # valid for 1 hour and is exchanged right before the push.
           user: ${{ secrets.NUGET_USER }}
 
-      # No --skip-duplicate: a version that already exists must fail loudly, not be
-      # silently dropped — two different artifacts for the "same" version are exactly
-      # the accident this must never paper over. The already-published guard in the
-      # validation step catches the re-tag case before anything builds.
+      # No --skip-duplicate on the nupkg: a version that already exists must fail
+      # loudly, not be silently dropped — two different artifacts for the "same"
+      # version are exactly the accident this must never paper over. The
+      # already-published guard in the validation step catches the re-tag case
+      # before anything builds.
+      #
+      # The snupkg push KEEPS --skip-duplicate deliberately: the .NET 10 client
+      # issues its own second PUT for symbol packages (observed on 0.3.1: first
+      # PUT Created, then a duplicate that hit nuget.org's validation lag 409),
+      # so failing loudly there is a false alarm — a duplicate symbol package can
+      # never mask a different nupkg.
       - name: Publish to nuget.org
         run: |
           dotnet nuget push "Ghostflyby.Pty.$env:VERSION.nupkg" --source https://api.nuget.org/v3/index.json --api-key "${{ steps.login.outputs.NUGET_API_KEY }}"
-          dotnet nuget push "Ghostflyby.Pty.$env:VERSION.snupkg" --source https://api.nuget.org/v3/index.json --api-key "${{ steps.login.outputs.NUGET_API_KEY }}"
+          dotnet nuget push "Ghostflyby.Pty.$env:VERSION.snupkg" --source https://api.nuget.org/v3/index.json --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" --skip-duplicate
 
       - name: Create GitHub release
         run: |
