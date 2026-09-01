@@ -68,13 +68,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # id-token: write lets NuGet/login exchange the OIDC token for a short-lived NuGet
-    # API key (Trusted Publishing); contents: write is for gh release create;
-    # pull-requests: write lets the housekeeping step create + auto-merge its PR.
-    # Requires the repo setting "Allow GitHub Actions to create and approve pull
-    # requests" to be enabled, or the PR creation fails with "Resource not accessible
-    # by integration (createPullRequest)".
+    # API key (Trusted Publishing) and signs the build attestation; attestations: write
+    # persists that attestation in the repository's attestation store (missing it fails
+    # the step with "Resource not accessible by integration"); contents: write is for
+    # gh release create; pull-requests: write lets the housekeeping step create +
+    # auto-merge its PR. Requires the repo setting "Allow GitHub Actions to create and
+    # approve pull requests" to be enabled, or the PR creation fails with "Resource
+    # not accessible by integration (createPullRequest)".
     permissions:
       id-token: write
+      attestations: write
       contents: write
       pull-requests: write
     steps:
