@@ -101,7 +101,7 @@ public class PtyWindowsTests
 
         // No output is consumed before this wait. The payload exceeds the pump's normal
         // bounded queue, so exit can complete only if the exit-wait lease lifts the bound.
-        Assert.True(await p.WaitForExitAsync(exitTimeout).WaitAsync(exitTimeout));
+        Assert.True(await p.WaitForExitAsync(exitTimeout, TestContext.Current.CancellationToken).WaitAsync(exitTimeout, TestContext.Current.CancellationToken));
 
         using var cts = new CancellationTokenSource(exitTimeout);
         using var bytes = new MemoryStream();
