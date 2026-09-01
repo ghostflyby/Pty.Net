@@ -144,28 +144,31 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $version = $env:VERSION
-          New-Item -ItemType Directory -Force -Path 'merged/lib/net10.0' | Out-Null
+          New-Item -ItemType Directory -Force -Path 'merged/ref/net10.0' | Out-Null
           # Each OS build fills both of its architecture RID folders (see build job).
           #
-          # NuGet layout: per-RID dlls must live under runtimes/{rid}/lib/{tfm}/, the
-          # convention for RID-specific runtime assets — never under lib/{tfm}/{rid}/,
-          # which NuGet treats as non-asset content (a flat lib/{tfm}/{tfm}.dll is
-          # required for restore to find any compile asset). The runtime host picks the
-          # best runtimes/{rid}/ match from the RID graph, so a portable consumer still
-          # gets the right OS-specific dll on each platform.
-          #
-          # A flat lib/net10.0/Ghostflyby.Pty.dll is also shipped as the compile-time
-          # reference assembly. The public API surface is identical across the three OS
-          # builds (one shared PublicAPI.Shipped.txt contract; the OS files only add
-          # partial-class implementations of PtyProcess/PtyStream), so any one build's
-          # dll is a valid reference assembly and is never loaded at runtime where a
-          # runtimes/{rid}/ match exists.
+          # NuGet layout, and why there is deliberately NO flat lib/net10.0:
+          #   * runtimes/{rid}/lib/{tfm}/ carries the OS-specific implementation — the
+          #     convention for RID-specific runtime assets (never lib/{tfm}/{rid}/,
+          #     which NuGet treats as non-asset content).
+          #   * ref/net10.0/ carries the compile-time reference. The public API surface
+          #     is identical across the three OS builds (one shared PublicAPI.Shipped.txt
+          #     contract; the OS files only add partial-class implementations), so any
+          #     build's dll serves as the reference; Roslyn reads only its metadata and
+          #     a ref/ asset is never executed at runtime.
+          #   * A flat lib/net10.0/Ghostflyby.Pty.dll is NOT shipped: lib/ is also
+          #     NuGet's runtime fallback when no runtimes/{rid}/ matches the consumer
+          #     RID, which silently handed ios-arm64/browser-wasm a wrong-OS dll at
+          #     runtime (verified against the published 0.2.2). With ref-only, an
+          #     unsupported RID still restores for compilation but fails loudly at
+          #     runtime instead of executing the wrong platform build — enforced by
+          #     the restore-matrix step below.
           $rids = @{
             'pkg-windows-latest' = @('win-x64','win-arm64')
             'pkg-ubuntu-latest'  = @('linux-x64','linux-arm64')
             'pkg-macos-latest'   = @('osx-x64','osx-arm64')
           }
-          $flatCopied = $false
+          $refCopied = $false
           foreach ($art in $rids.Keys) {
             $nupkg = Get-ChildItem -Path "pkgs/$art" -Filter '*.nupkg' -Recurse | Select-Object -First 1
             if (-not $nupkg) { throw "no nupkg found in $art" }
@@ -181,28 +184,31 @@ jobs:
               }
               # Compile-time reference from the first OS processed (linux-x64 in the
               # stable hashtable order); see the layout comment above.
-              if (-not $flatCopied) {
-                Copy-Item -LiteralPath $tmpDll -Destination 'merged/lib/net10.0/Ghostflyby.Pty.dll' -Force
-                $flatCopied = $true
+              if (-not $refCopied) {
+                Copy-Item -LiteralPath $tmpDll -Destination 'merged/ref/net10.0/Ghostflyby.Pty.dll' -Force
+                $refCopied = $true
               }
             } finally { Remove-Item -LiteralPath $tmpDll -Force -ErrorAction SilentlyContinue }
-            # Doc metadata for IntelliSense next to the flat compile asset.
+            # Doc metadata for IntelliSense next to the reference assembly.
             $xml = $zip.Entries | Where-Object { $_.FullName -eq 'lib/net10.0/Ghostflyby.Pty.xml' } | Select-Object -First 1
             if ($xml) {
               $tmpXml = [System.IO.Path]::GetTempFileName()
               [System.IO.Compression.ZipFileExtensions]::ExtractToFile($xml, $tmpXml, $true)
-              try { Copy-Item -LiteralPath $tmpXml -Destination 'merged/lib/net10.0/Ghostflyby.Pty.xml' -Force }
+              try { Copy-Item -LiteralPath $tmpXml -Destination 'merged/ref/net10.0/Ghostflyby.Pty.xml' -Force }
               finally { Remove-Item -LiteralPath $tmpXml -Force -ErrorAction SilentlyContinue }
             }
             $zip.Dispose()
           }
-          if (-not $flatCopied) { throw 'no dll captured for the flat compile asset' }
+          if (-not $refCopied) { throw 'no dll captured for the ref/ compile asset' }
           # Root package structure (nuspec, rels, content-types) from any single package.
+          # lib/* is excluded — it is rebuilt as ref/ + runtimes/ above, and dropping it
+          # is the whole point of this layout. ref/* is excluded because the unified
+          # copy above is authoritative.
           $base = Get-ChildItem -Path pkgs -Filter '*.nupkg' -Recurse | Select-Object -First 1
           $zip = [System.IO.Compression.ZipFile]::OpenRead($base.FullName)
           try {
             foreach ($entry in $zip.Entries) {
-              if ($entry.FullName -like 'lib/*') { continue }
+              if ($entry.FullName -like 'lib/*' -or $entry.FullName -like 'ref/*') { continue }
               $dest = Join-Path 'merged' $entry.FullName
               New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
               [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
@@ -224,18 +230,84 @@ jobs:
           try {
             $dlls = @($zip.Entries | Where-Object { $_.FullName -like 'runtimes/*/lib/net10.0/Ghostflyby.Pty.dll' })
             if ($dlls.Count -ne 6) {
-              $zip.Entries | Where-Object { $_.FullName -like 'runtimes/*' -or $_.FullName -like 'lib/*' } | ForEach-Object { Write-Host $_.FullName }
+              $zip.Entries | Where-Object { $_.FullName -like 'runtimes/*' -or $_.FullName -like 'ref/*' -or $_.FullName -like 'lib/*' } | ForEach-Object { Write-Host $_.FullName }
               throw "expected 6 RID-specific runtimes dlls, found $($dlls.Count)"
             }
-            $flat = @($zip.Entries | Where-Object { $_.FullName -eq 'lib/net10.0/Ghostflyby.Pty.dll' })
-            if ($flat.Count -ne 1) { throw "expected exactly one flat lib/net10.0/Ghostflyby.Pty.dll, found $($flat.Count)" }
-            # Regression guard: lib/{tfm}/{rid}/ is not a valid NuGet layout — the dll
-            # must never land directly under lib/net10.0/ subfolders.
-            $legacy = @($zip.Entries | Where-Object { $_.FullName -like 'lib/net10.0/*/*' })
-            if ($legacy.Count -gt 0) { throw "found $($legacy.Count) legacy lib/net10.0/{rid}/ entries; runtimes/ layout required" }
+            $ref = @($zip.Entries | Where-Object { $_.FullName -eq 'ref/net10.0/Ghostflyby.Pty.dll' })
+            if ($ref.Count -ne 1) { throw "expected exactly one ref/net10.0/Ghostflyby.Pty.dll, found $($ref.Count)" }
+            $refXml = @($zip.Entries | Where-Object { $_.FullName -eq 'ref/net10.0/Ghostflyby.Pty.xml' })
+            if ($refXml.Count -ne 1) { throw "expected exactly one ref/net10.0/Ghostflyby.Pty.xml, found $($refXml.Count)" }
+            # The load-bearing guarantee of this layout: no flat implementation dll.
+            # lib/ is NuGet's runtime fallback for unmatched RIDs, so any entry there
+            # would silently execute a wrong-OS build on an unsupported platform.
+            $flat = @($zip.Entries | Where-Object { $_.FullName -like 'lib/*' })
+            if ($flat.Count -gt 0) {
+              $flat | ForEach-Object { Write-Host $_.FullName }
+              throw "found $($flat.Count) lib/ entries; the package must be ref/+runtimes/ only"
+            }
             $nuspec = @($zip.Entries | Where-Object { $_.FullName -like '*.nuspec' })
             if ($nuspec.Count -ne 1) { throw "expected exactly one nuspec, found $($nuspec.Count)" }
           } finally { $zip.Dispose() }
+
+      # Real-consumption gate: the exact nupkg about to be pushed must restore on the
+      # supported RIDs and must NOT hand runtime assets to unsupported ones. Uses a
+      # local folder as the package source — no network, no push.
+      - name: Restore matrix against the assembled package
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $version = $env:VERSION
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP/local-source" | Out-Null
+          Copy-Item "Ghostflyby.Pty.$version.nupkg" "$env:RUNNER_TEMP/local-source/"
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP/consumer" | Out-Null
+          Push-Location "$env:RUNNER_TEMP/consumer"
+          try {
+            @'
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Ghostflyby.Pty" Version="__VERSION__" />
+  </ItemGroup>
+</Project>
+'@ -replace '__VERSION__', $version | Set-Content -Path 'Consumer.csproj' -Encoding utf8
+            'System.Console.WriteLine(typeof(Ghostflyby.Pty.PtyProcess).FullName);' |
+              Set-Content -Path 'Class1.cs' -Encoding utf8
+            $sourceArg = "--source:$env:RUNNER_TEMP/local-source", "--source:https://api.nuget.org/v3/index.json"
+            # Supported RIDs: the runtime host must receive exactly the matching
+            # runtimes/{rid} dll — no more, no less.
+            foreach ($rid in 'win-x64','linux-x64','osx-arm64','linux-arm64','win-arm64','osx-x64') {
+              dotnet restore -r $rid $sourceArg --nologo
+              $assets = Get-Content 'obj/project.assets.json' -Raw | ConvertFrom-Json
+              $target = $assets.targets.PSObject.Properties | Where-Object { $_.Name -like 'net10.0/*' } | Select-Object -First 1
+              $runtimeTargets = $target.Value."Ghostflyby.Pty/$version".runtimeTargets
+              if (-not $runtimeTargets) { throw "${rid}: no runtimeTargets — package layout broken" }
+              $names = @($runtimeTargets.PSObject.Properties.Name)
+              if ($names.Count -ne 1 -or $names[0] -ne "runtimes/$rid/lib/net10.0/Ghostflyby.Pty.dll") {
+                throw "${rid}: unexpected runtime assets: $($names -join ', ')"
+              }
+              Write-Host "ok: $rid -> $($names[0])"
+            }
+            # Unsupported RIDs: restore succeeds for compilation (ref/ asset) but
+            # grants NO runtime dll — an unsupported platform fails loudly at runtime
+            # instead of silently executing a wrong-OS build (the 0.2.2 defect).
+            foreach ($rid in 'ios-arm64','browser-wasm','android-arm64') {
+              dotnet restore -r $rid $sourceArg --nologo
+              $assets = Get-Content 'obj/project.assets.json' -Raw | ConvertFrom-Json
+              $target = $assets.targets.PSObject.Properties | Where-Object { $_.Name -like 'net10.0/*' } | Select-Object -First 1
+              $pkg = $target.Value."Ghostflyby.Pty/$version"
+              if (-not $pkg) { throw "${rid}: package missing from restore targets" }
+              if (-not $pkg.compile) { throw "${rid}: no compile asset — ref/ layout broken" }
+              if ($pkg.runtimeTargets) { throw "${rid}: got runtime assets for an unsupported RID: $($pkg.runtimeTargets.PSObject.Properties.Name -join ', ')" }
+              Write-Host "ok: $rid -> compile-only (no runtime asset)"
+            }
+            # Portable restore (no RID): must succeed, compile asset from ref/.
+            dotnet restore $sourceArg --nologo
+            Write-Host 'ok: portable restore'
+          } finally { Pop-Location }
 
       - name: NuGet login (OIDC → temporary API key)
         uses: NuGet/login@v1
