@@ -283,30 +283,57 @@ jobs:
             foreach ($rid in 'win-x64','linux-x64','osx-arm64','linux-arm64','win-arm64','osx-x64') {
               dotnet restore -r $rid $sourceArg --nologo
               $assets = Get-Content 'obj/project.assets.json' -Raw | ConvertFrom-Json
-              $target = $assets.targets.PSObject.Properties | Where-Object { $_.Name -like 'net10.0/*' } | Select-Object -First 1
-              $runtimeTargets = $target.Value."Ghostflyby.Pty/$version".runtimeTargets
-              if (-not $runtimeTargets) { throw "${rid}: no runtimeTargets — package layout broken" }
-              $names = @($runtimeTargets.PSObject.Properties.Name)
-              if ($names.Count -ne 1 -or $names[0] -ne "runtimes/$rid/lib/net10.0/Ghostflyby.Pty.dll") {
-                throw "${rid}: unexpected runtime assets: $($names -join ', ')"
+              # A RID restore produces both the portable and the RID-specific target;
+              # the RID-specific one is authoritative for what that RID executes: the
+              # exact-RID asset is PROMOTED into `runtime` (its runtimeTargets stays
+              # empty — this bit the first v0.3.0 publish attempt, whose check
+              # asserted runtimeTargets non-empty and failed on a correct package).
+              $pkg = $assets.targets."net10.0/$rid"."Ghostflyby.Pty/$version"
+              if (-not $pkg) { throw "${rid}: package missing from restore targets" }
+              if (-not $pkg.compile.'ref/net10.0/Ghostflyby.Pty.dll') { throw "${rid}: no compile asset — ref/ layout broken" }
+              $runtime = @(@($pkg.runtime.PSObject.Properties.Name) | Where-Object { $_ }) # $pkg.runtime is ABSENT (null) for RIDs with no runtime asset; @($null...) would count 1
+              if ($runtime.Count -ne 1 -or $runtime[0] -ne "runtimes/$rid/lib/net10.0/Ghostflyby.Pty.dll") {
+                throw "${rid}: expected exactly runtimes/$rid/lib/net10.0/Ghostflyby.Pty.dll, got: $($runtime -join ', ')"
               }
-              Write-Host "ok: $rid -> $($names[0])"
+              Write-Host "ok: $rid -> $($runtime[0])"
             }
-            # Unsupported RIDs: restore succeeds for compilation (ref/ asset) but
-            # grants NO runtime dll — an unsupported platform fails loudly at runtime
-            # instead of silently executing a wrong-OS build (the 0.2.2 defect).
-            foreach ($rid in 'ios-arm64','browser-wasm','android-arm64') {
+            # Unsupported RIDs. NuGet's RID graph decides what they receive, not us:
+            # ios-* and browser-wasm have no compatible asset and stay compile-only
+            # (restore succeeds, execution fails loudly — the 0.2.2 defect); android-
+            # arm64 INHERITS linux-arm64 through the graph (android ⊂ linux), so it
+            # legitimately receives the linux-arm64 dll. All six shipped assemblies
+            # are identical architecture-neutral managed IL, so that fallback is the
+            # same bytes either way — assert the graph behavior, not absence.
+            $unsupported = @{
+              'ios-arm64'     = $null
+              'browser-wasm'  = $null
+              'android-arm64' = 'runtimes/linux-arm64/lib/net10.0/Ghostflyby.Pty.dll'
+            }
+            foreach ($rid in $unsupported.Keys) {
               dotnet restore -r $rid $sourceArg --nologo
               $assets = Get-Content 'obj/project.assets.json' -Raw | ConvertFrom-Json
-              $target = $assets.targets.PSObject.Properties | Where-Object { $_.Name -like 'net10.0/*' } | Select-Object -First 1
-              $pkg = $target.Value."Ghostflyby.Pty/$version"
+              $pkg = $assets.targets."net10.0/$rid"."Ghostflyby.Pty/$version"
               if (-not $pkg) { throw "${rid}: package missing from restore targets" }
-              if (-not $pkg.compile) { throw "${rid}: no compile asset — ref/ layout broken" }
-              if ($pkg.runtimeTargets) { throw "${rid}: got runtime assets for an unsupported RID: $($pkg.runtimeTargets.PSObject.Properties.Name -join ', ')" }
-              Write-Host "ok: $rid -> compile-only (no runtime asset)"
+              if (-not $pkg.compile.'ref/net10.0/Ghostflyby.Pty.dll') { throw "${rid}: no compile asset — an unsupported RID must still restore for compilation" }
+              $runtime = @(@($pkg.runtime.PSObject.Properties.Name) | Where-Object { $_ }) # $pkg.runtime is ABSENT (null) for RIDs with no runtime asset; @($null...) would count 1
+              $expected = $unsupported[$rid]
+              if ($expected) {
+                if ($runtime.Count -ne 1 -or $runtime[0] -cne $expected) { throw "${rid}: expected $expected (RID-graph fallback), got: $($runtime -join ', ')" }
+                Write-Host "ok: $rid -> $expected (RID-graph fallback)"
+              } else {
+                if ($runtime.Count -gt 0) { throw "${rid}: got runtime assets for an unsupported RID: $($runtime -join ', ')" }
+                Write-Host "ok: $rid -> compile-only (no runtime asset)"
+              }
             }
-            # Portable restore (no RID): must succeed, compile asset from ref/.
+            # Portable restore (no RID): must succeed, compile asset from ref/,
+            # and hand out no runtime asset at all (no flat lib/ fallback exists).
             dotnet restore $sourceArg --nologo
+            $assets = Get-Content 'obj/project.assets.json' -Raw | ConvertFrom-Json
+            $pkg = $assets.targets.'net10.0'."Ghostflyby.Pty/$version"
+            if (-not $pkg) { throw 'portable: package missing from restore targets' }
+            if (-not $pkg.compile.'ref/net10.0/Ghostflyby.Pty.dll') { throw 'portable: no compile asset — ref/ layout broken' }
+            $runtime = @(@($pkg.runtime.PSObject.Properties.Name) | Where-Object { $_ }) # $pkg.runtime is ABSENT (null) for RIDs with no runtime asset; @($null...) would count 1
+            if ($runtime.Count -gt 0) { throw "portable: unexpected runtime assets: $($runtime -join ', ')" }
             Write-Host 'ok: portable restore'
           } finally { Pop-Location }
 
