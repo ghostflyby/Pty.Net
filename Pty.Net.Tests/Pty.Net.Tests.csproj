@@ -7,6 +7,13 @@
         <Nullable>enable</Nullable>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <IsPackable>false</IsPackable>
+        <!-- xunit.v3 test projects are executables: the framework's source generator
+             emits the entry point that hosts its Microsoft.Testing.Platform runner,
+             which the .NET 10 SDK's dotnet test drives natively (the VSTest stack —
+             Microsoft.NET.Test.Sdk, xunit.runner.visualstudio, coverlet.collector —
+             was removed with the v3 migration; the SDK refuses a project that mixes
+             VSTest with MTP, and nothing in CI consumed the collector). -->
+        <OutputType>Exe</OutputType>
         <!-- Every warning is a build error. Test classes have no doc comments and the
              project does not generate an XML doc file, so CS1591 never activates here. -->
         <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
@@ -18,16 +25,7 @@
     </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="coverlet.collector" Version="10.0.1">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-    </PackageReference>
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
-    <PackageReference Include="xunit" Version="2.9.3" />
-    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-    </PackageReference>
+    <PackageReference Include="xunit.v3" Version="4.0.0" />
   </ItemGroup>
 
   <ItemGroup>

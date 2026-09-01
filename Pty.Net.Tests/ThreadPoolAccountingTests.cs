@@ -30,7 +30,7 @@ public class ThreadPoolAccountingTests
         {
             var (file, args) = TestBash.SleepProcess(1000);
             all[i] = PtyProcess.Start(file, args);
-            _ = all[i].WaitForExitAsync(System.Threading.Timeout.InfiniteTimeSpan);
+            _ = all[i].WaitForExitAsync(System.Threading.Timeout.InfiniteTimeSpan, TestContext.Current.CancellationToken);
         }
 
         // Windows launches one child process per session (cmd/ping — lighter than
@@ -42,9 +42,9 @@ public class ThreadPoolAccountingTests
         // its own spawns). A real leak (one thread pinned per parked wait) still
         // suppresses every sample in the max window.
 #if WINDOWS
-        await Task.Delay(1500);
+        await Task.Delay(1500, TestContext.Current.CancellationToken);
 #else
-        await Task.Delay(300);
+        await Task.Delay(300, TestContext.Current.CancellationToken);
 #endif
         ThreadPool.GetAvailableThreads(out var workersBefore, out _);
         var workersDuring = TestBash.MaxAvailableWorkers(TimeSpan.FromSeconds(1));
@@ -52,7 +52,7 @@ public class ThreadPoolAccountingTests
         foreach (var p in all)
         {
             p.Kill();
-            await p.WaitForExitAsync(Timeout).WaitAsync(Timeout);
+            await p.WaitForExitAsync(Timeout, TestContext.Current.CancellationToken).WaitAsync(Timeout, TestContext.Current.CancellationToken);
             p.Dispose();
         }
 
@@ -91,13 +91,13 @@ public class ThreadPoolAccountingTests
         // pool state (this test runs in a serialized collection, so the only churn is
         // its own spawns). A real leak (one thread pinned per parked read) suppresses
         // every sample in the max window.
-        await Task.Delay(300);
+        await Task.Delay(300, TestContext.Current.CancellationToken);
         ThreadPool.GetAvailableThreads(out var workersBefore, out _);
         var workersDuring = TestBash.MaxAvailableWorkers(TimeSpan.FromSeconds(1));
 
         // Cancel everything; every read must abort promptly.
         var cancelAll = Task.WhenAll(Enumerable.Range(0, sessions).Select(i => CancelAndExpectOce(reads[i], cts[i])));
-        await cancelAll.WaitAsync(Timeout);
+        await cancelAll.WaitAsync(Timeout, TestContext.Current.CancellationToken);
 
         foreach (var p in all)
             p.Dispose();
@@ -111,6 +111,6 @@ public class ThreadPoolAccountingTests
     private static async Task CancelAndExpectOce(Task<int> read, CancellationTokenSource cts)
     {
         cts.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => read).WaitAsync(Timeout);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => read).WaitAsync(Timeout, TestContext.Current.CancellationToken);
     }
 }

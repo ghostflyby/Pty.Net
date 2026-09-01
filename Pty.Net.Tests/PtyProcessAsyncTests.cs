@@ -21,7 +21,7 @@ public class PtyProcessAsyncTests
         using var p = PtyProcess.Start(file, args);
 
         var sw = Stopwatch.StartNew();
-        var exited = await p.WaitForExitAsync(TimeSpan.FromMilliseconds(200)).WaitAsync(Timeout);
+        var exited = await p.WaitForExitAsync(TimeSpan.FromMilliseconds(200), TestContext.Current.CancellationToken).WaitAsync(Timeout, TestContext.Current.CancellationToken);
         sw.Stop();
 
         Assert.False(exited);
@@ -35,7 +35,7 @@ public class PtyProcessAsyncTests
         using var bash = TestBash.Start();
         bash.Input.WriteLine("exit");
 
-        Assert.True(await bash.WaitForExitAsync(Timeout).WaitAsync(Timeout));
+        Assert.True(await bash.WaitForExitAsync(Timeout, TestContext.Current.CancellationToken).WaitAsync(Timeout, TestContext.Current.CancellationToken));
         Assert.Equal(0, bash.ExitCode);
     }
 
@@ -46,7 +46,7 @@ public class PtyProcessAsyncTests
         var (file, args) = TestBash.ShortLivedProcess();
         await using var p = PtyProcess.Start(file, args);
 
-        Assert.True(await p.WaitForExitAsync(Timeout).WaitAsync(Timeout));
+        Assert.True(await p.WaitForExitAsync(Timeout, TestContext.Current.CancellationToken).WaitAsync(Timeout, TestContext.Current.CancellationToken));
         Assert.Equal(0, p.ExitCode);
     }
 
@@ -60,7 +60,7 @@ public class PtyProcessAsyncTests
         var wait = p.WaitForExitAsync(System.Threading.Timeout.InfiniteTimeSpan, cts.Token);
         cts.Cancel();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => wait).WaitAsync(Timeout);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => wait).WaitAsync(Timeout, TestContext.Current.CancellationToken);
     }
 
     // --- DisposeAsync -----------------------------------------------------
@@ -70,7 +70,7 @@ public class PtyProcessAsyncTests
     {
         var bash = TestBash.Start();
         bash.Input.WriteLine("exit");
-        await bash.WaitForExitAsync(Timeout).WaitAsync(Timeout);
+        await bash.WaitForExitAsync(Timeout, TestContext.Current.CancellationToken).WaitAsync(Timeout, TestContext.Current.CancellationToken);
 
         await bash.DisposeAsync(); // must complete and not throw
 
@@ -129,7 +129,7 @@ public class PtyProcessAsyncTests
         p.GracefulExitTimeout = TimeSpan.FromSeconds(1);
         try
         {
-            await Task.Delay(300);
+            await Task.Delay(300, TestContext.Current.CancellationToken);
             var sw = Stopwatch.StartNew();
             await p.DisposeAsync(); // graceful window elapses, then force-kill; completes, not TimeoutException
             sw.Stop();
@@ -159,7 +159,7 @@ public class PtyProcessAsyncTests
 
         bash.Input.WriteLine("exit");
 
-        Assert.Equal(0, await tcs.Task.WaitAsync(Timeout));
+        Assert.Equal(0, await tcs.Task.WaitAsync(Timeout, TestContext.Current.CancellationToken));
     }
 
     /// <summary>
@@ -179,7 +179,7 @@ public class PtyProcessAsyncTests
 
             p.Input.WriteLine("exit");
 
-            Assert.Equal(0, await tcs.Task.WaitAsync(Timeout));
+            Assert.Equal(0, await tcs.Task.WaitAsync(Timeout, TestContext.Current.CancellationToken));
         }
         finally
         {
@@ -195,7 +195,7 @@ public class PtyProcessAsyncTests
         var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
         p.Exited += (code, _) => tcs.TrySetResult(code);
 
-        Assert.Equal(0, await tcs.Task.WaitAsync(Timeout));
+        Assert.Equal(0, await tcs.Task.WaitAsync(Timeout, TestContext.Current.CancellationToken));
     }
 
     /// <summary>A throwing handler must not kill the shared reaper thread (other sessions keep reaping).</summary>
@@ -212,7 +212,7 @@ public class PtyProcessAsyncTests
 
         try
         {
-            Assert.Equal(0, await tcs2.Task.WaitAsync(Timeout));
+            Assert.Equal(0, await tcs2.Task.WaitAsync(Timeout, TestContext.Current.CancellationToken));
         }
         finally
         {
@@ -241,7 +241,7 @@ public class PtyProcessAsyncTests
         };
         p.Exited += (code, _) => second.TrySetResult(code);
 
-        Assert.Equal(0, await second.Task.WaitAsync(Timeout));
+        Assert.Equal(0, await second.Task.WaitAsync(Timeout, TestContext.Current.CancellationToken));
         Assert.Equal(1, Volatile.Read(ref firstRan));
     }
 
@@ -258,7 +258,7 @@ public class PtyProcessAsyncTests
             tcs.TrySetResult(code);
         };
 
-        Assert.Equal(0, await tcs.Task.WaitAsync(Timeout));
+        Assert.Equal(0, await tcs.Task.WaitAsync(Timeout, TestContext.Current.CancellationToken));
         p.OnReaped(42);
 
         Assert.Equal(0, p.ExitCode);
@@ -276,7 +276,7 @@ public class PtyProcessAsyncTests
         // process-wide reaper produces by itself.
         var sw = Stopwatch.StartNew();
         while (p.ExitCode is null && sw.Elapsed < Timeout)
-            await Task.Delay(10);
+            await Task.Delay(10, TestContext.Current.CancellationToken);
 
         Assert.NotNull(p.ExitCode);
         Assert.Equal(0, p.ExitCode);
