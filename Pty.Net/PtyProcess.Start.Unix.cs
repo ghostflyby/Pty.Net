@@ -624,11 +624,13 @@ public sealed partial class PtyProcess
                 }
                 if (pr == 0)
                 {
-                    // Timeout: the child is not making progress. Fail the spawn — and
-                    // SIGKILL + reap the fork child so the ForkLock stays usable.
+                    // Timeout: the child is not making progress. Capture the kernel-side
+                    // evidence FIRST (the stuck child's /proc state survives until we
+                    // kill it), then SIGKILL + reap so the ForkLock stays usable.
+                    var evidence = CaptureStuckChildEvidence(pid);
                     KillAndReapStuckChild(pid);
                     throw new IOException(
-                        $"fork/exec launch failed: the child did not exec within {ExecResultTimeoutMs} ms (pid={pid}).");
+                        $"fork/exec launch failed: the child did not exec within {ExecResultTimeoutMs} ms (pid={pid}).{evidence}");
                 }
 
                 var r = NativeMethods.read(fd, (IntPtr)(p + total), (nuint)(4 - total));
@@ -657,6 +659,43 @@ public sealed partial class PtyProcess
     {
         _ = NativeMethods.kill(pid, NativeMethods.Signals.Kill);
         ReapFailedExec(pid);
+    }
+
+    /// <summary>
+    /// A fork child failing to exec within <see cref="ExecResultTimeoutMs"/> is an
+    /// abnormality, not a slow machine: the post-fork path is a dozen microsecond-scale
+    /// libc calls, so the only way it takes seconds is the child blocking on an
+    /// inherited runtime lock (the ~0.5% multithreaded-fork hang the warm-up work
+    /// reduced but evidently did not fully eliminate). Before killing the evidence,
+    /// snapshot what the kernel knows about it:
+    ///   * /proc/{pid}/syscall — the syscall the child is parked in (raw number; look
+    ///     it up against the runner architecture's table when diagnosing);
+    ///   * /proc/{pid}/cmdline — empty means exec never happened, a path means the
+    ///     kernel replaced the image and the stall is elsewhere;
+    ///   * /proc/{pid}/status — scheduler state plus the inherited signal masks
+    ///     (SigBlk/SigIgn/SigCgt directly expose disposition/mask inheritance bugs).
+    /// Linux-only (/proc); macOS has no equivalent without attaching a debugger.
+    /// </summary>
+    private static string CaptureStuckChildEvidence(int pid)
+    {
+#if LINUX
+        try
+        {
+            var syscall = File.ReadAllText($"/proc/{pid}/syscall").Trim();
+            var cmdline = File.ReadAllText($"/proc/{pid}/cmdline").Replace('\0', ' ').Trim();
+            var status = File.ReadAllText($"/proc/{pid}/status");
+            var line = (string l) => status.Split('\n').FirstOrDefault(x => x.StartsWith(l, StringComparison.Ordinal))?.Trim();
+            return $" stuck: syscall='{syscall}' cmdline='{cmdline}' {line("State")} {line("SigBlk")} {line("SigIgn")} {line("SigCgt")}";
+        }
+        catch
+        {
+            // The child may have exited (or even exec'd) between the poll timeout and
+            // these reads — then there is nothing to diagnose and nothing to add.
+            return " (child state vanished before capture; it may have exited)";
+        }
+#else
+        return string.Empty;
+#endif
     }
 
     // Serializes the ptsname(3) static-buffer read on macOS (which has no ptsname_r).
