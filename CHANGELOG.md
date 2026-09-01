@@ -8,6 +8,13 @@ add a section here as part of the release.
 
 ## Unreleased
 
+Nothing yet.
+
+## 0.3.1 — 2026-09-01
+
+Release-pipeline hardening and the test-framework migration; the library's
+runtime code is unchanged.
+
 - Tests: migrated from xunit 2.9 (Legacy) to xunit.v3 4.0 — the test project is
   now an executable on the Microsoft.Testing.Platform runner, `dotnet test` uses
   the .NET 10 SDK's MTP mode (`test.runner` in `global.json`, solution passed as
