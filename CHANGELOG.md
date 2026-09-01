@@ -29,7 +29,9 @@ runtime code is unchanged.
   nuget.org is refused before any build — this also makes the no-`--skip-duplicate`
   push safe).
 - `dotnet nuget push` no longer passes `--skip-duplicate`: a duplicate-version
-  push now fails loudly instead of being silently dropped.
+  push now fails loudly instead of being silently dropped. The snupkg needs no
+  explicit push at all — NuGet 7.0 (.NET 10) automatically pushes the symbol
+  package sitting next to the nupkg.
 - `global.json` pins the .NET 10 SDK (floor 10.0.100, `latestFeature` roll-forward).
 - `SECURITY.md` (private vulnerability reporting) and this changelog added.
 
