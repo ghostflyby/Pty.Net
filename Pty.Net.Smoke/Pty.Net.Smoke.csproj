@@ -10,6 +10,12 @@
         <TargetFramework>net10.0</TargetFramework>
         <Nullable>enable</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>
+        <!-- Drives the #if WINDOWS shell selection in Program.cs. MSBuild's $(OS)
+             is Windows_NT only on Windows, so the Unix builds compile the bash
+             branch; without this the Windows build also compiled the bash branch
+             and the smoke run resolved C:\Windows\SYSTEM32\bash.exe (WSL), which
+             has no distro on the runners. -->
+        <DefineConstants Condition="'$(OS)' == 'Windows_NT'">$(DefineConstants);WINDOWS</DefineConstants>
         <!-- Default for local runs; the publish workflow overrides it with the tag
              version (dotnet run -p:GhostflybyPtyVersion=$VERSION). -->
         <GhostflybyPtyVersion Condition="'$(GhostflybyPtyVersion)' == ''">0.1.0</GhostflybyPtyVersion>

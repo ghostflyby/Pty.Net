@@ -4,7 +4,7 @@ using Ghostflyby.Pty;
 // the way a user would, then runs one real pty session. The publish workflow runs this
 // on the same OS matrix as the test suite to prove the shipped package is usable on
 // every advertised platform, including the architecture-specific P/Invoke paths.
-// Bare-name resolution (posix_spawnp on Unix, CreateProcess on Windows) is exercised
+// Bare-name resolution (fork/exec on Unix, CreateProcess on Windows) is exercised
 // on purpose: it is part of the published behavior.
 
 // Platform: one bare name that is reliably on PATH everywhere.
