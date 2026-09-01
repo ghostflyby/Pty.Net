@@ -22,6 +22,21 @@
         <RepositoryUrl>https://github.com/ghostflyby/Pty.Net</RepositoryUrl>
         <PackageProjectUrl>https://github.com/ghostflyby/Pty.Net</PackageProjectUrl>
         <PackageTags>pty;pseudo-terminal;conpty;csharp;dotnet;dotnet-library</PackageTags>
+
+        <!-- Symbols: dotnet pack emits a snupkg next to the nupkg (the publish
+             workflow pushes it). SourceLink then lets a consumer's debugger step
+             into the library source instead of "Cannot step in — no source".
+             Limitation worth knowing: each OS build job compiles a different
+             #if/#elif file set, so the three per-OS assemblies have different
+             MVIDs and one pushed snupkg can only symbol-match the linux-x64/linux-
+             arm64 dlls (the ubuntu job's PDB is what gets pushed); the other RIDs
+             debug as before. ContinuousIntegrationBuild keeps the compilation
+             deterministic (normalized paths), which SourceLink requires. -->
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+        <PublishRepositoryUrl>true</PublishRepositoryUrl>
+        <EmbedUntrackedSources>true</EmbedUntrackedSources>
+        <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>

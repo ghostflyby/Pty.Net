@@ -1,0 +1,11 @@
+{
+  // Pins the SDK so local builds and CI run the same toolchain. latestFeature
+  // accepts any installed 10.0.x feature band at or above this floor, so the
+  // rolling sdk:10.0 container images and the runners' setup-dotnet 10.0.x both
+  // satisfy it without a bump on every patch release.
+  "sdk": {
+    "version": "10.0.100",
+    "rollForward": "latestFeature",
+    "allowPrerelease": false
+  }
+}
