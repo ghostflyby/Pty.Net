@@ -33,20 +33,48 @@ public sealed partial class PtyProcess
             : Marshal.StringToHGlobalAnsi(workingDirectory);
 
         // Create the pty. The master fd is non-blocking from birth.
+        //
+        // posix_openpt transiently fails under concurrent spawning — measured ~1/6500
+        // allocations on macOS arm64 with 16 hammering threads (and ~1/2000 in the
+        // full fork stress probe): the kernel-side master allocation occasionally
+        // loses a race at allocation bursts. Darwin reports the kernel error as the
+        // RAW NEGATED errno (errno=-6 == -ENXIO — confirmed from plain C), so the
+        // failure is detected by the return code alone and the errno value is only
+        // diagnostic. The condition is burst-transient, so a few millisecond-scale
+        // retries absorb it; a persistent condition (fd table full) still throws
+        // with both the rc and the captured errno.
         PtyStream? stream = null;
-        var masterFd = NativeMethods.posix_openpt(NativeMethods.ORdwr | NativeMethods.ONonblock);
-        if (masterFd < 0 ||
-            NativeMethods.grantpt(masterFd) != 0 ||
-            NativeMethods.unlockpt(masterFd) != 0)
+        var masterFd = -1;
+        var openptErrno = 0;
+        for (var attempt = 0; attempt < 4; attempt++)
         {
-            var err = Marshal.GetLastPInvokeError();
+            if (attempt > 0)
+                Thread.Sleep(2 << (attempt - 1)); // 2, 4, 8 ms — burst backoff
+            masterFd = NativeMethods.posix_openpt(NativeMethods.ORdwr | NativeMethods.ONonblock);
+            if (masterFd >= 0)
+                break;
+            openptErrno = Marshal.GetLastPInvokeError();
+        }
+
+        var grantRc = 0;
+        var unlockRc = 0;
+        if (masterFd >= 0)
+        {
+            grantRc = NativeMethods.grantpt(masterFd);
+            if (grantRc == 0)
+                unlockRc = NativeMethods.unlockpt(masterFd);
+        }
+        if (masterFd < 0 || grantRc != 0 || unlockRc != 0)
+        {
             FreeNative(envp);
             FreeNative(argv);
             Marshal.FreeHGlobal(path);
             Marshal.FreeHGlobal(workingDirectoryPath);
             if (masterFd >= 0)
                 NativeMethods.close(masterFd);
-            throw new IOException($"posix_openpt/grantpt/unlockpt failed: errno={err}");
+            throw new IOException(
+                $"posix pty setup failed: errno={Marshal.GetLastPInvokeError()} " +
+                $"(posix_openpt rc={masterFd} errno={openptErrno}, grantpt rc={grantRc}, unlockpt rc={unlockRc})");
         }
 
         var slavePath = ResolveSlavePath(masterFd);
