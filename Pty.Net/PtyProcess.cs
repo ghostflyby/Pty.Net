@@ -215,9 +215,20 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         var effectiveEnvironment = MergeWithParentEnvironment(environment, inheritParentEnvironment);
 
         // Platform hook: posix_spawn on Unix, ConPTY (CreatePseudoConsole +
-        // CreateProcessW) on Windows.
-        return StartPlatform(file, arguments, workingDirectory, effectiveEnvironment,
-            inputEncoding, outputEncoding, initialCols, initialRows);
+        // CreateProcessW) on Windows. A Unix fork child that wedges before exec (a
+        // ~0.02% multithreaded-fork race — see ForkHangException) surfaces as a
+        // ForkHangException; a fresh fork almost never loses the same race, so the
+        // launch is retried exactly once before the failure is reported.
+        try
+        {
+            return StartPlatform(file, arguments, workingDirectory, effectiveEnvironment,
+                inputEncoding, outputEncoding, initialCols, initialRows);
+        }
+        catch (IOException ex) when (ex.GetType().Name == "ForkHangException")
+        {
+            return StartPlatform(file, arguments, workingDirectory, effectiveEnvironment,
+                inputEncoding, outputEncoding, initialCols, initialRows);
+        }
     }
 
     /// <summary>
