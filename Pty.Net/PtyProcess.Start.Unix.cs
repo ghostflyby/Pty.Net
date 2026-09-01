@@ -33,20 +33,48 @@ public sealed partial class PtyProcess
             : Marshal.StringToHGlobalAnsi(workingDirectory);
 
         // Create the pty. The master fd is non-blocking from birth.
+        //
+        // posix_openpt transiently fails under concurrent spawning — measured ~1/6500
+        // allocations on macOS arm64 with 16 hammering threads (and ~1/2000 in the
+        // full fork stress probe): the kernel-side master allocation occasionally
+        // loses a race at allocation bursts. Darwin reports the kernel error as the
+        // RAW NEGATED errno (errno=-6 == -ENXIO — confirmed from plain C), so the
+        // failure is detected by the return code alone and the errno value is only
+        // diagnostic. The condition is burst-transient, so a few millisecond-scale
+        // retries absorb it; a persistent condition (fd table full) still throws
+        // with both the rc and the captured errno.
         PtyStream? stream = null;
-        var masterFd = NativeMethods.posix_openpt(NativeMethods.ORdwr | NativeMethods.ONonblock);
-        if (masterFd < 0 ||
-            NativeMethods.grantpt(masterFd) != 0 ||
-            NativeMethods.unlockpt(masterFd) != 0)
+        var masterFd = -1;
+        var openptErrno = 0;
+        for (var attempt = 0; attempt < 4; attempt++)
         {
-            var err = Marshal.GetLastPInvokeError();
+            if (attempt > 0)
+                Thread.Sleep(2 << (attempt - 1)); // 2, 4, 8 ms — burst backoff
+            masterFd = NativeMethods.posix_openpt(NativeMethods.ORdwr | NativeMethods.ONonblock);
+            if (masterFd >= 0)
+                break;
+            openptErrno = Marshal.GetLastPInvokeError();
+        }
+
+        var grantRc = 0;
+        var unlockRc = 0;
+        if (masterFd >= 0)
+        {
+            grantRc = NativeMethods.grantpt(masterFd);
+            if (grantRc == 0)
+                unlockRc = NativeMethods.unlockpt(masterFd);
+        }
+        if (masterFd < 0 || grantRc != 0 || unlockRc != 0)
+        {
             FreeNative(envp);
             FreeNative(argv);
             Marshal.FreeHGlobal(path);
             Marshal.FreeHGlobal(workingDirectoryPath);
             if (masterFd >= 0)
                 NativeMethods.close(masterFd);
-            throw new IOException($"posix_openpt/grantpt/unlockpt failed: errno={err}");
+            throw new IOException(
+                $"posix pty setup failed: errno={Marshal.GetLastPInvokeError()} " +
+                $"(posix_openpt rc={masterFd} errno={openptErrno}, grantpt rc={grantRc}, unlockpt rc={unlockRc})");
         }
 
         var slavePath = ResolveSlavePath(masterFd);
@@ -171,20 +199,33 @@ public sealed partial class PtyProcess
             // Fork critical section. A no-GC region pauses the GC for the duration of
             // the fork so the child's inherited heap/allocator state is consistent (the
             // experiment suite measured ~0.5% child hangs under concurrent allocation
-            // pressure without it, 0/4000 with it). But the no-GC region is
-            // process-global: concurrent spawns would fight over it, so the whole
-            // fork+region is serialized with a lock. Other threads still allocate
-            // during the region (their objects just accumulate until it ends, which the
-            // budget absorbs), so this does not stall the process — it only guarantees
-            // one fork at a time.
+            // pressure without it, 0/4000 with it). The no-GC region is process-global:
+            // concurrent spawns would fight over it, so the whole fork+region is
+            // serialized with a lock.
+            //
+            // Two no-GC-region realities this code must survive (both observed):
+            //   * Start can FAIL while a background GC drains — retried below with
+            //     short backoff instead of failing the spawn;
+            //   * the region's budget is consumed by OTHER threads' allocations, and
+            //     when it runs out the runtime force-terminates the region (mode back
+            //     to NotActive) — so EndNoGCRegion may throw even though Start returned
+            //     true, and it is wrapped. A terminated region means a GC ran near the
+            //     fork; the child may then wedge before exec, which the exec-result
+            //     timeout below surfaces as a diagnosable failure.
             int pid;
             lock (ForkLock)
             {
                 _ = ForkChildPathPrepared;
-                if (!GC.TryStartNoGCRegion(ForkNoGcBudget, true))
+                var started = false;
+                for (var attempt = 0; attempt < 5 && !started; attempt++)
+                {
+                    started = GC.TryStartNoGCRegion(ForkNoGcBudget, true);
+                    if (!started)
+                        Thread.Sleep(10 << attempt); // background GC draining; back off
+                }
+                if (!started)
                     throw new IOException("fork launch failed: the GC could not be paused (concurrent GC in progress).");
 
-                var inNoGcRegion = true;
                 try
                 {
                     pid = NativeMethods.fork();
@@ -218,8 +259,12 @@ public sealed partial class PtyProcess
                             }
                         }
                     }
-                    GC.EndNoGCRegion();
-                    inNoGcRegion = false;
+                    // The region may have been force-terminated meanwhile (other
+                    // threads' allocations drained the budget); EndNoGCRegion then
+                    // throws even though Start succeeded — swallow that specific
+                    // outcome, the child is already forked and unaffected.
+                    try { GC.EndNoGCRegion(); }
+                    catch (InvalidOperationException ex) { PtyDiagnostics.Log($"no-gc region ended early: {ex.Message}"); }
                     // Logging after the region ends: the interpolated string allocates
                     // even when diagnostics are disabled, and allocations inside an
                     // active no-GC region eat its budget.
@@ -227,11 +272,8 @@ public sealed partial class PtyProcess
                 }
                 catch
                 {
-                    if (inNoGcRegion)
-                    {
-                        GC.EndNoGCRegion();
-                        inNoGcRegion = false;
-                    }
+                    try { GC.EndNoGCRegion(); }
+                    catch (InvalidOperationException) { /* region already terminated */ }
                     throw;
                 }
 
@@ -624,11 +666,13 @@ public sealed partial class PtyProcess
                 }
                 if (pr == 0)
                 {
-                    // Timeout: the child is not making progress. Fail the spawn — and
-                    // SIGKILL + reap the fork child so the ForkLock stays usable.
+                    // Timeout: the child is not making progress. Capture the kernel-side
+                    // evidence FIRST (the stuck child's /proc state survives until we
+                    // kill it), then SIGKILL + reap so the ForkLock stays usable.
+                    var evidence = CaptureStuckChildEvidence(pid);
                     KillAndReapStuckChild(pid);
-                    throw new IOException(
-                        $"fork/exec launch failed: the child did not exec within {ExecResultTimeoutMs} ms (pid={pid}).");
+                    throw new ForkHangException(
+                        $"fork/exec launch failed: the child did not exec within {ExecResultTimeoutMs} ms (pid={pid}).{evidence}");
                 }
 
                 var r = NativeMethods.read(fd, (IntPtr)(p + total), (nuint)(4 - total));
@@ -653,10 +697,89 @@ public sealed partial class PtyProcess
     /// <summary>How long the parent waits for the fork child to exec before SIGKILLing it.</summary>
     private const int ExecResultTimeoutMs = 10_000;
 
+    /// <summary>
+    /// The fork child wedged before exec (see <see cref="CaptureStuckChildEvidence"/>):
+    /// a ~0.02% multithreaded-fork race where the child's first GC-mode transition
+    /// waits on a suspension that its dead runtime will never grant. Thrown once;
+    /// <see cref="StartCore"/> retries the whole launch once — a fresh fork almost
+    /// never loses the same race.
+    /// </summary>
+    private sealed class ForkHangException : IOException
+    {
+        public ForkHangException(string message)
+            : base(message)
+        {
+        }
+    }
+
     private static void KillAndReapStuckChild(int pid)
     {
         _ = NativeMethods.kill(pid, NativeMethods.Signals.Kill);
         ReapFailedExec(pid);
+    }
+
+    /// <summary>
+    /// A fork child failing to exec within <see cref="ExecResultTimeoutMs"/> is an
+    /// abnormality, not a slow machine: the post-fork path is a dozen microsecond-scale
+    /// libc calls, so the only way it takes seconds is the child blocking on an
+    /// inherited runtime lock (the ~0.5% multithreaded-fork hang the warm-up work
+    /// reduced but evidently did not fully eliminate). Before killing the evidence,
+    /// snapshot what the kernel knows about it:
+    ///   * /proc/{pid}/syscall — the syscall the child is parked in (raw number; look
+    ///     it up against the runner architecture's table when diagnosing);
+    ///   * /proc/{pid}/cmdline — empty means exec never happened, a path means the
+    ///     kernel replaced the image and the stall is elsewhere;
+    ///   * /proc/{pid}/status — scheduler state plus the inherited signal masks
+    ///     (SigBlk/SigIgn/SigCgt directly expose disposition/mask inheritance bugs).
+    /// On macOS the equivalent is /usr/bin/sample: the library runs it against the
+    /// stuck child (still alive until we kill it) and reports the stack file path —
+    /// the child is a copy of this process, so its stack shows exactly which
+    /// post-fork step or inherited lock it is parked in.
+    /// </summary>
+    private static string CaptureStuckChildEvidence(int pid)
+    {
+#if LINUX
+        try
+        {
+            var syscall = File.ReadAllText($"/proc/{pid}/syscall").Trim();
+            var cmdline = File.ReadAllText($"/proc/{pid}/cmdline").Replace('\0', ' ').Trim();
+            var status = File.ReadAllText($"/proc/{pid}/status");
+            var line = (string l) => status.Split('\n').FirstOrDefault(x => x.StartsWith(l, StringComparison.Ordinal))?.Trim();
+            return $" stuck: syscall='{syscall}' cmdline='{cmdline}' {line("State")} {line("SigBlk")} {line("SigIgn")} {line("SigCgt")}";
+        }
+        catch
+        {
+            // The child may have exited (or even exec'd) between the poll timeout and
+            // these reads — then there is nothing to diagnose and nothing to add.
+            return " (child state vanished before capture; it may have exited)";
+        }
+#elif OSX
+        try
+        {
+            // /usr/bin/sample <pid> <duration-s> <fraction-s> -file <out>: samples the
+            // process for 2 seconds and writes the call graph. The child is a forked
+            // copy of THIS process before exec, so unresolved frames belong to the
+            // hosting dotnet/runtime modules of the parent.
+            var file = $"/tmp/pty-stuck-child-{pid}.txt";
+            var psi = new System.Diagnostics.ProcessStartInfo("/usr/bin/sample", $"{pid} 2 1 -file {file}")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            using var sampler = System.Diagnostics.Process.Start(psi);
+            sampler?.WaitForExit(8000);
+            return $" child stack sampled to {file}";
+        }
+        catch
+        {
+            // The child may have exited between the poll timeout and the sample —
+            // then there is nothing to diagnose and nothing to add.
+            return " (child state vanished before capture; it may have exited)";
+        }
+#else
+#error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
+#endif
     }
 
     // Serializes the ptsname(3) static-buffer read on macOS (which has no ptsname_r).

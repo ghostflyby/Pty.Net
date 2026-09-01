@@ -262,18 +262,19 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP/consumer" | Out-Null
           Push-Location "$env:RUNNER_TEMP/consumer"
           try {
-            @'
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <Nullable>disable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
-  </PropertyGroup>
-  <ItemGroup>
-    <PackageReference Include="Ghostflyby.Pty" Version="__VERSION__" />
-  </ItemGroup>
-</Project>
-'@ -replace '__VERSION__', $version | Set-Content -Path 'Consumer.csproj' -Encoding utf8
+            $proj = @(
+              '<Project Sdk="Microsoft.NET.Sdk">'
+              '  <PropertyGroup>'
+              '    <TargetFramework>net10.0</TargetFramework>'
+              '    <Nullable>disable</Nullable>'
+              '    <ImplicitUsings>enable</ImplicitUsings>'
+              '  </PropertyGroup>'
+              '  <ItemGroup>'
+              '    <PackageReference Include="Ghostflyby.Pty" Version="__VERSION__" />'
+              '  </ItemGroup>'
+              '</Project>'
+            ) -join "`n"
+            $proj.Replace('__VERSION__', $version) | Set-Content -Path 'Consumer.csproj' -Encoding utf8
             'System.Console.WriteLine(typeof(Ghostflyby.Pty.PtyProcess).FullName);' |
               Set-Content -Path 'Class1.cs' -Encoding utf8
             $sourceArg = "--source:$env:RUNNER_TEMP/local-source", "--source:https://api.nuget.org/v3/index.json"
