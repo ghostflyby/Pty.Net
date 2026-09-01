@@ -103,8 +103,9 @@ jobs:
           }
           # Refuse versions nuget.org already has, before anything builds. With
           # --skip-duplicate gone from the push this is the belt to its suspenders,
-          # and it gives traceability-only tag pushes (e.g. the back-filled v0.2.1)
-          # a clear early exit instead of a full build that cannot be pushed.
+          # and it gives traceability-only tag pushes (a re-tag of a historical
+          # version) a clear early exit instead of a full build that cannot be
+          # pushed.
           $index = try { Invoke-RestMethod -Uri 'https://api.nuget.org/v3-flatcontainer/ghostflyby.pty/index.json' -TimeoutSec 30 } catch { $null }
           if ($index -and ($index.versions -contains $version)) {
               throw "version '$version' is already published on nuget.org — refusing to republish (traceability tag only)"

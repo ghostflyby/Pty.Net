@@ -1,8 +1,10 @@
 # Changelog
 
-Notable changes per release. Each released version also has a GitHub Release
-(https://github.com/ghostflyby/Pty.Net/releases) and a tag; add a section here
-as part of the release.
+Notable changes per release. This changelog starts at **0.3.0** — releases
+0.1.0 through 0.2.2 shipped before the file existed, and their notes, where
+any exist, live on the GitHub Releases page. Each released version also has a
+GitHub Release (https://github.com/ghostflyby/Pty.Net/releases) and a tag;
+add a section here as part of the release.
 
 ## Unreleased
 
@@ -50,30 +52,3 @@ reliability and packaging work that came out of stress-testing it:
   ios-arm64/browser-wasm a wrong-OS dll at runtime).
 - Tests: controlling-terminal coverage (`/dev/tty`, session-leader + foreground
   process group, `tty(1)`), stream-semantics matrix, async exit notifications.
-
-## 0.2.2 — 2026-08-18
-
-- CI: package smoke split out of the publish workflow into a manual workflow
-  (the feed's indexing delay makes in-lockstep smoke flaky by design).
-- CI: first NuGet-valid package assembly (later reworked in 0.3.0).
-- Dependency bumps (xunit.runner.visualstudio 4.0.0, Microsoft.NET.Test.Sdk
-  18.9.0, upload-artifact v7, download-artifact v8).
-
-## 0.2.1 — 2026-08-18
-
-Published to nuget.org on 2026-08-18. **No tag was pushed at the time**, so the
-exact source commit was not recorded; the back-filled `v0.2.1` tag anchors the
-closest reconstructed commit (`84cb82a`, "assemble nupkg with valid NuGet
-layout", same day). Treat this entry as approximate.
-
-## 0.2.0 — 2026-08-15
-
-- `PtyStartInfo.InheritParentEnvironment` for allowlist-style environments
-  (overrides merged over the parent environment).
-- Publish pipeline gained a package smoke test on the full OS matrix.
-- `PublicAPI.Shipped.txt` is updated automatically after each release.
-
-## 0.1.0 — 2026-08-13
-
-Initial release: `PtyProcess`/`PtyStream` over ConPTY (Windows) and a
-posix pty (macOS/Linux), reaper-based process lifetime, resize, encodings.
