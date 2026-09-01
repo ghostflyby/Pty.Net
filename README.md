@@ -7,7 +7,7 @@ The multi-platform pty wrapper in pure C# with P/Invoke: drive interactive shell
 ## Features
 
 - **Real pseudo-terminal sessions** — full-screen programs, job control, and terminal escape sequences behave as they do in a real terminal.
-- **Cross-platform** — ConPTY on Windows; `openpty` + `posix_spawnp` on macOS and Linux. Architecture-neutral managed IL (one package covers x64 and arm64).
+- **Cross-platform** — ConPTY on Windows; `posix_openpt` + fork/exec on macOS and Linux. Architecture-neutral managed IL (one package covers x64 and arm64).
 - **Text and raw I/O** — `Input`/`Output` text facades over the raw `BaseStream`.
 - **Deterministic termination** — a configurable graceful-close window, then a force kill; `Dispose` blocks until the cleanup has actually completed.
 - **Exit notification with the exit code** — the `Exited` event delivers the code, so handlers never reach for a nullable property.
@@ -133,8 +133,10 @@ a child that was still alive.
 ## Platform notes
 
 - **Windows** needs Windows 10 1809 (build 17763) or later (ConPTY).
-- **Architectures** — x64 and arm64 on all three OSes; verified in CI (native arm64
-  runners plus a qemu-degraded path).
+- **Architectures** — the package ships runtimes for win-x64, win-arm64, linux-x64,
+  linux-arm64, osx-x64, and osx-arm64; the assemblies are architecture-neutral managed
+  IL. CI verifies Linux x64 and arm64 (native runners), macOS arm64, and Windows x64,
+  plus glibc and musl containers; win-arm64 and osx-x64 currently have no CI runners.
 - The pty merges the child's **stdout and stderr** into the single `Output` stream —
   there is no separate stderr, as in a real terminal.
 
