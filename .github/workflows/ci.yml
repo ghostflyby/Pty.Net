@@ -72,10 +72,11 @@ jobs:
           fi
 
       - name: Test
-        # The blame-hang collector is only meaningful on Windows, where ClosePseudoConsole
-        # can block indefinitely (see PtyProcess.Dispose); if a test ever hangs again it
-        # produces a hang report naming the test instead of a silent 30-minute timeout.
-        run: dotnet test Pty.Net.slnx -c Release --no-build --no-restore --nologo ${{ matrix.os == 'windows-latest' && '--blame-hang --blame-hang-timeout 3m' || '' }}
+        # xunit.v3 runs on Microsoft.Testing.Platform, which the .NET 10 SDK's
+        # dotnet test drives natively (the VSTest blame-hang collector is gone with
+        # the v2 runner; a hung test now burns the 30-minute job timeout instead of
+        # producing a hang report).
+        run: dotnet test --solution Pty.Net.slnx -c Release --no-build --no-restore
 
   # Linux 上的 libc 差异由容器矩阵覆盖：同一套 #if LINUX 代码路径要分别在 glibc
   # (sdk:10.0，基于 Ubuntu) 与 musl (sdk:10.0-alpine，基于 Alpine) 上验证。
@@ -119,4 +120,4 @@ jobs:
         # addclose validates against, tracks the soft limit. Lowering the HARD limit
         # would need CAP_SYS_RESOURCE, which the container's users lack — and it is not
         # needed to exercise the constrained-fd path.
-        run: su testuser -s /bin/sh -c 'cd "$GITHUB_WORKSPACE" && ulimit -Sn 512 && dotnet test Pty.Net.slnx -c Release --nologo'
+        run: su testuser -s /bin/sh -c 'cd "$GITHUB_WORKSPACE" && ulimit -Sn 512 && dotnet test --solution Pty.Net.slnx -c Release'

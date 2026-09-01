@@ -79,7 +79,7 @@ public class StreamSemanticsTests
 #endif
         // Wait for exit WITHOUT reading first: the drain now buffers what it would
         // previously have discarded on Unix.
-        Assert.True(await p.WaitForExitAsync(Timeout).WaitAsync(Timeout));
+        Assert.True(await p.WaitForExitAsync(Timeout, TestContext.Current.CancellationToken).WaitAsync(Timeout, TestContext.Current.CancellationToken));
 
         using var cts = new CancellationTokenSource(Timeout);
         var text = new StringBuilder();

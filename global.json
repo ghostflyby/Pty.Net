@@ -7,5 +7,10 @@
     "version": "10.0.100",
     "rollForward": "latestFeature",
     "allowPrerelease": false
+  },
+  // Opts dotnet test into its .NET 10 MTP mode, which is how the xunit.v3 test
+  // project runs (the legacy VSTest mode refuses MTP projects on the .NET 10 SDK).
+  "test": {
+    "runner": "Microsoft.Testing.Platform"
   }
 }

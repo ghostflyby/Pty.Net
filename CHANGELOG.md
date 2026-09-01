@@ -8,6 +8,14 @@ add a section here as part of the release.
 
 ## Unreleased
 
+- Tests: migrated from xunit 2.9 (Legacy) to xunit.v3 4.0 — the test project is
+  now an executable on the Microsoft.Testing.Platform runner, `dotnet test` uses
+  the .NET 10 SDK's MTP mode (`test.runner` in `global.json`, solution passed as
+  `--solution`, `--nologo` dropped as the MTP runner rejects it), and the VSTest
+  stack (Microsoft.NET.Test.Sdk, xunit.runner.visualstudio, coverlet.collector —
+  the latter never actually collected in CI) is gone. Windows' blame-hang
+  collector was retired with the v2 runner; the 30-minute job timeout is the
+  hang net.
 - Publish pipeline: snupkg symbols + SourceLink (`PublishRepositoryUrl`),
   build-provenance attestation for the assembled package, and tag validation
   (tag commit must be a main ancestor with green CI; a version already on

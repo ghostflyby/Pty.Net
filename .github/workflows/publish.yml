@@ -49,7 +49,7 @@ jobs:
 
       # A release candidate must pass the full suite on the OS whose dll it ships.
       - name: Test
-        run: dotnet test Pty.Net.slnx -c Release --nologo
+        run: dotnet test --solution Pty.Net.slnx -c Release
 
       - name: Pack
         run: dotnet pack Pty.Net/Pty.Net.csproj -c Release --nologo -o pkg -p:Version=$env:VERSION
