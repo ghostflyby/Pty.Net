@@ -2,16 +2,16 @@ namespace Ghostflyby.Pty;
 
 /// <summary>
 /// Process-wide reaper: the single owner of the exit wait for every <see cref="PtyProcess"/>.
-/// The platform half runs a dedicated reaper thread and reports the child's exit to
-/// <see cref="PtyProcess.OnReaped(int)"/>, which sets <see cref="PtyProcess.ExitCode"/>,
-/// raises <see cref="PtyProcess.Exited"/> and completes the exit signal every
-/// WaitForExit/Dispose wait observes.
+/// The platform half runs a dedicated reaper thread and reports the child's terminal
+/// result to <see cref="PtyProcess"/>, which publishes its exit-code/signal state, raises
+/// <see cref="PtyProcess.Exited"/> and completes the exit signal every WaitForExit/Dispose
+/// wait observes.
 ///
 /// Single-owner matters: if WaitForExit/Dispose each waited directly, two callers would
-/// race for the same child — on Unix the first reap wins and the loser would see ECHILD
-/// and overwrite the ExitCode with -1 (on Windows a single owned process handle makes
-/// that impossible, but funneling the wait through one thread keeps the result
-/// deterministic all the same). Other paths only observe ExitCode.
+/// race for the same child — on Unix the first reap wins and the loser would see ECHILD;
+/// on Windows a single owned process handle makes that impossible, but funneling the wait
+/// through one thread keeps the result deterministic all the same. Other paths only
+/// observe the published terminal state.
 ///
 /// Signal safety (Unix): no SIGCHLD handler is installed (.NET's runtime installs its own
 /// SIGCHLD on Unix; overlaying it is risky). Instead of polling waitpid every 10 ms, the

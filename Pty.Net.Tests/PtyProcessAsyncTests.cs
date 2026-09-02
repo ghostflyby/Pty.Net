@@ -151,15 +151,20 @@ public class PtyProcessAsyncTests
     // --- Exited event -----------------------------------------------------
 
     [Fact]
-    public async Task Exited_Fires_WithExitCode()
+    public async Task Exited_Fires_AfterTerminalResultIsPublished()
     {
         using var bash = TestBash.Start();
-        var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
-        bash.Exited += (code, _) => tcs.TrySetResult(code);
+        var tcs = new TaskCompletionSource<PtyProcess>(TaskCreationOptions.RunContinuationsAsynchronously);
+        bash.Exited += process => tcs.TrySetResult(process);
 
         bash.Input.WriteLine("exit");
 
-        Assert.Equal(0, await tcs.Task.WaitAsync(Timeout, TestContext.Current.CancellationToken));
+        var exited = await tcs.Task.WaitAsync(Timeout, TestContext.Current.CancellationToken);
+        Assert.Same(bash, exited);
+        Assert.True(exited.HasExited);
+        Assert.Equal(0, exited.ExitCode);
+        Assert.Null(exited.TerminationSignal);
+        Assert.True(exited.WaitForExit(TimeSpan.Zero));
     }
 
     /// <summary>
@@ -174,12 +179,15 @@ public class PtyProcessAsyncTests
         var p = TestBash.Start();
         try
         {
-            var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
-            p.Exited += (code, _) => tcs.TrySetResult(code);
+            var tcs = new TaskCompletionSource<PtyProcess>(TaskCreationOptions.RunContinuationsAsynchronously);
+            p.Exited += process => tcs.TrySetResult(process);
 
             p.Input.WriteLine("exit");
 
-            Assert.Equal(0, await tcs.Task.WaitAsync(Timeout, TestContext.Current.CancellationToken));
+            var exited = await tcs.Task.WaitAsync(Timeout, TestContext.Current.CancellationToken);
+            Assert.Same(p, exited);
+            Assert.Equal(0, exited.ExitCode);
+            Assert.Null(exited.TerminationSignal);
         }
         finally
         {
@@ -192,10 +200,13 @@ public class PtyProcessAsyncTests
     {
         var (file, args) = TestBash.ShortLivedProcess();
         using var p = PtyProcess.Start(file, args);
-        var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
-        p.Exited += (code, _) => tcs.TrySetResult(code);
+        var tcs = new TaskCompletionSource<PtyProcess>(TaskCreationOptions.RunContinuationsAsynchronously);
+        p.Exited += process => tcs.TrySetResult(process);
 
-        Assert.Equal(0, await tcs.Task.WaitAsync(Timeout, TestContext.Current.CancellationToken));
+        var exited = await tcs.Task.WaitAsync(Timeout, TestContext.Current.CancellationToken);
+        Assert.Same(p, exited);
+        Assert.Equal(0, exited.ExitCode);
+        Assert.Null(exited.TerminationSignal);
     }
 
     /// <summary>A throwing handler must not kill the shared reaper thread (other sessions keep reaping).</summary>
@@ -205,14 +216,16 @@ public class PtyProcessAsyncTests
         var (file, args) = TestBash.ShortLivedProcess();
         var p1 = PtyProcess.Start(file, args);
         var p2 = PtyProcess.Start(file, args);
-        var tcs2 = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var tcs2 = new TaskCompletionSource<PtyProcess>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        p1.Exited += (_, _) => throw new InvalidOperationException("boom");
-        p2.Exited += (code, _) => tcs2.TrySetResult(code);
+        p1.Exited += _ => throw new InvalidOperationException("boom");
+        p2.Exited += process => tcs2.TrySetResult(process);
 
         try
         {
-            Assert.Equal(0, await tcs2.Task.WaitAsync(Timeout, TestContext.Current.CancellationToken));
+            var exited = await tcs2.Task.WaitAsync(Timeout, TestContext.Current.CancellationToken);
+            Assert.Same(p2, exited);
+            Assert.Equal(0, exited.ExitCode);
         }
         finally
         {
@@ -231,17 +244,19 @@ public class PtyProcessAsyncTests
     {
         var (file, args) = TestBash.ShortLivedProcess();
         using var p = PtyProcess.Start(file, args);
-        var second = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var second = new TaskCompletionSource<PtyProcess>(TaskCreationOptions.RunContinuationsAsynchronously);
         var firstRan = 0;
 
-        p.Exited += (_, _) =>
+        p.Exited += _ =>
         {
             Interlocked.Increment(ref firstRan);
             throw new InvalidOperationException("boom");
         };
-        p.Exited += (code, _) => second.TrySetResult(code);
+        p.Exited += process => second.TrySetResult(process);
 
-        Assert.Equal(0, await second.Task.WaitAsync(Timeout, TestContext.Current.CancellationToken));
+        var exited = await second.Task.WaitAsync(Timeout, TestContext.Current.CancellationToken);
+        Assert.Same(p, exited);
+        Assert.Equal(0, exited.ExitCode);
         Assert.Equal(1, Volatile.Read(ref firstRan));
     }
 
@@ -251,19 +266,82 @@ public class PtyProcessAsyncTests
         var (file, args) = TestBash.ShortLivedProcess();
         using var p = PtyProcess.Start(file, args);
         var calls = 0;
-        var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
-        p.Exited += (code, _) =>
+        var tcs = new TaskCompletionSource<PtyProcess>(TaskCreationOptions.RunContinuationsAsynchronously);
+        p.Exited += process =>
         {
             Interlocked.Increment(ref calls);
-            tcs.TrySetResult(code);
+            tcs.TrySetResult(process);
         };
 
-        Assert.Equal(0, await tcs.Task.WaitAsync(Timeout, TestContext.Current.CancellationToken));
-        p.OnReaped(42);
+        var exited = await tcs.Task.WaitAsync(Timeout, TestContext.Current.CancellationToken);
+        Assert.Same(p, exited);
+        Assert.Equal(0, exited.ExitCode);
+        p.OnReaped(PtyProcess.TerminationStatus.Exited(42));
 
         Assert.Equal(0, p.ExitCode);
+        Assert.Null(p.TerminationSignal);
         Assert.Equal(1, Volatile.Read(ref calls));
     }
+
+    [Fact]
+    public async Task Exited_BlockingHandler_DoesNotBlockExitWaiters()
+    {
+        var (file, args) = TestBash.SleepProcess(100);
+        using var p = PtyProcess.Start(file, args);
+        using var handlerStarted = new ManualResetEventSlim();
+        using var releaseHandler = new ManualResetEventSlim();
+        p.Exited += _ =>
+        {
+            handlerStarted.Set();
+            releaseHandler.Wait(Timeout);
+        };
+        var wait = p.WaitForExitAsync(System.Threading.Timeout.InfiniteTimeSpan, TestContext.Current.CancellationToken);
+
+        try
+        {
+            p.Kill();
+            Assert.True(handlerStarted.Wait(Timeout, TestContext.Current.CancellationToken), "exit handler did not start");
+            Assert.True(await wait.WaitAsync(Timeout, TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            releaseHandler.Set();
+        }
+    }
+
+    [Fact]
+    public async Task Exited_LateSubscription_IsNotReplayed()
+    {
+        var (file, args) = TestBash.ShortLivedProcess();
+        using var p = PtyProcess.Start(file, args);
+
+        Assert.True(await p.WaitForExitAsync(Timeout, TestContext.Current.CancellationToken));
+
+        var calls = 0;
+        p.Exited += _ => Interlocked.Increment(ref calls);
+        p.OnReaped(PtyProcess.TerminationStatus.Exited(42));
+
+        Assert.Equal(0, Volatile.Read(ref calls));
+    }
+
+#if !WINDOWS
+    [Fact]
+    public async Task Exited_AfterSignalTermination_PublishesSignal()
+    {
+        var (file, args) = TestBash.SleepProcess(100);
+        using var p = PtyProcess.Start(file, args);
+        var tcs = new TaskCompletionSource<PtyProcess>(TaskCreationOptions.RunContinuationsAsynchronously);
+        p.Exited += process => tcs.TrySetResult(process);
+
+        p.Kill();
+
+        var exited = await tcs.Task.WaitAsync(Timeout, TestContext.Current.CancellationToken);
+        Assert.Same(p, exited);
+        Assert.True(exited.HasExited);
+        Assert.Null(exited.ExitCode);
+        Assert.Equal(9, exited.TerminationSignal);
+    }
+#endif
 
     /// <summary>The reaper sets ExitCode on its own — no explicit WaitForExit needed.</summary>
     [Fact]

@@ -69,8 +69,8 @@ internal static partial class PtyReaper
                 for (var i = 0; i < snapshotCount; i++)
                 {
                     var p = snapshot[i];
-                    if (!p.TryReap(out var code)) continue;
-                    p.OnReaped(code);
+                    if (!p.TryReap(out var status)) continue;
+                    p.OnReaped(status);
                     lock (sync)
                     {
                         watched.Remove(p);

@@ -76,7 +76,21 @@ public class PtyProcessTests : IDisposable
 
         Assert.True(bash.WaitForExit(Timeout));
         Assert.Equal(0, bash.ExitCode);
+        Assert.Null(bash.TerminationSignal);
     }
+
+#if !WINDOWS
+    [Fact]
+    public void NormalNonZeroExit_PublishesExitCodeWithoutSignal()
+    {
+        using var p = PtyProcess.Start("/bin/sh", ["-c", "exit 42"]);
+
+        Assert.True(p.WaitForExit(Timeout));
+        Assert.True(p.HasExited);
+        Assert.Equal(42, p.ExitCode);
+        Assert.Null(p.TerminationSignal);
+    }
+#endif
 
     [Fact]
     public void StartsInSpecifiedWorkingDirectory()
@@ -304,15 +318,18 @@ public class PtyProcessTests : IDisposable
         using var p = PtyProcess.Start(file, args);
 
         Assert.False(p.HasExited);
+        Assert.Null(p.ExitCode);
+        Assert.Null(p.TerminationSignal);
         p.Kill();
 
         Assert.True(p.WaitForExit(Timeout));
 #if WINDOWS
-        // ConPTY has no signals: Kill is TerminateProcess (exit code 1), not 128+SIGKILL.
+        // ConPTY has no signals: Kill is TerminateProcess with exit code 1.
         Assert.Equal(1, p.ExitCode);
+        Assert.Null(p.TerminationSignal);
 #else
-        // Killed by SIGKILL (9): exit code is 128 + 9.
-        Assert.Equal(137, p.ExitCode);
+        Assert.Null(p.ExitCode);
+        Assert.Equal(9, p.TerminationSignal); // SIGKILL, as returned by WTERMSIG
 #endif
     }
 

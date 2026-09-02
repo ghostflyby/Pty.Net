@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 
@@ -51,52 +52,76 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// exist there. Owned by this process and disposed with it.
     /// </summary>
     private SafeProcessHandle? ProcessHandle { get; }
-    // Reaped exit code, valid once <see cref="reaped"/> is set. 0..255, 128 + signal,
-    // or -1 when the status could not be determined. Windows exit codes are full
-    // 32-bit values — notably 0x80000000 — so liveness MUST NOT be encoded as a
-    // sentinel inside the code itself (an earlier int.MinValue sentinel made
-    // HasExited permanently false for exactly that code). Written by the process-wide
-    // reaper thread, read from any thread.
-    private int exitCode;
 
-    /// <summary>
-    /// Set exactly once by the reaper before publishing <see cref="exitCode"/> and the
-    /// exit notification (see <see cref="OnReaped"/>). The reaper is the single waitpid
-    /// owner, so a plain flag suffices; <see cref="Volatile"/> keeps it visible.
-    /// </summary>
-    private bool reaped;
-
-    /// <summary>Exit code of the child, once it has been reaped by the process-wide reaper; null while it is running.</summary>
-    public int? ExitCode
+    internal sealed class TerminationStatus
     {
-        get
+        private readonly int value;
+        private readonly bool isSignal;
+
+        private TerminationStatus(int value, bool isSignal)
         {
-            if (!Volatile.Read(ref reaped))
-                return null;
-            return Volatile.Read(ref exitCode);
+            this.value = value;
+            this.isSignal = isSignal;
         }
+
+        internal int? ExitCode => isSignal ? null : value;
+        internal int? Signal => isSignal ? value : null;
+
+        internal static TerminationStatus Exited(int exitCode) => new(exitCode, false);
+
+        internal static TerminationStatus Signaled(int signal)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(signal);
+            return new TerminationStatus(signal, true);
+        }
+
+        public override string ToString() =>
+            isSignal ? $"signal={value}" : $"exitCode={value}";
     }
 
-    /// <summary>True once the child has been reaped (<see cref="ExitCode"/> is not null).</summary>
-    public bool HasExited => ExitCode is not null;
+    /// <summary>
+    /// The immutable terminal result, published exactly once by the reaper. A single
+    /// reference represents both completion and the exit-code/signal union, so readers
+    /// cannot observe a partially published or internally contradictory result.
+    /// </summary>
+    private TerminationStatus? terminationStatus;
 
     /// <summary>
-    /// Raised once the child has been reaped by the process-wide reaper, with the exit
-    /// code as the first argument — so a handler never needs the nullable
-    /// <see cref="ExitCode"/> property (which is set by then anyway, but only guaranteed
-    /// to be non-null here).
+    /// Exit code of the child after a normal exit; null while it is running or when a
+    /// Unix signal terminated it. Windows exit codes preserve all 32 bits.
+    /// </summary>
+    public int? ExitCode => Volatile.Read(ref terminationStatus)?.ExitCode;
+
+    /// <summary>
+    /// Native Unix signal number that terminated the child; null while it is running,
+    /// after a normal Unix exit, and on Windows. This is the positive value reported by
+    /// waitpid(2)'s WTERMSIG result; signal numbers are platform-specific. Core-dump
+    /// status is not exposed.
+    /// </summary>
+    public int? TerminationSignal => Volatile.Read(ref terminationStatus)?.Signal;
+
+    /// <summary>
+    /// True once the child has been reaped. While false, <see cref="ExitCode"/> and
+    /// <see cref="TerminationSignal"/> are both null; once true, exactly one is non-null.
+    /// </summary>
+    public bool HasExited => Volatile.Read(ref terminationStatus) is not null;
+
+    /// <summary>
+    /// Raised once the child has been reaped by the process-wide reaper. The sole argument
+    /// is this process; its terminal result has already been published, so exactly one of
+    /// <see cref="ExitCode"/> and <see cref="TerminationSignal"/> is non-null.
     /// <para>The handler runs on the shared reaper thread and must not block; exceptions
     /// it throws are swallowed.</para>
-    /// <para>Fires during <see cref="Dispose"/>/<see cref="DisposeAsync"/> for a child
-    /// that was still alive: the graceful window and force-kill make the reaper collect
-    /// it before dispose returns, so the event is raised from within the dispose call.</para>
+    /// <para>Exit waits are released before handlers run. A handler may therefore still
+    /// be running when a concurrent <see cref="Dispose"/>/<see cref="DisposeAsync"/>
+    /// returns.</para>
     /// <para>The event carries no history: a subscriber added after the child already
     /// exited will never fire. Subscribe immediately after starting the process; late
     /// observers should use <see cref="WaitForExitAsync(TimeSpan?, CancellationToken)"/>
-    /// (completes immediately when the child has already exited) or read
-    /// <see cref="ExitCode"/> instead.</para>
+    /// (completes immediately when the child has already exited) and then inspect the
+    /// terminal result properties instead.</para>
     /// </summary>
-    public event Action<int, PtyProcess>? Exited;
+    public event Action<PtyProcess>? Exited;
 
     /// <summary>
     /// The raw byte stream over the pty master — the single source of bytes for both
@@ -447,7 +472,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
                 return;
             disposed = true;
 
-            PtyDiagnostics.Log($"dispose begin pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"}");
+            PtyDiagnostics.Log($"dispose begin pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"} signal={TerminationSignal?.ToString() ?? "null"}");
 
             TerminateGracefully();
 
@@ -463,9 +488,9 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
             // so this wait is bounded in practice; if it ever stalls — a child surviving
             // even SIGKILL — that is a genuine platform failure we surface by blocking
             // rather than silently deferring to the background reaper.
-            PtyDiagnostics.Log($"dispose waiting exit-signal pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"}");
+            PtyDiagnostics.Log($"dispose waiting exit-signal pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"} signal={TerminationSignal?.ToString() ?? "null"}");
             ExitSignal.Wait();
-            PtyDiagnostics.Log($"dispose exit-signal completed pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"}");
+            PtyDiagnostics.Log($"dispose exit-signal completed pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"} signal={TerminationSignal?.ToString() ?? "null"}");
             if (HasExited)
                 ProcessHandle?.Dispose();
         }
@@ -493,14 +518,14 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
                 return;
             disposed = true;
 
-            PtyDiagnostics.Log($"dispose-async begin pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"}");
+            PtyDiagnostics.Log($"dispose-async begin pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"} signal={TerminationSignal?.ToString() ?? "null"}");
 
             await TerminateGracefullyAsync().ConfigureAwait(false);
             BaseStream.Dispose();
 
-            PtyDiagnostics.Log($"dispose-async waiting exit-signal pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"}");
+            PtyDiagnostics.Log($"dispose-async waiting exit-signal pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"} signal={TerminationSignal?.ToString() ?? "null"}");
             await ExitSignal.ConfigureAwait(false);
-            PtyDiagnostics.Log($"dispose-async exit-signal completed pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"}");
+            PtyDiagnostics.Log($"dispose-async exit-signal completed pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"} signal={TerminationSignal?.ToString() ?? "null"}");
             if (HasExited)
                 ProcessHandle?.Dispose();
         }
@@ -590,29 +615,26 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     // --- internals ---------------------------------------------------------
 
     /// <summary>
-    /// Called by the process-wide reaper once the child has been collected: records
-    /// the exit code and raises <see cref="Exited"/>. Returns true when this call was
-    /// the one that published the exit (false for duplicate notifications after the
-    /// idempotency guard). Runs on the shared reaper thread; handler exceptions are
-    /// swallowed so one misbehaving handler cannot stall reaping for every other
-    /// session.
+    /// Called by the process-wide reaper once the child has been collected: publishes
+    /// the terminal result and raises <see cref="Exited"/>. Returns true when this call
+    /// won publication (false for duplicate notifications). Runs on the shared reaper
+    /// thread; handler exceptions are swallowed so one misbehaving handler cannot stall
+    /// reaping for every other session.
     /// </summary>
-    internal bool OnReaped(int code)
+    internal bool OnReaped(TerminationStatus status)
     {
-        // The reaper is the single caller with waitpid ownership, but re-registration
-        // paths can still re-enter; the flag makes publication exactly-once. Order
-        // matters: the code must be visible before reaped flips (ExitCode reads
-        // reaped first, then the code).
-        if (Volatile.Read(ref reaped))
+        ArgumentNullException.ThrowIfNull(status);
+
+        // Capture subscribers before publishing the terminal state. Once a caller observes
+        // HasExited, a later subscription must not join this already-started notification.
+        var exited = Exited;
+        if (Interlocked.CompareExchange(ref terminationStatus, status, null) is not null)
         {
-            PtyDiagnostics.Log($"on-reaped duplicate ignored pid={Pid} code={code} published={ExitCode?.ToString() ?? "null"}");
+            PtyDiagnostics.Log($"on-reaped duplicate ignored pid={Pid} status={status} published={Volatile.Read(ref terminationStatus)}");
             return false;
         }
 
-        Volatile.Write(ref exitCode, code);
-        Volatile.Write(ref reaped, true);
-
-        PtyDiagnostics.Log($"on-reaped pid={Pid} code={code}");
+        PtyDiagnostics.Log($"on-reaped pid={Pid} status={status}");
         // Platform hook: Windows queues the pseudo-console close + final-frame drain
         // away from this shared reaper thread; Unix has no teardown work.
         OnReapedPlatform();
@@ -623,13 +645,13 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         // as one delegate, so a throw from the first subscriber would prevent every
         // later subscriber from seeing the exit. Each handler is isolated instead —
         // exactly-once delivery per subscriber, exceptions swallowed per subscriber.
-        if (Exited is { } exited)
+        if (exited is not null)
         {
-            foreach (var handler in exited.GetInvocationList().Cast<Action<int, PtyProcess>>())
+            foreach (var handler in exited.GetInvocationList().Cast<Action<PtyProcess>>())
             {
                 try
                 {
-                    handler(code, this);
+                    handler(this);
                 }
                 catch
                 {
@@ -641,8 +663,8 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         return true;
     }
 
-    /// <summary>Single non-blocking reap attempt for this child; true when collected, with the exit code.</summary>
-    internal bool TryReap(out int exitCode) => TryReapPlatform(out exitCode);
+    /// <summary>Single non-blocking reap attempt for this child; true when collected, with its terminal result.</summary>
+    internal bool TryReap([NotNullWhen(true)] out TerminationStatus? status) => TryReapPlatform(out status);
 
     /// <summary>The task completed by the reaper once this child is collected (see <see cref="OnReaped"/>).</summary>
     private Task<bool> ExitSignal => exitSignal.Value.Task;
@@ -714,13 +736,6 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     private static StringComparer EnvironmentKeyComparer =>
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
-    /// <summary>Decodes a waitpid(2) status into an exit code: 0..255, or 128 + signal when killed.</summary>
-    private static int ExtractExitCode(int status)
-    {
-        var signal = status & 0x7F;
-        return signal == 0 ? (status >> 8) & 0xFF : 128 + signal;
-    }
-
     // --- platform partial hooks ---------------------------------------------
     // Each has exactly one implementing part: PtyProcess.Start.Windows.cs or
     // PtyProcess.Start.Unix.cs (only the matching file is compiled per platform).
@@ -746,8 +761,8 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// <summary>Sends the terminal-close signal to the child: SIGHUP on Unix, async CTRL_CLOSE_EVENT on Windows.</summary>
     private partial void RequestClosePlatform();
 
-    /// <summary>Non-blocking reap attempt for the child; true when collected, with the exit code.</summary>
-    private partial bool TryReapPlatform(out int exitCode);
+    /// <summary>Non-blocking reap attempt for the child; true when collected, with its terminal result.</summary>
+    private partial bool TryReapPlatform(out TerminationStatus? terminationStatus);
 
     /// <summary>Platform teardown that must run off the shared reaper thread (Windows only).</summary>
     private partial void OnReapedPlatform();

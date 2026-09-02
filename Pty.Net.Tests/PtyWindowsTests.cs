@@ -55,6 +55,7 @@ public class PtyWindowsTests
         Assert.True(p.WaitForExit(Timeout), "process with exit code 0x80000000 must be observed as exited");
         Assert.True(p.HasExited);
         Assert.Equal(int.MinValue, p.ExitCode);
+        Assert.Null(p.TerminationSignal);
     }
 
     /// <summary>Empty-string arguments must survive command-line marshaling (as `""`).</summary>
