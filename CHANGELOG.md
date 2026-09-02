@@ -8,6 +8,8 @@ add a section here as part of the release.
 
 ## Unreleased
 
+## 0.4.0 — 2026-09-02
+
 - **Breaking:** `PtyProcess.Exited` now has the single argument `PtyProcess`.
   Replace `(code, process) => ...` handlers with `process => ...` and inspect its
   terminal-result properties.
