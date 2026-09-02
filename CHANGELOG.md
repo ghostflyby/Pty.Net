@@ -8,7 +8,16 @@ add a section here as part of the release.
 
 ## Unreleased
 
-Nothing yet.
+## 0.4.0 — 2026-09-02
+
+- **Breaking:** `PtyProcess.Exited` now has the single argument `PtyProcess`.
+  Replace `(code, process) => ...` handlers with `process => ...` and inspect its
+  terminal-result properties.
+- Unix normal exit and signal termination are now distinct: `ExitCode` is populated
+  only for a normal exit, while `TerminationSignal` contains the native positive
+  signal number after signal termination. Both are null while running and exactly
+  one is non-null once `HasExited` is true. Windows continues to expose its full
+  32-bit exit code and always leaves `TerminationSignal` null.
 
 ## 0.3.1 — 2026-09-01
 

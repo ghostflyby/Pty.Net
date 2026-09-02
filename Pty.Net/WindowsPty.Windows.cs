@@ -249,12 +249,14 @@ internal static partial class WindowsPty
     /// <summary>Non-blocking process-handle reap step with the real Windows exit code.</summary>
     internal static bool TryReap(SafeProcessHandle processHandle, out int exitCode)
     {
-        exitCode = -1;
+        exitCode = default;
         if (processHandle.IsInvalid)
             return false;
         if (WaitForSingleObject(processHandle, 0) != 0)
             return false;
-        exitCode = GetExitCodeProcess(processHandle, out var code) ? (int)code : -1;
+        if (!GetExitCodeProcess(processHandle, out var code))
+            return false;
+        exitCode = unchecked((int)code);
         return true;
     }
 

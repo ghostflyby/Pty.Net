@@ -10,7 +10,7 @@ The multi-platform pty wrapper in pure C# with P/Invoke: drive interactive shell
 - **Cross-platform** — ConPTY on Windows; `posix_openpt` + fork/exec on macOS and Linux. Architecture-neutral managed IL (one package covers x64 and arm64).
 - **Text and raw I/O** — `Input`/`Output` text facades over the raw `BaseStream`.
 - **Deterministic termination** — a configurable graceful-close window, then a force kill; `Dispose` blocks until the cleanup has actually completed.
-- **Exit notification with the exit code** — the `Exited` event delivers the code, so handlers never reach for a nullable property.
+- **Exit notification with the terminal result** — `Exited` supplies the process after its normal exit code or Unix termination signal has been published.
 - **AOT compatible** — no reflection, no dynamic loading; the pty stays out of the way of trimmed/published apps.
 
 ## Install
@@ -118,7 +118,13 @@ if (!p.WaitForExit(TimeSpan.FromSeconds(5)))
 ## Waiting and exit notification
 
 ```csharp
-p.Exited += (code, _) => Console.WriteLine($"child exited with {code}");
+p.Exited += process =>
+{
+    if (process.ExitCode is int code)
+        Console.WriteLine($"child exited with {code}");
+    else
+        Console.WriteLine($"child terminated by signal {process.TerminationSignal}");
+};
 
 p.WaitForExit();                        // blocks until reaped
 bool ok = p.WaitForExit(TimeSpan.FromSeconds(5));
@@ -126,9 +132,19 @@ bool ok2 = await p.WaitForExitAsync(TimeSpan.FromSeconds(5));   // thread-pool-f
 await p.WaitForExitAsync();             // null timeout = wait indefinitely
 ```
 
-`Exited` fires on the shared reaper thread once the child is reaped; the handler must
-not block, and exceptions it throws are swallowed. It also fires during `Dispose` for
-a child that was still alive.
+While the child is running, `ExitCode` and `TerminationSignal` are both `null`.
+After it is reaped, `HasExited` is `true` and exactly one is non-null: normal
+exits populate `ExitCode`; Unix signal termination populates `TerminationSignal`
+with the platform's native positive signal number (`SIGKILL` is 9 on the
+supported platforms). Windows always reports an exit code. A shell can itself
+exit normally with `128 + signal`; that remains an exit code and is distinct
+from this library observing its direct child die from a signal.
+
+`Exited` fires on the shared reaper thread after the terminal result is published;
+the handler must not block, and exceptions it throws are swallowed. The event is
+not replayed to late subscribers: await a wait method and inspect the properties
+when the child may already have exited. Exit waits, including disposal, are
+released before handlers run, so disposal does not wait for a handler to finish.
 
 ## Platform notes
 

@@ -975,9 +975,9 @@ public sealed partial class PtyProcess
 
     /// <summary>
     /// Single non-blocking reap attempt for the child: waitpid(WNOHANG). Returns true
-    /// when the child was collected (or is unreachable), with the exit code.
+    /// when the child reached a terminal state, with its decoded result.
     /// </summary>
-    private partial bool TryReapPlatform(out int exitCode)
+    private partial bool TryReapPlatform(out TerminationStatus? terminationStatus)
     {
         while (true)
         {
@@ -986,10 +986,25 @@ public sealed partial class PtyProcess
             {
                 case > 0:
                     PtyDiagnostics.Log($"waitpid completed pid={Pid} result={r} status={status}");
-                    exitCode = ExtractExitCode(status);
-                    return true;
+                    var signal = status & 0x7F;
+                    if (signal == 0)
+                    {
+                        terminationStatus = TerminationStatus.Exited((status >> 8) & 0xFF);
+                        return true;
+                    }
+
+                    // WIFSIGNALED excludes the 0x7f stopped-status marker. The 0x80
+                    // core-dump bit sits outside WTERMSIG's low seven bits and is ignored.
+                    if (signal != 0x7F)
+                    {
+                        terminationStatus = TerminationStatus.Signaled(signal);
+                        return true;
+                    }
+
+                    terminationStatus = null;
+                    return false;
                 case 0:
-                    exitCode = -1;
+                    terminationStatus = null;
                     return false; // still running
             }
 
@@ -998,7 +1013,7 @@ public sealed partial class PtyProcess
                 continue;
 
             PtyDiagnostics.Log($"waitpid pid={Pid} result={r} errno={err}");
-            exitCode = -1;
+            terminationStatus = null;
             return false;
         }
     }

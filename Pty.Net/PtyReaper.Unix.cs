@@ -218,11 +218,11 @@ internal static partial class PtyReaper
                 PtyDiagnostics.Log($"watch drain pid={process.Pid}");
 
                 // Already exited before registration: collect it now, never register.
-                if (process.TryReap(out var code))
+                if (process.TryReap(out var status))
                 {
-                    PtyDiagnostics.Log($"watch drain reaped pid={process.Pid} code={code}");
+                    PtyDiagnostics.Log($"watch drain reaped pid={process.Pid} status={status}");
                     stuckExiting.Remove(process.Pid);
-                    process.OnReaped(code);
+                    process.OnReaped(status);
                     lock (sync)
                     {
                         byPid.Remove(process.Pid);
@@ -252,10 +252,10 @@ internal static partial class PtyReaper
             for (var i = retryWatch.Count - 1; i >= 0; i--)
             {
                 var process = retryWatch[i];
-                if (process.TryReap(out var code))
+                if (process.TryReap(out var status))
                 {
                     stuckExiting.Remove(process.Pid);
-                    process.OnReaped(code);
+                    process.OnReaped(status);
                     retryWatch.RemoveAt(i);
                     lock (sync)
                     {
@@ -341,11 +341,11 @@ internal static partial class PtyReaper
             // after the drain's waitpid but before the EV_ADD above, the knote registers on
             // a zombie and no event will ever be delivered. Re-check once after a successful
             // registration; if the child is gone now, unregister and collect it.
-            if (process.TryReap(out var code))
+            if (process.TryReap(out var status))
             {
-                PtyDiagnostics.Log($"register postcheck reaped pid={pid} code={code}");
+                PtyDiagnostics.Log($"register postcheck reaped pid={pid} status={status}");
                 Unregister(pid);
-                process.OnReaped(code);
+                process.OnReaped(status);
                 lock (sync)
                 {
                     byPid.Remove(process.Pid);
@@ -363,11 +363,11 @@ internal static partial class PtyReaper
         /// </summary>
         private bool TryReapProcess(PtyProcess process)
         {
-            if (!process.TryReap(out var code))
+            if (!process.TryReap(out var status))
                 return false;
-            PtyDiagnostics.Log($"try-reap completed pid={process.Pid} code={code}");
+            PtyDiagnostics.Log($"try-reap completed pid={process.Pid} status={status}");
             stuckExiting.Remove(process.Pid);
-            process.OnReaped(code);
+            process.OnReaped(status);
             lock (sync)
             {
                 byPid.Remove(process.Pid);
@@ -392,11 +392,11 @@ internal static partial class PtyReaper
 
             Unregister(pid);
 
-            if (process.TryReap(out var code))
+            if (process.TryReap(out var status))
             {
-                PtyDiagnostics.Log($"reap event waitpid completed pid={pid} code={code}");
+                PtyDiagnostics.Log($"reap event waitpid completed pid={pid} status={status}");
                 stuckExiting.Remove(pid);
-                process.OnReaped(code);
+                process.OnReaped(status);
                 return;
             }
 
@@ -435,7 +435,7 @@ internal static partial class PtyReaper
 
             foreach (var process in snapshot)
             {
-                if (!process.TryReap(out var code))
+                if (!process.TryReap(out var status))
                 {
                     if (process.IsStuckExiting())
                     {
@@ -459,7 +459,7 @@ internal static partial class PtyReaper
                 }
                 stuckExiting.Remove(process.Pid);
                 Unregister(process.Pid);
-                if (process.OnReaped(code))
+                if (process.OnReaped(status))
                 {
                     lock (sync)
                     {

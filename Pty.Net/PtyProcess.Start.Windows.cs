@@ -108,20 +108,23 @@ public sealed partial class PtyProcess
     /// <summary>
     /// Single non-blocking reap attempt for the child: WaitForSingleObject(0) on the
     /// process handle, then the real Windows exit code (no wait-status/signal encoding).
-    /// Returns true when the child exited (or the handle is invalid).
+    /// Returns true once the terminal result is available.
     /// </summary>
-    private partial bool TryReapPlatform(out int exitCode)
+    private partial bool TryReapPlatform(out TerminationStatus? terminationStatus)
     {
         if (ProcessHandle is null || ProcessHandle.IsInvalid)
         {
-            exitCode = -1;
+            terminationStatus = null;
             return false;
         }
 
-        if (WindowsPty.TryReap(ProcessHandle, out exitCode))
+        if (WindowsPty.TryReap(ProcessHandle, out var exitCode))
+        {
+            terminationStatus = TerminationStatus.Exited(exitCode);
             return true;
+        }
 
-        exitCode = -1;
+        terminationStatus = null;
         return false;
     }
 }

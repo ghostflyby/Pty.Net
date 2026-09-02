@@ -443,10 +443,14 @@ jobs:
           $unshippedPath = 'Pty.Net/PublicAPI.Unshipped.txt'
           $shipped = @(Get-Content $shippedPath | Where-Object { $_ -and -not $_.StartsWith('#') })
           $unshipped = @(Get-Content $unshippedPath | Where-Object { $_ -and -not $_.StartsWith('#') })
-          $newShipped = @(($shipped + $tagUnshipped) | Select-Object -Unique)
+          $removedPrefix = '*REMOVED*'
+          $tagAdditions = @($tagUnshipped | Where-Object { -not $_.StartsWith($removedPrefix) })
+          $tagRemovals = @($tagUnshipped | Where-Object { $_.StartsWith($removedPrefix) } | ForEach-Object { $_.Substring($removedPrefix.Length) })
+          $remainingShipped = @($shipped | Where-Object { $_ -notin $tagRemovals })
+          $newShipped = @(($remainingShipped + $tagAdditions) | Select-Object -Unique)
           $newUnshipped = @($unshipped | Where-Object { $_ -notin $tagUnshipped })
           # Sort by the stripped symbol key, matching the existing Shipped ordering.
-          $key = { param($s) ($s -replace '^(static |override )', '') }
+          $key = { param($s) ($s -replace '^\*REMOVED\*', '') -replace '^(static |override )', '' }
           $newShipped = @($newShipped | Sort-Object -Property @{Expression = $key})
           $newUnshipped = @($newUnshipped | Sort-Object -Property @{Expression = $key})
           "#nullable enable`n$($newShipped -join "`n")`n" | Set-Content -Path $shippedPath -NoNewline
