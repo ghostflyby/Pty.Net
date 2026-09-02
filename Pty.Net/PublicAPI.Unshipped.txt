@@ -1,4 +1,2 @@
 #nullable enable
-*REMOVED*Ghostflyby.Pty.PtyProcess.Exited -> System.Action<int, Ghostflyby.Pty.PtyProcess!>?
-Ghostflyby.Pty.PtyProcess.Exited -> System.Action<Ghostflyby.Pty.PtyProcess!>?
-Ghostflyby.Pty.PtyProcess.TerminationSignal.get -> int?
+
