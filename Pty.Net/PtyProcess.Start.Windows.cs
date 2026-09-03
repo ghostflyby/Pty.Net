@@ -27,17 +27,25 @@ public sealed partial class PtyProcess
     /// <summary>
     /// Windows: ConPTY always transports UTF-8 bytes. These directional facade streams
     /// expose the caller-selected encodings on their outer side while BaseStream remains
-    /// the untouched raw UTF-8 transport.
+    /// the untouched raw UTF-8 transport — except when a selected encoding already is
+    /// UTF-8, in which case that direction passes BaseStream through unbridged (every
+    /// spelling of UTF-8 shares codepage 65001; the BOM flag is StreamWriter business
+    /// and never crosses the bridge, so <see cref="Encoding.Equals"/> would wrongly
+    /// split equivalents).
     /// </summary>
     private partial void CreateFacades(
         Encoding inputEncoding, Encoding outputEncoding,
         out Stream inputFacadeStream, out Stream outputFacadeStream)
     {
-        inputFacadeStream = Encoding.CreateTranscodingStream(
-            BaseStream, Encoding.UTF8, inputEncoding, leaveOpen: true);
-        outputFacadeStream = Encoding.CreateTranscodingStream(
-            BaseStream, Encoding.UTF8, outputEncoding, leaveOpen: true);
+        inputFacadeStream = CreateFacadeStream(inputEncoding);
+        outputFacadeStream = CreateFacadeStream(outputEncoding);
     }
+
+    /// <summary>UTF-8 direction: raw BaseStream. Any other direction: a transcode bridge to UTF-8.</summary>
+    private Stream CreateFacadeStream(Encoding encoding) =>
+        encoding.CodePage == Encoding.UTF8.CodePage
+            ? BaseStream
+            : Encoding.CreateTranscodingStream(BaseStream, Encoding.UTF8, encoding, leaveOpen: true);
 
     /// <summary>
     /// Windows: ConPTY has no POSIX signals; TerminateProcess is the SIGKILL analog.
