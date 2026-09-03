@@ -21,13 +21,6 @@ public sealed partial class PtyStream : Stream
     // is refused with a clear error instead of a wrong result.
     private int pendingAsyncReads;
 
-    /// <summary>
-    /// Platform hook for async reads: serves bytes preserved by the exit-wait drain
-    /// (Unix replay buffer) before the engine touches the device. Windows has no
-    /// replay buffer and always returns false.
-    /// </summary>
-    private partial bool TryTakeReplayed(Memory<byte> buffer, out int read);
-
     /// <inheritdoc/>
     public override bool CanRead => true;
 

@@ -256,12 +256,6 @@ public sealed partial class PtyStream
         }
     }
 
-    /// <summary>Async hook for the replay buffer: serves buffered bytes before the engine polls the fd. Windows has no replay buffer.</summary>
-    private partial bool TryTakeReplayed(Memory<byte> buffer, out int read)
-    {
-        read = TakeReplayed(buffer.Span);
-        return read > 0;
-    }
 
     // -------------------------------------------------------------------- write
 
