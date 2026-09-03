@@ -6,10 +6,10 @@ on:
   pull_request:
   workflow_dispatch:
 
-# A new push to the same ref supersedes the in-flight CI run: the 6-job matrix is
-# expensive, and only the latest commit's result matters for the merge gate. Tag-only
-# pushes do not match the branches filter, so publish runs (tag-triggered) are never
-# cancelled by this.
+# A new push to the same ref supersedes the in-flight CI run: the 8-job matrix
+# (6 native runners + 2 libc containers) is expensive, and only the latest commit's
+# result matters for the merge gate. Tag-only pushes do not match the branches
+# filter, so publish runs (tag-triggered) are never cancelled by this.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -23,15 +23,19 @@ jobs:
       # Report failures on every OS instead of letting one cancel the rest.
       fail-fast: false
       matrix:
-        # windows-latest drives the suite against Git Bash (bundled with Git for Windows);
-        # TestHelpers resolves bash.exe and the ConPTY paths are covered by
-        # Pty.WindowsTests.cs plus the portable bash-driven tests.
-        # ubuntu-24.04-arm is a native ARM64 runner (public preview). The Unix I/O path
-        # calls the variadic libc ioctl via the pad-register workaround for the AAPCS64
-        # variadic ABI (see NativeMethods.Unix.cs); that technique is proven on Apple
-        # arm64 (macos-latest below is also arm64), and this native Linux arm64 run is
-        # the gate for the glibc arm64 build.
-        os: [windows-latest, ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        # One native runner per shipped RID (win-x64, win-arm64, linux-x64, linux-arm64,
+        # osx-x64, osx-arm64), so every packaged runtime is actually exercised:
+        # - windows-latest / windows-11-arm: ConPTY paths. Git Bash ships with Git for
+        #   Windows on both images (arm64 image: Git 2.55+ with bash 5.x); TestHelpers
+        #   resolves bash.exe on both.
+        # - ubuntu-latest / ubuntu-24.04-arm: the Unix I/O path calls the variadic libc
+        #   ioctl via the pad-register workaround for the AAPCS64 variadic ABI (see
+        #   NativeMethods.Unix.cs); the two arm64 runners gate that ABI, and the glibc
+        #   arm64 build specifically.
+        # - macos-latest / macos-15-intel: the kqueue + fork/exec paths on arm64 and
+        #   x64. macos-15-intel is GitHub's final Intel image (retires August 2027);
+        #   its /bin/bash is 3.2, which the suite's invocation order already accommodates.
+        os: [windows-latest, windows-11-arm, ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel]
     steps:
       - uses: actions/checkout@v7
 
@@ -51,7 +55,7 @@ jobs:
         # compile time by the csproj file globs (Pty.Net.csproj). Type names are plain
         # UTF-8 in the metadata, so checking for their presence/absence proves this
         # build did not mix — or silently strip — the Windows and Unix halves.
-        if: matrix.os == 'windows-latest'
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $text = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes('Pty.Net/bin/Release/net10.0/Ghostflyby.Pty.dll'))
@@ -59,7 +63,7 @@ jobs:
           if ($text.Contains('PtyIoEngine'))     { throw "Windows build contains the Unix I/O engine" }
 
       - name: Verify platform split in the built DLL (Unix)
-        if: matrix.os != 'windows-latest'
+        if: runner.os != 'Windows'
         run: |
           dll=Pty.Net/bin/Release/net10.0/Ghostflyby.Pty.dll
           if grep -a -q 'WindowsPty' "$dll"; then
