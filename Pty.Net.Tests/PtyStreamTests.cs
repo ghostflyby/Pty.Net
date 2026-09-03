@@ -230,4 +230,39 @@ public class PtyStreamTests : IDisposable
         Assert.True(n > 0);
         Assert.Contains("I-GOT-THIS", Encoding.UTF8.GetString(readBuf, 0, n));
     }
+
+    // --- documented Stream-override contract -------------------------------
+
+    /// <summary>
+    /// A pty is a pipe, not a seekable file: <see cref="PtyStream"/> pins the
+    /// non-seekable contract by throwing for every seek-shaped member rather than
+    /// inheriting <see cref="System.IO.Stream"/>'s silently-wrong defaults.
+    /// </summary>
+    [Fact]
+    public void NonSeekableContract_CanSeekFalse_MembersThrow()
+    {
+        Assert.False(Stream.CanSeek);
+        Assert.Throws<NotSupportedException>(() => _ = Stream.Length);
+        Assert.Throws<NotSupportedException>(() => _ = Stream.Position);
+        Assert.Throws<NotSupportedException>(() => Stream.Position = 0);
+        Assert.Throws<NotSupportedException>(() => Stream.Seek(0, SeekOrigin.Begin));
+        Assert.Throws<NotSupportedException>(() => Stream.SetLength(0));
+    }
+
+    /// <summary>
+    /// Flush is a no-op while the stream is open (no user-space buffering) and its
+    /// async form is the pre-completed task — never the base <c>Task.Run(Flush)</c>
+    /// thread-pool hop. After the process disposed everything, Flush reports the
+    /// closed stream with <see cref="ObjectDisposedException"/>.
+    /// </summary>
+    [Fact]
+    public void Flush_NoOpWhileOpen_ObjectDisposedAfterDispose()
+    {
+        Stream.Flush(); // open: no-op, must not throw
+        Assert.True(Stream.FlushAsync(TestContext.Current.CancellationToken).IsCompletedSuccessfully);
+
+        bash.Dispose(); // the process owns the stream: dispose closed it
+
+        Assert.Throws<ObjectDisposedException>(() => Stream.Flush());
+    }
 }
