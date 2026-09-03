@@ -58,7 +58,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: pkg-${{ matrix.os }}
-          path: pkg/
+          path: |
+            pkg/*.nupkg
+            pkg/*.snupkg
           if-no-files-found: error
           retention-days: 7
 
@@ -171,73 +173,83 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      - name: Assemble cross-platform nupkg
+      - name: Assemble cross-platform nupkg and snupkg
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $version = $env:VERSION
-          New-Item -ItemType Directory -Force -Path 'merged/ref/net10.0' | Out-Null
-          # Each OS build fills both of its architecture RID folders (see build job).
-          #
+          New-Item -ItemType Directory -Force -Path 'merged/ref/net10.0', 'merged-symbols/ref/net10.0' | Out-Null
+          # Each OS build fills both of its architecture RID folders. Keep the
+          # corresponding PDB with the DLL that produced it: the final snupkg must
+          # mirror the final nupkg's DLL hierarchy exactly.
+          $platforms = [ordered]@{
+            'pkg-ubuntu-latest' = @{ Rids = @('linux-x64','linux-arm64') }
+            'pkg-macos-latest'  = @{ Rids = @('osx-x64','osx-arm64') }
+            'pkg-windows-latest' = @{ Rids = @('win-x64','win-arm64') }
+          }
+          $sources = @{}
+          foreach ($art in $platforms.Keys) {
+            $nupkgs = @(Get-ChildItem -Path "pkgs/$art" -Filter '*.nupkg' -Recurse)
+            $snupkgs = @(Get-ChildItem -Path "pkgs/$art" -Filter '*.snupkg' -Recurse)
+            if ($nupkgs.Count -ne 1) { throw "$art must contain exactly one nupkg, found $($nupkgs.Count)" }
+            if ($snupkgs.Count -ne 1) { throw "$art must contain exactly one snupkg, found $($snupkgs.Count)" }
+            $sources[$art] = @{ Nupkg = $nupkgs[0]; Snupkg = $snupkgs[0] }
+          }
+
           # NuGet layout, and why there is deliberately NO flat lib/net10.0:
-          #   * runtimes/{rid}/lib/{tfm}/ carries the OS-specific implementation — the
-          #     convention for RID-specific runtime assets (never lib/{tfm}/{rid}/,
-          #     which NuGet treats as non-asset content).
-          #   * ref/net10.0/ carries the compile-time reference. The public API surface
-          #     is identical across the three OS builds (one shared PublicAPI.Shipped.txt
-          #     contract; the OS files only add partial-class implementations), so any
-          #     build's dll serves as the reference; Roslyn reads only its metadata and
-          #     a ref/ asset is never executed at runtime.
-          #   * A flat lib/net10.0/Ghostflyby.Pty.dll is NOT shipped: lib/ is also
-          #     NuGet's runtime fallback when no runtimes/{rid}/ matches the consumer
-          #     RID, which silently handed ios-arm64/browser-wasm a wrong-OS dll at
-          #     runtime (verified against the published 0.2.2). With ref-only, an
-          #     unsupported RID still restores for compilation but fails loudly at
-          #     runtime instead of executing the wrong platform build — enforced by
-          #     the restore-matrix step below.
-          $rids = @{
-            'pkg-windows-latest' = @('win-x64','win-arm64')
-            'pkg-ubuntu-latest'  = @('linux-x64','linux-arm64')
-            'pkg-macos-latest'   = @('osx-x64','osx-arm64')
+          #   * runtimes/{rid}/lib/{tfm}/ carries the OS-specific implementation.
+          #   * ref/net10.0/ carries the compile-time reference.
+          #   * A flat lib/net10.0/Ghostflyby.Pty.dll is NOT shipped: it would be a
+          #     runtime fallback for unsupported RIDs and could execute a wrong-OS dll.
+          $refSource = $sources['pkg-ubuntu-latest']
+          $refNupkg = [System.IO.Compression.ZipFile]::OpenRead($refSource.Nupkg.FullName)
+          $refSnupkg = [System.IO.Compression.ZipFile]::OpenRead($refSource.Snupkg.FullName)
+          try {
+            $refDll = $refNupkg.Entries | Where-Object { $_.FullName -eq 'lib/net10.0/Ghostflyby.Pty.dll' } | Select-Object -First 1
+            $refXml = $refNupkg.Entries | Where-Object { $_.FullName -eq 'lib/net10.0/Ghostflyby.Pty.xml' } | Select-Object -First 1
+            $refPdb = $refSnupkg.Entries | Where-Object { $_.FullName -eq 'lib/net10.0/Ghostflyby.Pty.pdb' } | Select-Object -First 1
+            if (-not $refDll -or -not $refXml -or -not $refPdb) { throw 'Ubuntu reference package is missing its DLL, XML, or PDB' }
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($refDll, 'merged/ref/net10.0/Ghostflyby.Pty.dll', $true)
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($refXml, 'merged/ref/net10.0/Ghostflyby.Pty.xml', $true)
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($refPdb, 'merged-symbols/ref/net10.0/Ghostflyby.Pty.pdb', $true)
+          } finally {
+            $refNupkg.Dispose()
+            $refSnupkg.Dispose()
           }
-          $refCopied = $false
-          foreach ($art in $rids.Keys) {
-            $nupkg = Get-ChildItem -Path "pkgs/$art" -Filter '*.nupkg' -Recurse | Select-Object -First 1
-            if (-not $nupkg) { throw "no nupkg found in $art" }
-            $zip = [System.IO.Compression.ZipFile]::OpenRead($nupkg.FullName)
-            $dll = $zip.Entries | Where-Object { $_.FullName -eq 'lib/net10.0/Ghostflyby.Pty.dll' } | Select-Object -First 1
-            if (-not $dll) { $zip.Dispose(); throw "no lib/net10.0/Ghostflyby.Pty.dll in $($nupkg.Name)" }
-            $tmpDll = [System.IO.Path]::GetTempFileName()
-            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($dll, $tmpDll, $true)
+
+          foreach ($art in $platforms.Keys) {
+            $source = $sources[$art]
+            $nupkg = [System.IO.Compression.ZipFile]::OpenRead($source.Nupkg.FullName)
+            $snupkg = [System.IO.Compression.ZipFile]::OpenRead($source.Snupkg.FullName)
             try {
-              foreach ($rid in $rids[$art]) {
-                New-Item -ItemType Directory -Force -Path "merged/runtimes/$rid/lib/net10.0" | Out-Null
-                Copy-Item -LiteralPath $tmpDll -Destination "merged/runtimes/$rid/lib/net10.0/Ghostflyby.Pty.dll" -Force
+              $dll = $nupkg.Entries | Where-Object { $_.FullName -eq 'lib/net10.0/Ghostflyby.Pty.dll' } | Select-Object -First 1
+              $pdb = $snupkg.Entries | Where-Object { $_.FullName -eq 'lib/net10.0/Ghostflyby.Pty.pdb' } | Select-Object -First 1
+              if (-not $dll -or -not $pdb) { throw "$art is missing its DLL or PDB" }
+              $tmpDll = [System.IO.Path]::GetTempFileName()
+              $tmpPdb = [System.IO.Path]::GetTempFileName()
+              try {
+                [System.IO.Compression.ZipFileExtensions]::ExtractToFile($dll, $tmpDll, $true)
+                [System.IO.Compression.ZipFileExtensions]::ExtractToFile($pdb, $tmpPdb, $true)
+                foreach ($rid in $platforms[$art].Rids) {
+                  $dllPath = "merged/runtimes/$rid/lib/net10.0/Ghostflyby.Pty.dll"
+                  $pdbPath = "merged-symbols/runtimes/$rid/lib/net10.0/Ghostflyby.Pty.pdb"
+                  New-Item -ItemType Directory -Force -Path (Split-Path $dllPath), (Split-Path $pdbPath) | Out-Null
+                  Copy-Item -LiteralPath $tmpDll -Destination $dllPath -Force
+                  Copy-Item -LiteralPath $tmpPdb -Destination $pdbPath -Force
+                }
+              } finally {
+                Remove-Item -LiteralPath $tmpDll, $tmpPdb -Force -ErrorAction SilentlyContinue
               }
-              # Compile-time reference from the first OS processed (linux-x64 in the
-              # stable hashtable order); see the layout comment above.
-              if (-not $refCopied) {
-                Copy-Item -LiteralPath $tmpDll -Destination 'merged/ref/net10.0/Ghostflyby.Pty.dll' -Force
-                $refCopied = $true
-              }
-            } finally { Remove-Item -LiteralPath $tmpDll -Force -ErrorAction SilentlyContinue }
-            # Doc metadata for IntelliSense next to the reference assembly.
-            $xml = $zip.Entries | Where-Object { $_.FullName -eq 'lib/net10.0/Ghostflyby.Pty.xml' } | Select-Object -First 1
-            if ($xml) {
-              $tmpXml = [System.IO.Path]::GetTempFileName()
-              [System.IO.Compression.ZipFileExtensions]::ExtractToFile($xml, $tmpXml, $true)
-              try { Copy-Item -LiteralPath $tmpXml -Destination 'merged/ref/net10.0/Ghostflyby.Pty.xml' -Force }
-              finally { Remove-Item -LiteralPath $tmpXml -Force -ErrorAction SilentlyContinue }
+            } finally {
+              $nupkg.Dispose()
+              $snupkg.Dispose()
             }
-            $zip.Dispose()
           }
-          if (-not $refCopied) { throw 'no dll captured for the ref/ compile asset' }
-          # Root package structure (nuspec, rels, content-types) from any single package.
-          # lib/* is excluded — it is rebuilt as ref/ + runtimes/ above, and dropping it
-          # is the whole point of this layout. ref/* is excluded because the unified
-          # copy above is authoritative.
-          $base = Get-ChildItem -Path pkgs -Filter '*.nupkg' -Recurse | Select-Object -First 1
+
+          # Root package structure comes from the Ubuntu package. Exclude lib/ref;
+          # those trees were rebuilt above and the symbols tree is rebuilt separately.
+          $base = $sources['pkg-ubuntu-latest'].Nupkg
           $zip = [System.IO.Compression.ZipFile]::OpenRead($base.FullName)
           try {
             foreach ($entry in $zip.Entries) {
@@ -247,50 +259,57 @@ jobs:
               [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
             }
           } finally { $zip.Dispose() }
-          # ZipFile.CreateFromDirectory, not Compress-Archive: the pwsh wildcard
-          # 'merged/*' skips hidden files on Unix, silently dropping _rels/.rels — the
-          # OPC relationship file a NuGet package needs (nuget.org tolerates its absence,
-          # but some tooling rejects it). CreateFromDirectory packs everything under
-          # merged/ with contents at the archive root, including hidden files.
           [System.IO.Compression.ZipFile]::CreateFromDirectory('merged', "Ghostflyby.Pty.$version.nupkg")
 
-      - name: Verify assembled package
+          # Build the snupkg from one platform symbol package's metadata, replacing
+          # its original lib PDB with the PDB tree that mirrors the final nupkg.
+          $symbolBase = $sources['pkg-ubuntu-latest'].Snupkg
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($symbolBase.FullName)
+          try {
+            foreach ($entry in $zip.Entries) {
+              if ($entry.FullName -like 'lib/*') { continue }
+              $dest = Join-Path 'merged-symbols' $entry.FullName
+              New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+              [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
+            }
+          } finally { $zip.Dispose() }
+          [System.IO.Compression.ZipFile]::CreateFromDirectory('merged-symbols', "Ghostflyby.Pty.$version.snupkg")
+
+      - name: Verify assembled packages
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $zip = [System.IO.Compression.ZipFile]::OpenRead("Ghostflyby.Pty.$env:VERSION.nupkg")
+          $nupkg = [System.IO.Compression.ZipFile]::OpenRead("Ghostflyby.Pty.$env:VERSION.nupkg")
+          $snupkg = [System.IO.Compression.ZipFile]::OpenRead("Ghostflyby.Pty.$env:VERSION.snupkg")
           try {
-            $dlls = @($zip.Entries | Where-Object { $_.FullName -like 'runtimes/*/lib/net10.0/Ghostflyby.Pty.dll' })
-            if ($dlls.Count -ne 6) {
-              $zip.Entries | Where-Object { $_.FullName -like 'runtimes/*' -or $_.FullName -like 'ref/*' -or $_.FullName -like 'lib/*' } | ForEach-Object { Write-Host $_.FullName }
-              throw "expected 6 RID-specific runtimes dlls, found $($dlls.Count)"
+            $dllPaths = @($nupkg.Entries | Where-Object { $_.FullName -match '\.(dll|exe)$' } | ForEach-Object { $_.FullName })
+            if ($dllPaths.Count -ne 7) { throw "expected 7 managed assemblies in nupkg, found $($dllPaths.Count)" }
+            $expectedPdbPaths = @($dllPaths | ForEach-Object { $_ -replace '\.(dll|exe)$', '.pdb' } | Sort-Object)
+            $pdbPaths = @($snupkg.Entries | Where-Object { $_.FullName -match '\.pdb$' } | ForEach-Object { $_.FullName } | Sort-Object)
+            if (($expectedPdbPaths -join "`n") -ne ($pdbPaths -join "`n")) {
+              throw "PDB paths do not mirror DLL paths: expected [$($expectedPdbPaths -join ', ')], found [$($pdbPaths -join ', ')]"
             }
-            $ref = @($zip.Entries | Where-Object { $_.FullName -eq 'ref/net10.0/Ghostflyby.Pty.dll' })
-            if ($ref.Count -ne 1) { throw "expected exactly one ref/net10.0/Ghostflyby.Pty.dll, found $($ref.Count)" }
-            $refXml = @($zip.Entries | Where-Object { $_.FullName -eq 'ref/net10.0/Ghostflyby.Pty.xml' })
-            if ($refXml.Count -ne 1) { throw "expected exactly one ref/net10.0/Ghostflyby.Pty.xml, found $($refXml.Count)" }
-            # The load-bearing guarantee of this layout: no flat implementation dll.
-            # lib/ is NuGet's runtime fallback for unmatched RIDs, so any entry there
-            # would silently execute a wrong-OS build on an unsupported platform.
-            $flat = @($zip.Entries | Where-Object { $_.FullName -like 'lib/*' })
-            if ($flat.Count -gt 0) {
-              $flat | ForEach-Object { Write-Host $_.FullName }
-              throw "found $($flat.Count) lib/ entries; the package must be ref/+runtimes/ only"
-            }
-            $nuspec = @($zip.Entries | Where-Object { $_.FullName -like '*.nuspec' })
-            if ($nuspec.Count -ne 1) { throw "expected exactly one nuspec, found $($nuspec.Count)" }
-          } finally { $zip.Dispose() }
-
-      # The snupkg rides in with the per-OS build artifacts (pack emits it next to
-      # the nupkg); one copy is pushed — see the csproj symbols note for why one
-      # snupkg can only symbol-match the linux RIDs.
-      - name: Pick the symbol package
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Copy-Item "pkgs/pkg-ubuntu-latest/Ghostflyby.Pty.$env:VERSION.snupkg" -Destination .
-          Get-Item "Ghostflyby.Pty.$env:VERSION.snupkg" | Write-Host
-
+            $badSymbols = @($snupkg.Entries | Where-Object { $_.FullName -match '\.(dll|exe)$' })
+            if ($badSymbols.Count -gt 0) { throw "snupkg contains executable entries: $($badSymbols.FullName -join ', ')" }
+            $allowed = @('.pdb','.nuspec','.xml','.psmdcp','.rels','.p7s')
+            $badExtensions = @($snupkg.Entries | Where-Object {
+              $ext = [System.IO.Path]::GetExtension($_.FullName).ToLowerInvariant()
+              $ext -and $ext -notin $allowed
+            })
+            if ($badExtensions.Count -gt 0) { throw "snupkg contains unsupported entries: $($badExtensions.FullName -join ', ')" }
+            $nupkgNuspec = $nupkg.Entries | Where-Object { $_.FullName -like '*.nuspec' } | Select-Object -First 1
+            $snupkgNuspec = $snupkg.Entries | Where-Object { $_.FullName -like '*.nuspec' } | Select-Object -First 1
+            if (-not $nupkgNuspec -or -not $snupkgNuspec) { throw 'both packages must contain a nuspec' }
+            $nupkgNuspecText = [System.IO.StreamReader]::new($nupkgNuspec.Open()).ReadToEnd()
+            $snupkgNuspecText = [System.IO.StreamReader]::new($snupkgNuspec.Open()).ReadToEnd()
+            if ($nupkgNuspecText -notmatch '<id>Ghostflyby\.Pty</id>' -or $snupkgNuspecText -notmatch '<id>Ghostflyby\.Pty</id>') { throw 'package id mismatch' }
+            if ($nupkgNuspecText -notmatch "<version>$env:VERSION</version>" -or $snupkgNuspecText -notmatch "<version>$env:VERSION</version>") { throw 'package version mismatch' }
+            if ($snupkgNuspecText -notmatch 'packageType name="SymbolsPackage"') { throw 'snupkg is missing SymbolsPackage type' }
+          } finally {
+            $nupkg.Dispose()
+            $snupkg.Dispose()
+          }
       # Real-consumption gate: the exact nupkg about to be pushed must restore on the
       # supported RIDs and must NOT hand runtime assets to unsupported ones. Uses a
       # local folder as the package source — no network, no push.

@@ -8,6 +8,9 @@ add a section here as part of the release.
 
 ## Unreleased
 
+- Publish: assemble the final cross-platform `.snupkg` from the matching Windows,
+  macOS, and Linux PDB artifacts so every packaged DLL has a corresponding symbol.
+
 ## 0.4.0 — 2026-09-02
 
 - **Breaking:** `PtyProcess.Exited` now has the single argument `PtyProcess`.
