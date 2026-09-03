@@ -54,15 +54,14 @@ jobs:
           # overwrite each other's results on the Security tab.
           category: "/language:csharp/${{ matrix.os }}"
 
-  # PR-gate for vulnerable dependencies (GitHub Advisory Database). Kept alongside
-  # CodeQL so all security tooling lives in one workflow.
-  dependency-review:
-    name: Dependency review
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/dependency-review-action@v5
+  # NOTE: a dependency-review job (actions/dependency-review-action, PR gate against
+  # the GitHub Advisory Database) belongs here, but it hard-fails while the
+  # repository's Dependency graph is disabled — that toggle is only available in the
+  # repo settings UI (Settings → Code security), not via the API. Re-add:
+  #   dependency-review:
+  #     if: github.event_name == 'pull_request'
+  #     runs-on: ubuntu-latest
+  #     permissions: { contents: read }
+  #     steps:
+  #       - uses: actions/checkout@v7
+  #       - uses: actions/dependency-review-action@v5
