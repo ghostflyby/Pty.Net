@@ -51,20 +51,34 @@ public class PtyStreamTests : IDisposable
         Assert.InRange(n, 1, buf.Length - 1);
     }
 
-    /// <summary>Data that is already available is read promptly even when a token is passed.</summary>
+    /// <summary>
+    /// Data already sitting in the pty buffer is delivered by a token-bearing read
+    /// promptly and partially — the read returns what is there instead of blocking to
+    /// fill the buffer. Cold CI runners have beaten the old fixed 100 ms settle sleep:
+    /// bash's own start-up latency meant the only buffered bytes were its prompt, so
+    /// the payload can land in a later chunk. The first read is still asserted prompt
+    /// and non-empty; the accumulate loop then waits for the payload itself.
+    /// </summary>
     [Fact]
     public async Task ReadAsync_ReadsDataThatWasAlreadyAvailable()
     {
         DisableEcho();
         bash.Input.WriteLine($"printf 'ALREADY-THERE'; echo {Done}");
-        await Task.Delay(100, TestContext.Current.CancellationToken); // let the echo land in the pty buffer before reading
 
         using var cts = new CancellationTokenSource();
         var buf = new byte[256];
-        var n = await Stream.ReadAsync(buf, cts.Token).AsTask().WaitAsync(Timeout, TestContext.Current.CancellationToken);
+        var seen = new StringBuilder();
 
+        var n = await Stream.ReadAsync(buf, cts.Token).AsTask().WaitAsync(Timeout, TestContext.Current.CancellationToken);
         Assert.True(n > 0);
-        Assert.Contains("ALREADY-THERE", Encoding.UTF8.GetString(buf, 0, n));
+        seen.Append(Encoding.UTF8.GetString(buf, 0, n));
+
+        while (!seen.ToString().Contains("ALREADY-THERE", StringComparison.Ordinal))
+        {
+            n = await Stream.ReadAsync(buf, cts.Token).AsTask().WaitAsync(Timeout, TestContext.Current.CancellationToken);
+            Assert.True(n > 0);
+            seen.Append(Encoding.UTF8.GetString(buf, 0, n));
+        }
     }
 
     /// <summary>Cancellation of a pending read returns immediately (there is no thread to unpark).</summary>
