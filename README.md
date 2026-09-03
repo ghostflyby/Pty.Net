@@ -151,8 +151,10 @@ released before handlers run, so disposal does not wait for a handler to finish.
 - **Windows** needs Windows 10 1809 (build 17763) or later (ConPTY).
 - **Architectures** — the package ships runtimes for win-x64, win-arm64, linux-x64,
   linux-arm64, osx-x64, and osx-arm64; the assemblies are architecture-neutral managed
-  IL. CI verifies Linux x64 and arm64 (native runners), macOS arm64, and Windows x64,
-  plus glibc and musl containers; win-arm64 and osx-x64 currently have no CI runners.
+  IL. CI runs the full suite natively on one runner per RID — Windows x64 and arm64,
+  Linux x64 and arm64 (plus glibc and musl containers), and macOS arm64 and Intel —
+  so every shipped RID is exercised. (The Windows arm64 runner is a GitHub public
+  preview; `macos-15-intel` is GitHub's final Intel image, retiring August 2027.)
 - The pty merges the child's **stdout and stderr** into the single `Output` stream —
   there is no separate stderr, as in a real terminal.
 

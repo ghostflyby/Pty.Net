@@ -233,6 +233,23 @@ public class PtyProcessTests : IDisposable
 
     // --- window size -------------------------------------------------------
 
+    /// <summary>
+    /// Resize validates up front on every platform: zero/negative dimensions and
+    /// anything beyond Windows' <c>COORD</c> short range are rejected before any
+    /// ioctl/ConPTY call. The validation is shared code, so unlike the per-platform
+    /// propagation tests below this one runs — and must pass — on both halves.
+    /// </summary>
+    [Fact]
+    public void Resize_RejectsInvalidDimensions()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => bash.Resize(0, 24));
+        Assert.Throws<ArgumentOutOfRangeException>(() => bash.Resize(80, 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => bash.Resize(-1, 24));
+        Assert.Throws<ArgumentOutOfRangeException>(() => bash.Resize(80, -1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => bash.Resize(32768, 24));
+        Assert.Throws<ArgumentOutOfRangeException>(() => bash.Resize(80, 32768));
+    }
+
 #if !WINDOWS
     /// <summary>
     /// The initial size from <see cref="PtyStartInfo"/> (default 120x30) is applied before
@@ -504,6 +521,25 @@ public class PtyProcessTests : IDisposable
         bash.WaitForExit(); // must not throw and must return once the child is reaped
 
         Assert.True(bash.HasExited);
+    }
+
+    /// <summary>
+    /// The blocking timeout overload reports "still running" as <c>false</c> instead of
+    /// throwing, and leaves the child running — the async counterpart is pinned by
+    /// PtyProcessAsyncTests.WaitForExitAsync_TimeoutReturnsFalse; this pins the sync one.
+    /// </summary>
+    [Fact]
+    public void WaitForExit_TimeoutElapses_ReturnsFalseWhileChildRuns()
+    {
+        var (file, args) = TestBash.SleepProcess(5);
+        using var p = PtyProcess.Start(file, args);
+
+        Assert.False(p.WaitForExit(TimeSpan.FromMilliseconds(500)));
+        Assert.False(p.HasExited);
+
+        p.Kill();
+        Assert.True(p.WaitForExit(Timeout));
+        Assert.True(p.HasExited);
     }
 
     /// <summary>

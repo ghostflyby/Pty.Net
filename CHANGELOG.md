@@ -8,6 +8,21 @@ add a section here as part of the release.
 
 ## Unreleased
 
+- CI: the native runner matrix now covers every shipped RID — `windows-11-arm`
+  (win-arm64) and `macos-15-intel` (osx-x64) join the test suite and the post-publish
+  package smoke, so all six runtime folders are exercised on their own platform
+  (the platform-split DLL checks key off `runner.os`, not the label). `macos-15-intel`
+  is GitHub's final Intel image and retires August 2027.
+- Security: CodeQL C# analysis (default + `security-extended` suites, one database
+  per compiled OS half) uploads to the Security tab on pushes, PRs, and a weekly
+  schedule; pull requests also get a dependency review against the GitHub Advisory
+  Database.
+- Tests: the remaining documented surface is pinned — the non-seekable `PtyStream`
+  contract (`CanSeek`/`Length`/`Position`/`Seek`/`SetLength`), `Flush` no-op-while-open
+  and `ObjectDisposedException`-after-dispose semantics, shared `Resize` argument
+  validation (previously only exercised on Windows), and the blocking
+  `WaitForExit(timeout)` returning `false` while the child runs.
+
 ## 0.5.0 — 2026-09-03
 
 - Publish: assemble the final cross-platform `.snupkg` from the matching Windows,
