@@ -19,11 +19,18 @@ public class PtyStreamTests : IDisposable
 
     private PtyStream Stream => bash.BaseStream;
 
-    /// <summary>Turns off the tty line-discipline echo so command output is not mixed with echoed input.</summary>
+    /// <summary>
+    /// Turns off the tty line-discipline echo so command output is not mixed with
+    /// echoed input. Execution-proving sync (a marker assembled at runtime so the
+    /// command's own echo cannot contain it) instead of a fixed drain, which races
+    /// bash's start-up on cold runners — and a lost echo-off makes the next command
+    /// echo its own marker text.
+    /// </summary>
     private void DisableEcho()
     {
-        bash.Input.WriteLine("stty -echo");
-        TestBash.Drain(bash.Output, TimeSpan.FromMilliseconds(200));
+        bash.Input.WriteLine("stty -echo; printf \"__E\"\"CHO_SYNC__\"");
+        TestBash.ReadUntil(bash.Output, "__ECHO_SYNC__", Timeout);
+        TestBash.Drain(bash.Output, TimeSpan.FromMilliseconds(50));
     }
 
     /// <summary>Waits for the shell prompt and drains it, leaving the session idle.</summary>

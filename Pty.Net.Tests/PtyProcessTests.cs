@@ -572,13 +572,21 @@ public class PtyProcessTests : IDisposable
 
     /// <summary>
     /// Turns off the tty line-discipline echo so command output is not mixed with the
-    /// echoed input, and waits for the change to take effect.
+    /// echoed input, and proves the setting took effect before returning.
     /// (Echo off is what keeps a command's own literal text out of the output, which
     /// otherwise short-circuits marker reads.)
+    /// <br/>
+    /// The sync marker is assembled at runtime by concatenating quoted fragments, so
+    /// the tty echo of the command line itself can never contain it: seeing
+    /// <c>__ECHO_SYNC__</c> in the output therefore proves bash executed the line —
+    /// and with it, the <c>stty -echo</c> in front. A fixed drain would race bash's
+    /// start-up on cold runners (macOS /bin/bash prints a zsh-advisory banner), and a
+    /// lost echo-off makes the next command echo its own marker text.
     /// </summary>
     private void DisableEcho()
     {
-        bash.Input.WriteLine("stty -echo");
-        TestBash.Drain(bash.Output, TimeSpan.FromMilliseconds(200));
+        bash.Input.WriteLine("stty -echo; printf \"__E\"\"CHO_SYNC__\"");
+        TestBash.ReadUntil(bash.Output, "__ECHO_SYNC__", Timeout);
+        TestBash.Drain(bash.Output, TimeSpan.FromMilliseconds(50));
     }
 }
