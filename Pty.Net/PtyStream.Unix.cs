@@ -179,10 +179,11 @@ public sealed partial class PtyStream
         if (handle.IsClosed)
             return false;
         var fd = (int)handle.DangerousGetHandle();
-        if (!WaitForPoll(fd, NativeMethods.PollEvents.Pollin, 0, out var revents))
+        // A hangup reported here (POLLHUP/POLLERR without POLLIN) needs no special
+        // casing: the read below then yields 0 or EIO, handled as EOF.
+        if (!WaitForPoll(fd, NativeMethods.PollEvents.Pollin, 0, out var _))
             return false; // nothing available right now
 
-        var hungUp = (revents & (NativeMethods.PollEvents.Pollhup | NativeMethods.PollEvents.Pollerr)) != 0;
         Span<byte> chunk = stackalloc byte[8192];
         unsafe
         {
