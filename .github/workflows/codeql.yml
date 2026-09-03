@@ -1,0 +1,68 @@
+name: CodeQL
+
+# Security scanning with results uploaded to the repository's Security tab (code
+# scanning). One analysis job per OS: the csproj picks the compiled half (Windows
+# ConPTY interop vs Unix fork/exec + poll engine) from the build host's OS, so a
+# single-OS analysis would only ever see half of the P/Invoke surface. CodeQL is
+# free on public repositories.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly sweep even without code motion: newly published queries and
+    # security-extended findings surface without waiting for the next commit.
+    - cron: '23 4 * * 1'
+
+jobs:
+  analyze:
+    name: Analyze (csharp / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      # Required to upload the SARIF results to the Security tab.
+      security-events: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: csharp
+          # security-extended adds the broader security query suite on top of the
+          # default set — the right default for a library whose whole surface is
+          # unsafe interop and child-process handling.
+          queries: security-extended
+
+      - name: Build
+        # A real build instead of autobuild so the CsWin32-generated interop (Windows
+        # job) and the per-OS file globs end up in the analyzed database.
+        run: dotnet build Pty.Net.slnx -c Release --nologo
+
+      - uses: github/codeql-action/analyze@v4
+        with:
+          # Per-matrix-entry category: two uploads of the same language must not
+          # overwrite each other's results on the Security tab.
+          category: "/language:csharp/${{ matrix.os }}"
+
+  # PR-gate for vulnerable dependencies (GitHub Advisory Database). Kept alongside
+  # CodeQL so all security tooling lives in one workflow.
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/dependency-review-action@v5
