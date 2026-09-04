@@ -57,24 +57,22 @@ public sealed partial class PtyStream
     /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
     public override int Read(Span<byte> buffer)
     {
-        return buffer.IsEmpty ? 0 : Read(buffer, Timeout.Infinite, out _);
+        return buffer.IsEmpty ? 0 : Read(buffer, Timeout.Infinite);
     }
 
     /// <summary>
     /// Polls for readability up to <paramref name="timeoutMs"/> (infinite if negative),
     /// then reads whatever is available. Returns the number of bytes read, or 0 when
-    /// nothing arrived within the timeout (<paramref name="eof"/> is false) or when the
-    /// child's slave side has gone (<paramref name="eof"/> is true). Used by
+    /// nothing arrived within the timeout or when the child's slave side is gone. Used by
     /// <see cref="PtyProcess"/> to keep its existing bounded-wait read semantics without
     /// a second syscall layer.
     /// </summary>
-    internal int Read(Span<byte> buffer, int timeoutMs, out bool eof)
+    private int Read(Span<byte> buffer, int timeoutMs)
     {
         ObjectDisposedException.ThrowIf(handle.IsClosed, this);
         if (Volatile.Read(ref pendingAsyncReads) > 0)
             throw new InvalidOperationException(
                 "A pending async read is in progress on this pty stream; sync and async reads on the same stream cannot be mixed.");
-        eof = false;
         if (buffer.IsEmpty)
             return 0;
 
@@ -86,10 +84,9 @@ public sealed partial class PtyStream
 
         var fd = (int)handle.DangerousGetHandle();
 
-        if (!WaitForPoll(fd, NativeMethods.PollEvents.Pollin, timeoutMs, out var revents))
+        if (!WaitForPoll(fd, NativeMethods.PollEvents.Pollin, timeoutMs, out _))
             return 0; // timed out with nothing available
 
-        var hungUp = (revents & (NativeMethods.PollEvents.Pollhup | NativeMethods.PollEvents.Pollerr)) != 0;
         unsafe
         {
             fixed (byte* p = buffer)
@@ -102,7 +99,6 @@ public sealed partial class PtyStream
                         case > 0:
                             return (int)r;
                         case 0:
-                            eof = true;
                             return 0;
                     }
 
@@ -113,14 +109,12 @@ public sealed partial class PtyStream
                             continue;
                         case NativeMethods.Eagain:
                         {
-                            // Nothing actually available (spurious poll wakeup). If the fd
-                            // also reports hangup, the slave is gone — that is EOF.
-                            if (hungUp)
-                                eof = true;
+                            // Spurious poll wakeup: nothing actually available. A hangup
+                            // reported by the poll above still ends here — read(2) on the
+                            // master returns 0 (EOF) once the slave is gone.
                             return 0;
                         }
                         case NativeMethods.Eio:
-                            eof = true; // slave side closed: EOF (macOS and Linux)
                             return 0;
                         default:
                             throw new IOException($"pty read failed: errno={err}");
@@ -181,7 +175,7 @@ public sealed partial class PtyStream
         var fd = (int)handle.DangerousGetHandle();
         // A hangup reported here (POLLHUP/POLLERR without POLLIN) needs no special
         // casing: the read below then yields 0 or EIO, handled as EOF.
-        if (!WaitForPoll(fd, NativeMethods.PollEvents.Pollin, 0, out var _))
+        if (!WaitForPoll(fd, NativeMethods.PollEvents.Pollin, 0, out _))
             return false; // nothing available right now
 
         Span<byte> chunk = stackalloc byte[8192];

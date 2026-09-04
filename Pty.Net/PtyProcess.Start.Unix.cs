@@ -236,7 +236,7 @@ public sealed partial class PtyProcess
                     }
                     if (pid == 0)
                     {
-                        // Child: never returns, never allocates, and never closes an fd.
+                        // Child: never returns, never allocates, and never closes a fd.
                         // All libc calls below go through function pointers resolved in
                         // the parent: the generated P/Invoke IL stub is compiled lazily
                         // on first call, and under a concurrent fork it can block on an
@@ -341,7 +341,7 @@ public sealed partial class PtyProcess
     /// is held only for the duration of fork(2)).</summary>
     private const long ForkNoGcBudget = 32 * 1024 * 1024;
 
-    private static unsafe bool PrepareForkChildPath()
+    private static bool PrepareForkChildPath()
     {
         Prepare((ChildMainDelegate)ChildMain);
         Prepare((ReportChildErrorDelegate)ReportChildError);
@@ -368,7 +368,6 @@ public sealed partial class PtyProcess
             Chdir = (delegate* unmanaged[Cdecl]<IntPtr, int>)NativeLibrary.GetExport(process, "chdir"),
             Signal = (delegate* unmanaged[Cdecl]<int, IntPtr, IntPtr>)NativeLibrary.GetExport(process, "signal"),
             Error = (delegate* unmanaged[Cdecl]<int*>)NativeLibrary.GetExport(process, "__error"),
-            Close = (delegate* unmanaged[Cdecl]<int, int>)NativeLibrary.GetExport(process, "close"),
 #elif LINUX
             Dup2 = (delegate* unmanaged[Cdecl]<int, int, int>)NativeLibrary.GetExport(process, "dup2"),
             Setsid = (delegate* unmanaged[Cdecl]<int>)NativeLibrary.GetExport(process, "setsid"),
@@ -395,8 +394,8 @@ public sealed partial class PtyProcess
     /// inherited CoreCLR code-heap lock and hang the child before exec (observed as
     /// GenericPInvokeCalliStubWorker waiting in __psynch_mutexwait). Each warm-up call
     /// fails harmlessly at the libc level (EBADF/EFAULT/EINVAL/ENOENT). The signature
-    /// (argument types, return type, calling convention) defines the stub — a same-
-    /// shape stand-in warms it just as well as the real callee.
+    /// (argument types, return type, calling convention) defines the stub — a same-shape
+    /// stand-in warms it just as well as the real callee.
     /// </summary>
     private static unsafe void WarmUpChildSignatures(IntPtr process, ChildNativeApi api)
     {
@@ -404,7 +403,7 @@ public sealed partial class PtyProcess
 
         _ = api.Dup2(-1, -1);
         _ = getpid(); // shares Setsid's int(void) signature
-        _ = api.Open((IntPtr)1, 0);
+        _ = api.Open(1, 0);
         _ = api.Chdir(IntPtr.Zero);
         _ = api.Write(-1, IntPtr.Zero, 0);
         _ = api.Error();
@@ -447,8 +446,6 @@ public sealed partial class PtyProcess
         internal delegate* unmanaged[Cdecl]<IntPtr, int> Chdir;
         internal delegate* unmanaged[Cdecl]<int, IntPtr, IntPtr> Signal;
         internal delegate* unmanaged[Cdecl]<int*> Error;
-        // The macOS fd sweep is always the manual loop (no close_range on Darwin).
-        internal delegate* unmanaged[Cdecl]<int, int> Close;
     }
 #elif LINUX
     private unsafe struct ChildNativeApi
@@ -470,11 +467,11 @@ public sealed partial class PtyProcess
     }
 #endif
 
-    private unsafe delegate void ChildMainDelegate(
+    private delegate void ChildMainDelegate(
         IntPtr path, IntPtr argv, IntPtr envp, IntPtr workingDirectory,
         IntPtr ptySlavePath, IntPtr spawnAttr, int errWrite, ChildNativeApi api);
 
-    private unsafe delegate void ReportChildErrorDelegate(ChildNativeApi api, int errWrite, int errno);
+    private delegate void ReportChildErrorDelegate(ChildNativeApi api, int errWrite, int errno);
 
     /// <summary>
     /// The child's post-fork entry point. Runs in the forked copy with the no-GC region
@@ -624,7 +621,7 @@ public sealed partial class PtyProcess
     {
         var slot = stackalloc int[1];
         slot[0] = errno;
-        _ = api.Write(errWrite, (IntPtr)slot, (nuint)sizeof(int));
+        _ = api.Write(errWrite, (IntPtr)slot, sizeof(int));
     }
 
     private static void ReapFailedExec(int pid)
@@ -704,13 +701,7 @@ public sealed partial class PtyProcess
     /// <see cref="StartCore"/> retries the whole launch once — a fresh fork almost
     /// never loses the same race.
     /// </summary>
-    private sealed class ForkHangException : IOException
-    {
-        public ForkHangException(string message)
-            : base(message)
-        {
-        }
-    }
+    private sealed class ForkHangException(string message) : IOException(message);
 
     private static void KillAndReapStuckChild(int pid)
     {
@@ -873,6 +864,8 @@ public sealed partial class PtyProcess
         Encoding inputEncoding, Encoding outputEncoding,
         out Stream inputFacadeStream, out Stream outputFacadeStream)
     {
+        _ = inputEncoding;
+        _ = outputEncoding;
         inputFacadeStream = BaseStream;
         outputFacadeStream = BaseStream;
     }
@@ -977,6 +970,7 @@ public sealed partial class PtyProcess
     /// Single non-blocking reap attempt for the child: waitpid(WNOHANG). Returns true
     /// when the child reached a terminal state, with its decoded result.
     /// </summary>
+    // ReSharper disable once ParameterHidesMember
     private partial bool TryReapPlatform(out TerminationStatus? terminationStatus)
     {
         while (true)

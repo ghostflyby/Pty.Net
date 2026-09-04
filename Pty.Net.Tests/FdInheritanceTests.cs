@@ -77,6 +77,7 @@ public partial class FdInheritanceTests
         // The LibraryImport generator supports SafeFileHandle as parameters/out only,
         // not as return values, so open(2) returns the raw fd and the caller wraps it
         // in a SafeFileHandle (which then owns and closes it).
+        // resharper disable once InconsistentNaming
         [LibraryImport("libc", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
         internal static partial int open(string path, OpenFlags flags, UnixPermissions mode);
     }

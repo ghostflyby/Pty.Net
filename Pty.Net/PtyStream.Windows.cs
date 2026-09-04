@@ -74,21 +74,21 @@ public sealed partial class PtyStream
     /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
     public override int Read(Span<byte> buffer)
     {
-        return buffer.IsEmpty ? 0 : Read(buffer, Timeout.Infinite, out _);
+        return buffer.IsEmpty ? 0 : Read(buffer, Timeout.Infinite);
     }
 
     /// <summary>
     /// Reads from the managed output buffer with the bounded-wait semantics used by
     /// <see cref="PtyProcess"/>. Zero is a non-blocking probe; negative waits indefinitely.
+    /// Returns 0 at end of stream (output EOF) and when the timeout elapses with no data.
     /// </summary>
-    internal int Read(Span<byte> target, int timeoutMs, out bool eof)
+    private int Read(Span<byte> target, int timeoutMs)
     {
         ThrowIfDisposed();
         if (Volatile.Read(ref pendingAsyncReads) > 0)
             throw new InvalidOperationException(
                 "A pending async read is in progress on this pty stream; sync and async reads on the same stream cannot be mixed.");
 
-        eof = false;
         if (target.IsEmpty)
             return 0;
 
@@ -109,10 +109,7 @@ public sealed partial class PtyStream
                 if (count > 0)
                     return count;
                 if (outputEof)
-                {
-                    eof = true;
                     return 0;
-                }
                 if (pumpError is not null)
                     throw new IOException("ConPTY output pump failed.", pumpError);
                 if (timeoutMs == 0)

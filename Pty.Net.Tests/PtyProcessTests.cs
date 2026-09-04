@@ -99,19 +99,19 @@ public class PtyProcessTests : IDisposable
         Directory.CreateDirectory(dir);
         try
         {
-            using var bash = TestBash.Start(dir);
+            using var bashInDir = TestBash.Start(dir);
             // Echo off so the command's own text does not shadow the marker read.
-            bash.Input.WriteLine("stty -echo");
-            TestBash.Drain(bash.Output, TimeSpan.FromMilliseconds(200));
+            bashInDir.Input.WriteLine("stty -echo");
+            TestBash.Drain(bashInDir.Output, TimeSpan.FromMilliseconds(200));
 
 #if WINDOWS
             // MSYS bash prints POSIX-style paths (/c/...) for pwd; cygpath -w converts
             // back to the Windows path the test compares against.
-            bash.Input.WriteLine($"cygpath -w \"$(pwd)\"; echo {Done}");
+            bashInDir.Input.WriteLine($"cygpath -w \"$(pwd)\"; echo {Done}");
 #else
-            bash.Input.WriteLine($"pwd; echo {Done}");
+            bashInDir.Input.WriteLine($"pwd; echo {Done}");
 #endif
-            var output = TestBash.ReadUntil(bash.Output, Done, Timeout);
+            var output = TestBash.ReadUntil(bashInDir.Output, Done, Timeout);
 
             Assert.Contains(dir, output);
         }
@@ -165,7 +165,8 @@ public class PtyProcessTests : IDisposable
         // The fixture bash IS the child under test: it is a session leader whose
         // stdio is the pty slave, so opening /dev/tty must succeed.
         DisableEcho();
-        bash.Input.WriteLine("if : </dev/tty 2>/dev/null; then echo CTTY_OK; else echo CTTY_MISSING; fi; echo __DEVTTY_DONE__");
+        bash.Input.WriteLine(
+            "if : </dev/tty 2>/dev/null; then echo CTTY_OK; else echo CTTY_MISSING; fi; echo __DEVTTY_DONE__");
 
         var output = TestBash.ReadUntil(bash.Output, "__DEVTTY_DONE__", Timeout);
 
@@ -185,8 +186,8 @@ public class PtyProcessTests : IDisposable
 
         // "isatty=True sid=<n> pid=<n> pgrp=<n> tcgetpgrp=<n>"
         Assert.Contains("isatty=True", output);
-        Assert.Matches(@"sid=(\d+)\s+pid=\1", output);          // session leader
-        Assert.Matches(@"pgrp=(\d+)\s+tcgetpgrp=\1", output);   // foreground on the ctty
+        Assert.Matches(@"sid=(\d+)\s+pid=\1", output); // session leader
+        Assert.Matches(@"pgrp=(\d+)\s+tcgetpgrp=\1", output); // foreground on the ctty
     }
 
     /// <summary>
@@ -218,6 +219,7 @@ public class PtyProcessTests : IDisposable
                 probe.WaitForExit(TimeSpan.FromSeconds(5));
                 return (null, []);
             }
+
             return ("python3",
             [
                 "-c",
@@ -390,6 +392,7 @@ public class PtyProcessTests : IDisposable
         Assert.Contains("visible-42", output);
     }
 
+#if WINDOWS
     /// <summary>
     /// Windows environment variables are case-insensitive: overriding "SYSTEMROOT"
     /// (upper-cased) must replace the inherited "SystemRoot" value instead of adding a
@@ -397,7 +400,6 @@ public class PtyProcessTests : IDisposable
     /// CreateProcess is then undefined. Unix-only counterpart is the case-sensitive
     /// <see cref="Environment_OverridesAreVisibleToChild"/>.
     /// </summary>
-#if WINDOWS
     [Fact]
     public void Environment_OverrideIsCaseInsensitiveOnWindows()
     {
@@ -432,8 +434,11 @@ public class PtyProcessTests : IDisposable
         {
             var info = new PtyStartInfo(TestBash.BashPath)
             {
-                Arguments = ["--noprofile", "--norc", "-c",
-                    "echo visible=$ALLOWLIST_VISIBLE host=$PTY_TEST_HOST_ONLY_8F2A; echo __DONE__"],
+                Arguments =
+                [
+                    "--noprofile", "--norc", "-c",
+                    "echo visible=$ALLOWLIST_VISIBLE host=$PTY_TEST_HOST_ONLY_8F2A; echo __DONE__"
+                ],
                 Environment = ImmutableDictionary<string, string?>.Empty.Add("ALLOWLIST_VISIBLE", "yes"),
                 InheritParentEnvironment = false,
             };

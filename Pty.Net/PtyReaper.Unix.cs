@@ -195,6 +195,7 @@ internal static partial class PtyReaper
                 ScanRegisteredProcesses();
 #endif
             }
+            // ReSharper disable once FunctionNeverReturns
         }
 
         /// <summary>

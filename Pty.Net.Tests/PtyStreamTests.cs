@@ -45,7 +45,7 @@ public class PtyStreamTests : IDisposable
     public async Task ReadAsync_ReturnsAvailableBytesNotFullBuffer()
     {
         DisableEcho();
-        bash.Input.WriteLine($"printf 'short'; echo {Done}");
+        await bash.Input.WriteLineAsync($"printf 'short'; echo {Done}");
 
         var buf = new byte[1024];
         var n = await Stream.ReadAsync(buf, TestContext.Current.CancellationToken).AsTask().WaitAsync(Timeout, TestContext.Current.CancellationToken);
@@ -70,7 +70,7 @@ public class PtyStreamTests : IDisposable
     public async Task ReadAsync_ReadsDataThatWasAlreadyAvailable()
     {
         DisableEcho();
-        bash.Input.WriteLine($"printf 'ALREADY-THERE'; echo {Done}");
+        await bash.Input.WriteLineAsync($"printf 'ALREADY-THERE'; echo {Done}");
 
         using var cts = new CancellationTokenSource();
         var buf = new byte[256];
@@ -106,7 +106,7 @@ public class PtyStreamTests : IDisposable
         }
 
         var sw = Stopwatch.StartNew();
-        cts.Cancel();
+        await cts.CancelAsync();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => read).WaitAsync(Timeout, TestContext.Current.CancellationToken);
         sw.Stop();
 
@@ -121,7 +121,7 @@ public class PtyStreamTests : IDisposable
         using var cts = new CancellationTokenSource();
         var read = Stream.ReadAsync(new byte[16], cts.Token).AsTask();
 
-        bash.Input.WriteLine("exit");
+        await bash.Input.WriteLineAsync("exit");
 
         // Partial reads may surface leftover output first; keep reading until EOF (0).
         var n = await read.WaitAsync(Timeout, TestContext.Current.CancellationToken);
@@ -153,7 +153,7 @@ public class PtyStreamTests : IDisposable
     public async Task WriteAsync_Completes()
     {
         DisableEcho();
-        bash.Input.WriteLine($"cat; echo {Done}");
+        await bash.Input.WriteLineAsync($"cat; echo {Done}");
         TestBash.Drain(bash.Output, TimeSpan.FromMilliseconds(500)); // let cat start reading
 
         using var cts = new CancellationTokenSource();
@@ -177,9 +177,9 @@ public class PtyStreamTests : IDisposable
     public async Task WriteAsync_BlockedOnFullPtyBuffer_CancelsImmediately()
     {
         WaitForIdlePrompt();
-        bash.Input.WriteLine("stty -icanon min 1 time 0"); // non-canonical: bounded input queue
+        await bash.Input.WriteLineAsync("stty -icanon min 1 time 0"); // non-canonical: bounded input queue
         TestBash.Drain(bash.Output, TimeSpan.FromMilliseconds(300));
-        bash.Input.WriteLine("exec sleep 1000"); // child stops reading stdin
+        await bash.Input.WriteLineAsync("exec sleep 1000"); // child stops reading stdin
         await Task.Delay(300, TestContext.Current.CancellationToken);
 
         using var cts = new CancellationTokenSource();
@@ -192,7 +192,7 @@ public class PtyStreamTests : IDisposable
         Assert.False(write.IsCompleted);
 
         var sw = Stopwatch.StartNew();
-        cts.Cancel();
+        await cts.CancelAsync();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => write).WaitAsync(Timeout, TestContext.Current.CancellationToken);
         sw.Stop();
 
@@ -211,7 +211,7 @@ public class PtyStreamTests : IDisposable
             .ToArray();
         await Task.Delay(200, TestContext.Current.CancellationToken); // let them all register before output flows
 
-        bash.Input.WriteLine($"seq 1 500; echo {Done}"); // ~2 KB of output
+        await bash.Input.WriteLineAsync($"seq 1 500; echo {Done}"); // ~2 KB of output
 
         var results = await Task.WhenAll(reads).WaitAsync(Timeout, TestContext.Current.CancellationToken);
         Assert.All(results, n => Assert.True(n > 0, "every overlapping read should get data"));

@@ -75,7 +75,7 @@ public sealed partial class PtyStream : Stream
     public override int Read(byte[] buffer, int offset, int count)
     {
         ValidateArgs(buffer, offset, count);
-        return Read(buffer.AsSpan(offset, count), Timeout.Infinite, out _);
+        return Read(buffer.AsSpan(offset, count), Timeout.Infinite);
     }
 
     /// <summary>

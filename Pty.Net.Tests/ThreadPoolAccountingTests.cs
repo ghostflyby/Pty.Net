@@ -53,7 +53,7 @@ public class ThreadPoolAccountingTests
         {
             p.Kill();
             await p.WaitForExitAsync(Timeout, TestContext.Current.CancellationToken).WaitAsync(Timeout, TestContext.Current.CancellationToken);
-            p.Dispose();
+            await p.DisposeAsync();
         }
 
         Assert.True(
@@ -100,7 +100,7 @@ public class ThreadPoolAccountingTests
         await cancelAll.WaitAsync(Timeout, TestContext.Current.CancellationToken);
 
         foreach (var p in all)
-            p.Dispose();
+            await p.DisposeAsync();
 
         Assert.True(
             workersDuring >= workersBefore - 4,
@@ -110,7 +110,7 @@ public class ThreadPoolAccountingTests
 
     private static async Task CancelAndExpectOce(Task<int> read, CancellationTokenSource cts)
     {
-        cts.Cancel();
+        await cts.CancelAsync();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => read).WaitAsync(Timeout, TestContext.Current.CancellationToken);
     }
 }

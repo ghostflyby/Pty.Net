@@ -16,7 +16,7 @@ public class ConcurrencyTests
         var work = Enumerable.Range(0, total).ToList();
         var failures = new ConcurrentQueue<string>();
 
-        var tasks = Enumerable.Range(0, concurrency).Select(t => Task.Run(() =>
+        var tasks = Enumerable.Range(0, concurrency).Select(_ => Task.Run(() =>
         {
             while (true)
             {
