@@ -73,7 +73,7 @@ public class StreamSemanticsTests
         const string before = "BEFORE-MARKER";
         const string after = "AFTER-MARKER";
 #else
-        using var p = PtyProcess.Start("bash", ["--noprofile", "--norc", "-c", "echo BEFORE-MARKER; sleep 0.4; echo AFTER-MARKER"]);
+        await using var p = PtyProcess.Start("bash", ["--noprofile", "--norc", "-c", "echo BEFORE-MARKER; sleep 0.4; echo AFTER-MARKER"]);
         const string before = "BEFORE-MARKER";
         const string after = "AFTER-MARKER";
 #endif

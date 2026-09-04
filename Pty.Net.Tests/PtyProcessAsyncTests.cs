@@ -18,7 +18,7 @@ public class PtyProcessAsyncTests
     public async Task WaitForExitAsync_TimeoutReturnsFalse()
     {
         var (file, args) = TestBash.SleepProcess(1000);
-        using var p = PtyProcess.Start(file, args);
+        await using var p = PtyProcess.Start(file, args);
 
         var sw = Stopwatch.StartNew();
         var exited = await p.WaitForExitAsync(TimeSpan.FromMilliseconds(200), TestContext.Current.CancellationToken).WaitAsync(Timeout, TestContext.Current.CancellationToken);
@@ -32,8 +32,8 @@ public class PtyProcessAsyncTests
     [Fact]
     public async Task WaitForExitAsync_ReturnsTrue_WhenChildExits()
     {
-        using var bash = TestBash.Start();
-        bash.Input.WriteLine("exit");
+        await using var bash = TestBash.Start();
+        await bash.Input.WriteLineAsync("exit");
 
         Assert.True(await bash.WaitForExitAsync(Timeout, TestContext.Current.CancellationToken).WaitAsync(Timeout, TestContext.Current.CancellationToken));
         Assert.Equal(0, bash.ExitCode);
@@ -58,7 +58,7 @@ public class PtyProcessAsyncTests
         using var cts = new CancellationTokenSource();
 
         var wait = p.WaitForExitAsync(System.Threading.Timeout.InfiniteTimeSpan, cts.Token);
-        cts.Cancel();
+        await cts.CancelAsync();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => wait).WaitAsync(Timeout, TestContext.Current.CancellationToken);
     }
@@ -69,7 +69,7 @@ public class PtyProcessAsyncTests
     public async Task DisposeAsync_CompletesForExitedChild()
     {
         var bash = TestBash.Start();
-        bash.Input.WriteLine("exit");
+        await bash.Input.WriteLineAsync("exit");
         await bash.WaitForExitAsync(Timeout, TestContext.Current.CancellationToken).WaitAsync(Timeout, TestContext.Current.CancellationToken);
 
         await bash.DisposeAsync(); // must complete and not throw
@@ -153,11 +153,11 @@ public class PtyProcessAsyncTests
     [Fact]
     public async Task Exited_Fires_AfterTerminalResultIsPublished()
     {
-        using var bash = TestBash.Start();
+        await using var bash = TestBash.Start();
         var tcs = new TaskCompletionSource<PtyProcess>(TaskCreationOptions.RunContinuationsAsynchronously);
         bash.Exited += process => tcs.TrySetResult(process);
 
-        bash.Input.WriteLine("exit");
+        await bash.Input.WriteLineAsync("exit");
 
         var exited = await tcs.Task.WaitAsync(Timeout, TestContext.Current.CancellationToken);
         Assert.Same(bash, exited);
@@ -182,7 +182,7 @@ public class PtyProcessAsyncTests
             var tcs = new TaskCompletionSource<PtyProcess>(TaskCreationOptions.RunContinuationsAsynchronously);
             p.Exited += process => tcs.TrySetResult(process);
 
-            p.Input.WriteLine("exit");
+            await p.Input.WriteLineAsync("exit");
 
             var exited = await tcs.Task.WaitAsync(Timeout, TestContext.Current.CancellationToken);
             Assert.Same(p, exited);
@@ -199,7 +199,7 @@ public class PtyProcessAsyncTests
     public async Task Exited_FiresOnExternalDeath()
     {
         var (file, args) = TestBash.ShortLivedProcess();
-        using var p = PtyProcess.Start(file, args);
+        await using var p = PtyProcess.Start(file, args);
         var tcs = new TaskCompletionSource<PtyProcess>(TaskCreationOptions.RunContinuationsAsynchronously);
         p.Exited += process => tcs.TrySetResult(process);
 
@@ -229,8 +229,8 @@ public class PtyProcessAsyncTests
         }
         finally
         {
-            p1.Dispose();
-            p2.Dispose();
+            await p1.DisposeAsync();
+            await p2.DisposeAsync();
         }
     }
 
@@ -243,12 +243,13 @@ public class PtyProcessAsyncTests
     public async Task Exited_HandlerException_IsolatesLaterHandlersOnSameProcess()
     {
         var (file, args) = TestBash.ShortLivedProcess();
-        using var p = PtyProcess.Start(file, args);
+        await using var p = PtyProcess.Start(file, args);
         var second = new TaskCompletionSource<PtyProcess>(TaskCreationOptions.RunContinuationsAsynchronously);
         var firstRan = 0;
 
         p.Exited += _ =>
         {
+            // ReSharper disable once AccessToModifiedClosure
             Interlocked.Increment(ref firstRan);
             throw new InvalidOperationException("boom");
         };
@@ -264,11 +265,12 @@ public class PtyProcessAsyncTests
     public async Task OnReaped_DuplicateNotification_PublishesOnlyOnce()
     {
         var (file, args) = TestBash.ShortLivedProcess();
-        using var p = PtyProcess.Start(file, args);
+        await using var p = PtyProcess.Start(file, args);
         var calls = 0;
         var tcs = new TaskCompletionSource<PtyProcess>(TaskCreationOptions.RunContinuationsAsynchronously);
         p.Exited += process =>
         {
+            // ReSharper disable once AccessToModifiedClosure
             Interlocked.Increment(ref calls);
             tcs.TrySetResult(process);
         };
@@ -287,12 +289,14 @@ public class PtyProcessAsyncTests
     public async Task Exited_BlockingHandler_DoesNotBlockExitWaiters()
     {
         var (file, args) = TestBash.SleepProcess(100);
-        using var p = PtyProcess.Start(file, args);
+        await using var p = PtyProcess.Start(file, args);
         using var handlerStarted = new ManualResetEventSlim();
         using var releaseHandler = new ManualResetEventSlim();
         p.Exited += _ =>
         {
+            // ReSharper disable once AccessToDisposedClosure
             handlerStarted.Set();
+            // ReSharper disable once AccessToDisposedClosure
             releaseHandler.Wait(Timeout);
         };
         var wait = p.WaitForExitAsync(System.Threading.Timeout.InfiniteTimeSpan, TestContext.Current.CancellationToken);
@@ -313,11 +317,12 @@ public class PtyProcessAsyncTests
     public async Task Exited_LateSubscription_IsNotReplayed()
     {
         var (file, args) = TestBash.ShortLivedProcess();
-        using var p = PtyProcess.Start(file, args);
+        await using var p = PtyProcess.Start(file, args);
 
         Assert.True(await p.WaitForExitAsync(Timeout, TestContext.Current.CancellationToken));
 
         var calls = 0;
+        // ReSharper disable once AccessToModifiedClosure
         p.Exited += _ => Interlocked.Increment(ref calls);
         p.OnReaped(PtyProcess.TerminationStatus.Exited(42));
 
@@ -329,7 +334,7 @@ public class PtyProcessAsyncTests
     public async Task Exited_AfterSignalTermination_PublishesSignal()
     {
         var (file, args) = TestBash.SleepProcess(100);
-        using var p = PtyProcess.Start(file, args);
+        await using var p = PtyProcess.Start(file, args);
         var tcs = new TaskCompletionSource<PtyProcess>(TaskCreationOptions.RunContinuationsAsynchronously);
         p.Exited += process => tcs.TrySetResult(process);
 
@@ -348,7 +353,7 @@ public class PtyProcessAsyncTests
     public async Task ExitCode_IsSetByReaper_WithoutExplicitWait()
     {
         var (file, args) = TestBash.ShortLivedProcess();
-        using var p = PtyProcess.Start(file, args);
+        await using var p = PtyProcess.Start(file, args);
 
         // The only wait here is for the observable outcome (ExitCode), which the
         // process-wide reaper produces by itself.

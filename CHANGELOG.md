@@ -8,6 +8,10 @@ add a section here as part of the release.
 
 ## Unreleased
 
+- Cleanup: `DisposeAsync` now disposes the underlying pty stream asynchronously
+  (`DisposeAsync`) instead of calling the blocking `Dispose`. The rest is hygiene
+  surfaced by ReSharper — dead locals/exports, redundant `unsafe`, unused
+  parameters — and the test suite moved to async disposal and cancellation.
 - CI: the native runner matrix now covers every shipped RID — `windows-11-arm`
   (win-arm64) and `macos-15-intel` (osx-x64) join the test suite and the post-publish
   package smoke, so all six runtime folders are exercised on their own platform

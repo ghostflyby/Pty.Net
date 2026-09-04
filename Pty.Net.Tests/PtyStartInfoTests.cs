@@ -69,7 +69,7 @@ public class PtyStartInfoTests
 
         var info = new PtyStartInfo(psi);
 
-        Assert.Equal(System.Environment.CurrentDirectory, info.WorkingDirectory);
+        Assert.Equal(Environment.CurrentDirectory, info.WorkingDirectory);
     }
 
     [Fact]
