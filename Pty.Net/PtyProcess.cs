@@ -88,15 +88,16 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
 
     /// <summary>
     /// Exit code of the child after a normal exit; null while it is running or when a
-    /// Unix signal terminated it. Windows exit codes preserve all 32 bits.
+    /// Unix signal terminated it.
+    /// <para>Windows exit codes preserve all 32 bits.</para>
     /// </summary>
     public int? ExitCode => Volatile.Read(ref terminationStatus)?.ExitCode;
 
     /// <summary>
     /// Native Unix signal number that terminated the child; null while it is running,
-    /// after a normal Unix exit, and on Windows. This is the positive value reported by
-    /// waitpid(2)'s WTERMSIG result; signal numbers are platform-specific. Core-dump
-    /// status is not exposed.
+    /// after a normal Unix exit, and on Windows.
+    /// <para>This is the positive value reported by waitpid(2)'s WTERMSIG result; signal
+    /// numbers are platform-specific. Core-dump status is not exposed.</para>
     /// </summary>
     public int? TerminationSignal => Volatile.Read(ref terminationStatus)?.Signal;
 
@@ -128,6 +129,10 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// text facades.
     /// <para>Reading here consumes bytes that <see cref="Output"/> would
     /// otherwise decode; use only one of them at a time.</para>
+    /// <para>Platform meaning differs: on Unix these are the pty's bytes as produced
+    /// by the child (any encoding); on Windows ConPTY transports UTF-8 only, so these
+    /// are always UTF-8 — <see cref="Input"/>/<see cref="Output"/> bridge between
+    /// this transport and the configured <see cref="PtyStartInfo"/> encodings.</para>
     /// </summary>
     public PtyStream BaseStream { get; }
 
@@ -374,7 +379,8 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// <summary>
     /// How long <see cref="Dispose"/>/<see cref="DisposeAsync"/> wait for a still-alive
     /// child to exit cleanly after the terminal-close signal (see <see cref="RequestClose"/>)
-    /// before force killing it with <see cref="Kill()"/>. Defaults to 30 seconds.
+    /// before force killing it with <see cref="Kill()"/>.
+    /// <para>Defaults to 30 seconds.</para>
     /// </summary>
     public TimeSpan GracefulExitTimeout { get; set; } = TimeSpan.FromSeconds(30);
 

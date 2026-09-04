@@ -4,12 +4,14 @@ using Microsoft.Win32.SafeHandles;
 namespace Ghostflyby.Pty;
 
 /// <summary>
+/// <para>
 /// P/Invoke declarations for the libc functions used to set up a pseudo-terminal
 /// and launch the child. The pty is created with <c>posix_openpt(3)</c>; the child
 /// comes from fork(2) plus an in-place exec (macOS: posix_spawn with the Apple
 /// SETEXEC attribute applied kernel-side — see PtyProcess.Start.Unix.cs), so the
 /// post-fork libc calls run through function pointers rather than the P/Invokes here.
-///
+/// </para>
+/// <para>
 /// Unix-only: this file is compiled only by the non-Windows target (see csproj), so
 /// Windows-specific constants and branches are absent. pty setup returns raw fds
 /// (posix_openpt/grantpt/unlockpt/ptsname are non-variadic, so they work on Apple arm64
@@ -17,9 +19,11 @@ namespace Ghostflyby.Pty;
 /// in a <see cref="SafeFileHandle"/> for <see cref="PtyStream"/>. Byte transfer goes
 /// through raw read(2)/write(2) on the non-blocking master fd, driven by
 /// <see cref="PtyStream"/> / <see cref="PtyIoEngine"/> (see <see cref="PtyProcess"/>).
-///
+/// </para>
+/// <para>
 /// Constants are split per platform: macOS (OSX) and Linux glibc differ in the
 /// O_NOCTTY/O_CLOEXEC values and the fd-closing mechanism.
+/// </para>
 /// </summary>
 // ReSharper disable IdentifierTypo
 // ReSharper disable CommentTypo

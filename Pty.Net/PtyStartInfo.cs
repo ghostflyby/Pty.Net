@@ -36,12 +36,32 @@ public sealed class PtyStartInfo : IEquatable<PtyStartInfo>
     /// <summary>
     /// Encoding used to encode text written to <see cref="PtyProcess.Input"/>.
     /// <para>Defaults to UTF-8.</para>
+    /// <para>
+    /// Platform semantics differ, because the two pty implementations differ:
+    /// on Unix the pty is a transparent byte pipe, so this describes the bytes the
+    /// child actually expects (a fact to match against the child's locale); on
+    /// Windows ConPTY transports UTF-8 only, so this is a preference for the
+    /// <see cref="PtyProcess.Input"/>/<see cref="PtyProcess.Output"/> API boundary,
+    /// bridged to the transport automatically (<see cref="PtyProcess.BaseStream"/>
+    /// stays raw UTF-8 there). Either way, text written through
+    /// <see cref="PtyProcess.Input"/> is encoded with this encoding.
+    /// </para>
     /// </summary>
     public Encoding InputEncoding { get; init; } = Encoding.UTF8;
 
     /// <summary>
     /// Encoding used to decode text read from <see cref="PtyProcess.Output"/>.
     /// <para>Defaults to UTF-8.</para>
+    /// <para>
+    /// Platform semantics differ, because the two pty implementations differ:
+    /// on Unix the pty is a transparent byte pipe, so this describes the bytes the
+    /// child actually emits (a fact to match against the child's locale — a mismatch
+    /// yields mojibake); on Windows ConPTY transports UTF-8 only, so this is a
+    /// preference for the <see cref="PtyProcess.Output"/> API boundary, bridged to
+    /// the transport automatically (<see cref="PtyProcess.BaseStream"/> stays raw
+    /// UTF-8 there). Either way, text read through <see cref="PtyProcess.Output"/>
+    /// is decoded with this encoding.
+    /// </para>
     /// </summary>
     public Encoding OutputEncoding { get; init; } = Encoding.UTF8;
 
@@ -53,10 +73,11 @@ public sealed class PtyStartInfo : IEquatable<PtyStartInfo>
 
     /// <summary>
     /// Environment variables for the child. Entries here override the inherited parent
-    /// environment at launch; a null value removes the inherited variable. Defaults to
-    /// empty, so the child inherits the parent's environment unchanged unless overridden.
-    /// Read-only to keep launches reproducible: to add a variable, assign a new
-    /// dictionary, e.g. <c>info.Environment = ImmutableDictionary.Create&lt;string, string?&gt;().Add("K", "v")</c>.
+    /// environment at launch; a null value removes the inherited variable.
+    /// <para>Defaults to empty, so the child inherits the parent's environment unchanged
+    /// unless overridden.</para>
+    /// <para>Read-only to keep launches reproducible: to add a variable, assign a new
+    /// dictionary, e.g. <c>info.Environment = ImmutableDictionary.Create&lt;string, string?&gt;().Add("K", "v")</c>.</para>
     /// </summary>
     public IReadOnlyDictionary<string, string?> Environment { get; init; } = ImmutableDictionary<string, string?>.Empty;
 
