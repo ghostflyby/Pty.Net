@@ -10,6 +10,7 @@ using System.Runtime.CompilerServices;
 namespace Ghostflyby.Pty;
 
 /// <summary>
+/// <para>
 /// Unix half of <see cref="PtyReaper"/>: one event-driven reaper thread waits on the
 /// kernel's process-exit notification instead of polling waitpid(WNOHANG) every 10ms.
 /// Linux watches a pidfd per process via epoll (the fd turns readable on exit); macOS
@@ -18,7 +19,8 @@ namespace Ghostflyby.Pty;
 /// it — exit latency drops from a poll tick to microseconds, and the per-process poll
 /// syscall cost vanishes entirely. Unix-only: compiled only by the non-Windows target
 /// (see csproj).
-///
+/// </para>
+/// <para>
 /// Registration races are closed by construction: <c>WatchProcess</c> records the
 /// process under a lock and queues it; the loop drains that queue before waiting, reaps
 /// children that already exited, and only then registers the survivors for an exit event.
@@ -26,12 +28,14 @@ namespace Ghostflyby.Pty;
 /// waitpid, and one that exits right after registration still fires the event — no
 /// process can be missed. The wake channel (eventfd on Linux, EVFILT_USER on macOS)
 /// interrupts the wait when a new process is queued.
-///
+/// </para>
+/// <para>
 /// A registration that fails while the child is still alive (transient fd pressure, an
 /// old kernel without pidfd) moves the process to a retry list that is scanned in full
 /// on a short bounded interval. Every retry-waiting process is re-tried each interval —
 /// never a serial queue where one failing registration would stall the others — so a
 /// persistent failure degrades the whole set to a slow scan instead of losing children.
+/// </para>
 /// </summary>
 internal static partial class PtyReaper
 {

@@ -7,13 +7,15 @@ using Microsoft.Win32.SafeHandles;
 namespace Ghostflyby.Pty;
 
 /// <summary>
+/// <para>
 /// Process-wide helper that services <see cref="PtyStream"/> async reads/writes on a
 /// single background thread instead of the thread pool. On Unix, .NET's thread pool
 /// executes async file I/O as blocking syscalls on pool threads and cancellation cannot
 /// free a thread stuck in a blocking read(2)/write(2) on a character device — enough
 /// blocked PTYs starve the pool. This engine drives the master fds with poll(2), so a
 /// pending operation holds no thread at all and cancels in O(1).
-///
+/// </para>
+/// <para>
 /// Model: one lazily-started background thread runs a poll(2) loop over every active
 /// fd plus a self-pipe. A registration/unregistration is just a control message pushed
 /// through a channel followed by one byte on the pipe (the pipe interrupts poll; the
@@ -21,26 +23,31 @@ namespace Ghostflyby.Pty;
 /// so cancellation (which must race a completed read) is serialized: if the engine
 /// already dispatched the I/O, the read result wins; otherwise the registration is
 /// removed and the task completes canceled. Either way the outcome is deterministic.
-///
+/// </para>
+/// <para>
 /// The master fds are non-blocking (opened via <c>posix_openpt(O_NONBLOCK)</c>), so a
 /// syscall never blocks: a read returns EAGAIN when no data is available, and we simply
 /// stay registered; a write returns EAGAIN when the pty buffer is full, and we resume on
 /// the next POLLOUT. The engine poll uses a finite timeout as a safety net so a lost
 /// wakeup can never deadlock the loop.
-///
+/// </para>
+/// <para>
 /// Operations are tracked per fd <em>and direction</em>: a pending read and a pending
 /// write on the same stream are polled in parallel (POLLIN vs POLLOUT), while overlapping
 /// calls of the same direction serialize on a wait queue rather than corrupting each other.
-///
+/// </para>
+/// <para>
 /// The engine keeps each registered <see cref="SafeFileHandle"/> alive with
 /// DangerousAddRef for the whole time its fd is polled, and holds the caller's buffer
 /// pinned. Both are released on completion or cancellation, before the task completes.
 /// SafeHandle.Dispose() also defers the actual close until these refs are released, so
 /// PtyStream.Dispose can never close an fd that is still in the poll set (which would
 /// let a reused fd number be polled for the wrong file).
-///
+/// </para>
+/// <para>
 /// Unix-only: compiled only by the non-Windows target (see csproj); Windows uses BCL
 /// pipe I/O through IOCP instead.
+/// </para>
 /// </summary>
 internal static class PtyIoEngine
 {
