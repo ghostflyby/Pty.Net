@@ -226,7 +226,7 @@ public sealed class PtyStartInfo : IEquatable<PtyStartInfo>
 
     /// <summary>Content-based value equality (collections entry-by-entry; see the type documentation).</summary>
     public static bool operator ==(PtyStartInfo? left, PtyStartInfo? right) =>
-        left is null ? right is null : left.Equals(right);
+        left?.Equals(right) ?? right is null;
 
     /// <summary>Content-based value inequality (collections entry-by-entry; see the type documentation).</summary>
     public static bool operator !=(PtyStartInfo? left, PtyStartInfo? right) =>

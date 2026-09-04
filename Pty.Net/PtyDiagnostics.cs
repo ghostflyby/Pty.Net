@@ -9,19 +9,16 @@ namespace Ghostflyby.Pty;
 /// </summary>
 internal static class PtyDiagnostics
 {
-    private static readonly bool EnabledValue =
-        string.Equals(Environment.GetEnvironmentVariable("PTY_REAPER_DIAG"), "1", StringComparison.Ordinal);
-
     /// <summary>
     /// Check this before building a message at hot call sites (the reaper's wait loop
     /// returns up to ten times per second per watched child) — the interpolated string
     /// would otherwise allocate on every iteration even with diagnostics disabled.
     /// </summary>
-    internal static bool Enabled => EnabledValue;
+    internal static bool Enabled { get; } = string.Equals(Environment.GetEnvironmentVariable("PTY_REAPER_DIAG"), "1", StringComparison.Ordinal);
 
     internal static void Log(string message)
     {
-        if (!EnabledValue)
+        if (!Enabled)
             return;
 
         try

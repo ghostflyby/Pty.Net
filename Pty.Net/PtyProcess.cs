@@ -521,7 +521,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
             PtyDiagnostics.Log($"dispose-async begin pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"} signal={TerminationSignal?.ToString() ?? "null"}");
 
             await TerminateGracefullyAsync().ConfigureAwait(false);
-            BaseStream.Dispose();
+            await BaseStream.DisposeAsync();
 
             PtyDiagnostics.Log($"dispose-async waiting exit-signal pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"} signal={TerminationSignal?.ToString() ?? "null"}");
             await ExitSignal.ConfigureAwait(false);
@@ -714,7 +714,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     {
         var env = new Dictionary<string, string?>(EnvironmentKeyComparer);
         if (inheritParentEnvironment)
-            foreach (System.Collections.DictionaryEntry e in System.Environment.GetEnvironmentVariables())
+            foreach (System.Collections.DictionaryEntry e in Environment.GetEnvironmentVariables())
                 env[(string)e.Key] = (string?)e.Value;
 
         if (overrides is not null)
