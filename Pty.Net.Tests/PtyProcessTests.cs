@@ -107,7 +107,7 @@ public class PtyProcessTests : IDisposable
 #if WINDOWS
             // MSYS bash prints POSIX-style paths (/c/...) for pwd; cygpath -w converts
             // back to the Windows path the test compares against.
-            bash.Input.WriteLine($"cygpath -w \"$(pwd)\"; echo {Done}");
+            bashInDir.Input.WriteLine($"cygpath -w \"$(pwd)\"; echo {Done}");
 #else
             bashInDir.Input.WriteLine($"pwd; echo {Done}");
 #endif
