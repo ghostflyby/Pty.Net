@@ -8,10 +8,19 @@ add a section here as part of the release.
 
 ## Unreleased
 
+## 0.5.1 — 2026-09-05
+
+CI, security-gate and documentation hardening ahead of 1.0.0; runtime behavior
+is unchanged.
+
 - Cleanup: `DisposeAsync` now disposes the underlying pty stream asynchronously
   (`DisposeAsync`) instead of calling the blocking `Dispose`. The rest is hygiene
   surfaced by ReSharper — dead locals/exports, redundant `unsafe`, unused
   parameters — and the test suite moved to async disposal and cancellation.
+- Performance (Windows): a direction whose configured encoding is UTF-8 now uses
+  the raw `BaseStream` instead of a UTF-8→UTF-8 transcode bridge, so the default
+  configuration no longer pays a decode/re-encode round trip per I/O.
+  Non-UTF-8 encodings bridge exactly as before.
 - CI: the native runner matrix now covers every shipped RID — `windows-11-arm`
   (win-arm64) and `macos-15-intel` (osx-x64) join the test suite and the post-publish
   package smoke, so all six runtime folders are exercised on their own platform
@@ -26,6 +35,11 @@ add a section here as part of the release.
   and `ObjectDisposedException`-after-dispose semantics, shared `Resize` argument
   validation (previously only exercised on Windows), and the blocking
   `WaitForExit(timeout)` returning `false` while the child runs.
+- Docs: the shipped XML documentation now states the platform encoding semantics —
+  `Input`/`OutputEncoding` describe a wire fact on Unix (match the child's locale)
+  and an API-boundary preference on Windows (bridged to ConPTY's mandatory UTF-8);
+  `BaseStream` is raw bytes on Unix and raw UTF-8 on Windows. Multi-paragraph doc
+  comments use explicit `<para>` segmentation so renderers stop collapsing them.
 
 ## 0.5.0 — 2026-09-03
 
