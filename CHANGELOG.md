@@ -8,7 +8,12 @@ add a section here as part of the release.
 
 ## Unreleased
 
-## 0.5.1 — 2026-09-05
+## 1.0.0 — 2026-09-05
+
+First stable release of Ghostflyby.Pty for .NET 10. The API, platform matrix,
+package layout, symbols, source links, security scanning, and release pipeline
+have been validated through the 0.5.x pre-1.0 releases.
+
 
 CI, security-gate and documentation hardening ahead of 1.0.0; runtime behavior
 is unchanged.
