@@ -1,0 +1,72 @@
+# Stress runs. The normal CI matrix gates merges; this workflow deliberately
+# oversubscribes the runner (see xunit.runner.stress.json: unlimited threads,
+# test-case-level parallelism) and repeats the whole suite, because contention
+# is the point — concurrent PTY sessions, reaper races, and thread-pool
+# pressure only surface under load. Red here means "investigate", not "block
+# a merge".
+name: stress
+
+on:
+  schedule:
+    # Nightly, offset from CodeQL's 23:04 UTC slot so the two never stack.
+    - cron: '41 2 * * *'
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: Full test-suite runs per OS
+        default: '5'
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  group: stress-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  stress:
+    name: Stress (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    # The labeled-PR trigger exists so a stress profile can be exercised on a
+    # branch before it lands: label the PR 'stress' and this job runs against
+    # the PR merge commit. For schedule/dispatch the label payload is absent,
+    # so the first half of the condition lets them through unconditionally.
+    if: github.event_name != 'pull_request' || github.event.label.name == 'stress'
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu + windows cover the poll/epoll and ConPTY halves at 1x/2x
+        # billing. macOS runners bill at 10x on private repos, so kqueue stress
+        # is currently covered only by local runs; add macos-latest here only if
+        # a kqueue-specific signal shows up that the other halves cannot catch.
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore Pty.Net.slnx
+
+      - name: Build with the stress profile
+        # -p:StressMode swaps xunit.runner.stress.json in as xunit.runner.json
+        # (Pty.Net.Tests.csproj); without it the suite runs with framework defaults.
+        run: dotnet build Pty.Net.slnx -c Release -p:StressMode=true --no-restore --nologo
+
+      - name: Stress test
+        # One full suite per iteration; each dotnet test is a fresh process, which
+        # is itself part of the stress (reaper init, pidfd/kqueue registration,
+        # teardown across process lifetimes). shell:bash runs with -eo pipefail, so
+        # the first red iteration fails the job while earlier iterations stay in
+        # the log for comparison.
+        shell: bash
+        run: |
+          iterations=${{ inputs.iterations || 5 }}
+          for i in $(seq 1 "$iterations"); do
+            echo "::group::stress: iteration $i of $iterations"
+            dotnet test --solution Pty.Net.slnx -c Release --no-build --no-restore
+            echo "::endgroup::"
+          done

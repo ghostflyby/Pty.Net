@@ -8,6 +8,13 @@ add a section here as part of the release.
 
 ## Unreleased
 
+- CI: a `stress` workflow (nightly schedule, manual dispatch, and opt-in per-PR
+  via the `stress` label) repeats the full suite on Ubuntu and Windows with an
+  aggressive xunit profile — `-p:StressMode=true` swaps `xunit.runner.stress.json`
+  in as `xunit.runner.json`, giving unlimited runner threads and test-case-level
+  parallelism. Deliberate oversubscription maximizes concurrent PTY sessions to
+  surface contention races; red there is an investigation signal, not a merge gate.
+
 ## 1.0.0 — 2026-09-05
 
 First stable release of Ghostflyby.Pty for .NET 10. The API, platform matrix,

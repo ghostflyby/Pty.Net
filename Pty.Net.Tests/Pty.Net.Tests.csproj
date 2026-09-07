@@ -29,6 +29,28 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- xunit.v3 reads xunit.runner.json next to the compiled test assembly.
+         Stress builds (-p:StressMode=true) copy the aggressive-parallelism
+         profile in under that name (TargetPath does the rename — the file
+         never exists in the output under its source name); normal builds
+         copy nothing, so the framework defaults keep applying to CI and
+         local development. -->
+    <None Condition="'$(StressMode)' == 'true'"
+          Include="xunit.runner.stress.json"
+          CopyToOutputDirectory="PreserveNewest">
+      <TargetPath>xunit.runner.json</TargetPath>
+    </None>
+  </ItemGroup>
+
+  <!-- A stress build leaves xunit.runner.json in the output, and incremental
+       builds don't clean it — so a later normal build in the same bin would
+       silently run the stress profile. Remove it whenever StressMode is off. -->
+  <Target Name="RemoveStressRunnerConfig" AfterTargets="Build"
+          Condition="'$(StressMode)' != 'true'">
+    <Delete Files="$(OutputPath)xunit.runner.json" />
+  </Target>
+
+  <ItemGroup>
     <Using Include="Xunit" />
   </ItemGroup>
 

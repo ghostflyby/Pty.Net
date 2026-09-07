@@ -1,0 +1,21 @@
+{
+  // Stress profile: copied in as xunit.runner.json by -p:StressMode=true
+  // (Pty.Net.Tests.csproj), so it never affects the normal CI/PR runs, which
+  // keep the framework defaults (collections in parallel, CPU-count thread cap).
+  //
+  // The profile deliberately oversubscribes the runner to maximize concurrent
+  // PTY sessions: unlimited worker threads (the default is the CPU count) and
+  // v3 4.0's test-case-level parallelism, so even tests inside the same
+  // collection run concurrently. Contention — reaper races, thread-pool
+  // pressure, spawn churn — is the point; failures here are signals to
+  // investigate, not merge gates.
+  //
+  // longRunningTestSeconds needs diagnosticMessages for its warnings to be
+  // visible; 30s sits above what individual tests take even under
+  // oversubscription, so only genuinely stuck tests surface.
+  "$schema": "https://xunit.net/schema/current/xunit.runner.schema.json",
+  "parallelMode": "all",
+  "maxParallelThreads": -1,
+  "diagnosticMessages": true,
+  "longRunningTestSeconds": 30
+}
