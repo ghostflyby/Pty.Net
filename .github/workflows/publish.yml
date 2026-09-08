@@ -404,7 +404,7 @@ jobs:
       # workflow from this commit. Runs before the push so only artifacts that
       # passed every gate above get attested.
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             Ghostflyby.Pty.${{ env.VERSION }}.nupkg
