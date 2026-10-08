@@ -92,9 +92,7 @@ public sealed class PtyStartInfo : IEquatable<PtyStartInfo>
     public bool InheritParentEnvironment { get; init; } = true;
 
     /// <summary>Creates an empty launch description; set <see cref="FileName"/> before starting.</summary>
-    public PtyStartInfo()
-    {
-    }
+    public PtyStartInfo() { }
 
     /// <summary>Creates a launch description for <paramref name="fileName"/>.</summary>
     /// <param name="fileName">The executable to run (see <see cref="FileName"/>).</param>

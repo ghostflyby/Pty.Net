@@ -68,7 +68,7 @@ public partial class FdInheritanceTests
         [Flags]
         internal enum UnixPermissions
         {
-            UserRead = 0x100, // 0400
+            UserRead = 0x100,  // 0400
             UserWrite = 0x080, // 0200
             GroupRead = 0x020, // 0040
             OtherRead = 0x004, // 0004

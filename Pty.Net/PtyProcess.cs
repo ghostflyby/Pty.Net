@@ -614,9 +614,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
             {
                 await ExitSignal.WaitAsync(remaining).ConfigureAwait(false);
             }
-            catch (TimeoutException)
-            {
-            }
+            catch (TimeoutException) { }
         }
 
         PtyDiagnostics.Log($"dispose-async graceful timeout pid={Pid} exited={HasExited}");

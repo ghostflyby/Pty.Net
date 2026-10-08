@@ -10,8 +10,7 @@ License: [Apache-2.0](LICENSE)
 
 - **Real pseudo-terminal sessions** — full-screen programs, job control, and terminal escape sequences behave as they do
   in a real terminal.
-- **Cross-platform** — ConPTY on Windows; `posix_openpt` + fork/exec on macOS and Linux. Architecture-neutral managed IL
-  (one package covers x64 and arm64).
+- **Cross-platform** — ConPTY on Windows; `posix_openpt` + fork/exec on macOS and Linux. Architecture-neutral managed IL (one package covers x64 and arm64).
 - **Text and raw I/O** — `Input`/`Output` text facades over the raw `BaseStream`.
 - **Deterministic termination** — a configurable graceful-close window, then a force kill; `Dispose` blocks until the
   cleanup has actually completed.

@@ -723,7 +723,7 @@ public sealed partial class PtyProcess
                 var err = Marshal.GetLastPInvokeError();
                 if (err is NativeMethods.Eintr or NativeMethods.Eagain)
                     continue; // transient — go back to poll
-                return -1; // read error: treat as launched (defensive)
+                return -1;    // read error: treat as launched (defensive)
             }
         }
 
@@ -989,25 +989,17 @@ public sealed partial class PtyProcess
     /// </summary>
     private partial void DrainOutput()
     {
-        while (BaseStream.DrainAvailableIntoReplay())
-        {
-        }
+        while (BaseStream.DrainAvailableIntoReplay()) { }
     }
 
     /// <summary>Unix has no teardown work that must run off the shared reaper thread.</summary>
-    private partial void OnReapedPlatform()
-    {
-    }
+    private partial void OnReapedPlatform() { }
 
     /// <summary>Unix: the wait drains through the stream directly; no buffer bound to lift.</summary>
-    private partial void BeginExitWait()
-    {
-    }
+    private partial void BeginExitWait() { }
 
     /// <summary>Balances <see cref="BeginExitWait"/>.</summary>
-    private partial void EndExitWait()
-    {
-    }
+    private partial void EndExitWait() { }
 
     /// <summary>
     /// Single non-blocking reap attempt for the child: waitpid(WNOHANG). Returns true

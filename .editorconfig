@@ -1,7 +1,3 @@
-# EditorConfig is awesome: https://EditorConfig.org
-
-# Added on top of the Rider export: the root marker.
-# top-most EditorConfig file
 root = true
 
 [*]
@@ -9,11 +5,9 @@ charset = utf-8
 end_of_line = lf
 insert_final_newline = true
 indent_style = space
-# The IDE's wrap margin. Roslyn's formatter never re-wraps, so a line that fits
-# stays one line for both tools; past the margin the IDE splits it and the two
-# disagree about where the continuation lands. Sized so the object-initializer
-# expressions in PtyIoEngine/PtyStartInfoTests stay whole.
-max_line_length = 140
+# No wrap limit: the formatters never re-wrap or split existing lines, so a
+# line breaks only where its author breaks it.
+max_line_length = 999999
 
 # Microsoft .NET properties
 csharp_new_line_before_members_in_object_initializers = false
@@ -99,12 +93,16 @@ csharp_style_namespace_declarations = file_scoped:suggestion
 # ReSharper properties
 resharper_apply_auto_detected_rules = false
 resharper_autodetect_indent_settings = true
+resharper_csharp_empty_block_style = together_same_line
+resharper_csharp_int_align_comments = true
 resharper_formatter_off_tag = @formatter:off
 resharper_formatter_on_tag = @formatter:on
 resharper_formatter_tags_enabled = true
+resharper_indent_nested_foreach_stmt = true
 resharper_use_indent_from_vs = false
 
 # ReSharper inspection severities
+resharper_arrange_namespace_body_highlighting = hint
 resharper_arrange_redundant_parentheses_highlighting = hint
 resharper_arrange_this_qualifier_highlighting = hint
 resharper_arrange_type_member_modifiers_highlighting = hint
