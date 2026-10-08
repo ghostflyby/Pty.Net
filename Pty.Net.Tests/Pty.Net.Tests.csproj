@@ -1,31 +1,31 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
-    <PropertyGroup>
-        <TargetFramework>net10.0</TargetFramework>
-        <RootNamespace>Ghostflyby.Pty.Tests</RootNamespace>
-        <ImplicitUsings>enable</ImplicitUsings>
-        <Nullable>enable</Nullable>
-        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-        <IsPackable>false</IsPackable>
-        <!-- xunit.v3 test projects are executables: the framework's source generator
-             emits the entry point that hosts its Microsoft.Testing.Platform runner,
-             which the .NET 10 SDK's dotnet test drives natively (the VSTest stack —
-             Microsoft.NET.Test.Sdk, xunit.runner.visualstudio, coverlet.collector —
-             was removed with the v3 migration; the SDK refuses a project that mixes
-             VSTest with MTP, and nothing in CI consumed the collector). -->
-        <OutputType>Exe</OutputType>
-        <!-- Every warning is a build error. Test classes have no doc comments and the
-             project does not generate an XML doc file, so CS1591 never activates here. -->
-        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Ghostflyby.Pty.Tests</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsPackable>false</IsPackable>
+    <!-- xunit.v3 test projects are executables: the framework's source generator
+         emits the entry point that hosts its Microsoft.Testing.Platform runner,
+         which the .NET 10 SDK's dotnet test drives natively (the VSTest stack —
+         Microsoft.NET.Test.Sdk, xunit.runner.visualstudio, coverlet.collector —
+         was removed with the v3 migration; the SDK refuses a project that mixes
+         VSTest with MTP, and nothing in CI consumed the collector). -->
+    <OutputType>Exe</OutputType>
+    <!-- Every warning is a build error. Test classes have no doc comments and the
+         project does not generate an XML doc file, so CS1591 never activates here. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
 
-        <!-- Platform symbol used by #if (e.g. platform-specific libc constants in tests). -->
-        <DefineConstants Condition="$([MSBuild]::IsOSPlatform('OSX'))">$(DefineConstants);OSX</DefineConstants>
-        <DefineConstants Condition="$([MSBuild]::IsOSPlatform('Linux'))">$(DefineConstants);LINUX</DefineConstants>
-        <DefineConstants Condition="$([MSBuild]::IsOSPlatform('Windows'))">$(DefineConstants);WINDOWS</DefineConstants>
-    </PropertyGroup>
+    <!-- Platform symbol used by #if (e.g. platform-specific libc constants in tests). -->
+    <DefineConstants Condition="$([MSBuild]::IsOSPlatform('OSX'))">$(DefineConstants);OSX</DefineConstants>
+    <DefineConstants Condition="$([MSBuild]::IsOSPlatform('Linux'))">$(DefineConstants);LINUX</DefineConstants>
+    <DefineConstants Condition="$([MSBuild]::IsOSPlatform('Windows'))">$(DefineConstants);WINDOWS</DefineConstants>
+  </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="xunit.v3" Version="4.0.1" />
+    <PackageReference Include="xunit.v3" Version="4.0.1"/>
   </ItemGroup>
 
   <ItemGroup>
@@ -47,15 +47,15 @@
        silently run the stress profile. Remove it whenever StressMode is off. -->
   <Target Name="RemoveStressRunnerConfig" AfterTargets="Build"
           Condition="'$(StressMode)' != 'true'">
-    <Delete Files="$(OutputPath)xunit.runner.json" />
+    <Delete Files="$(OutputPath)xunit.runner.json"/>
   </Target>
 
   <ItemGroup>
-    <Using Include="Xunit" />
+    <Using Include="Xunit"/>
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Pty.Net\Pty.Net.csproj" />
+    <ProjectReference Include="..\Pty.Net\Pty.Net.csproj"/>
   </ItemGroup>
 
 </Project>

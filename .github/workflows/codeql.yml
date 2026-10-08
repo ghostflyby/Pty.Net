@@ -7,7 +7,7 @@ name: CodeQL
 # free on public repositories.
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   pull_request:
   schedule:
     # Weekly sweep even without code motion: newly published queries and
@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ ubuntu-latest, windows-latest ]
     steps:
       - uses: actions/checkout@v7
 

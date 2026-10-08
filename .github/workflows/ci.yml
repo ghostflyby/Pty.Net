@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   pull_request:
   workflow_dispatch:
 
@@ -35,7 +35,7 @@ jobs:
         # - macos-latest / macos-15-intel: the kqueue + fork/exec paths on arm64 and
         #   x64. macos-15-intel is GitHub's final Intel image (retires August 2027);
         #   its /bin/bash is 3.2, which the suite's invocation order already accommodates.
-        os: [windows-latest, windows-11-arm, ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel]
+        os: [ windows-latest, windows-11-arm, ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel ]
     steps:
       - uses: actions/checkout@v7
 
@@ -59,8 +59,14 @@ jobs:
         shell: pwsh
         run: |
           $text = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes('Pty.Net/bin/Release/net10.0/Ghostflyby.Pty.dll'))
-          if (-not $text.Contains('WindowsPty')) { throw "Windows build is missing the ConPTY path" }
-          if ($text.Contains('PtyIoEngine'))     { throw "Windows build contains the Unix I/O engine" }
+          if (-not $text.Contains('WindowsPty'))
+          {
+            throw "Windows build is missing the ConPTY path"
+          }
+          if ( $text.Contains('PtyIoEngine'))
+          {
+            throw "Windows build contains the Unix I/O engine"
+          }
 
       - name: Verify platform split in the built DLL (Unix)
         if: runner.os != 'Windows'
