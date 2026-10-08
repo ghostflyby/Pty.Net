@@ -9,6 +9,11 @@ charset = utf-8
 end_of_line = lf
 insert_final_newline = true
 indent_style = space
+# The IDE's wrap margin. Roslyn's formatter never re-wraps, so a line that fits
+# stays one line for both tools; past the margin the IDE splits it and the two
+# disagree about where the continuation lands. Sized so the object-initializer
+# expressions in PtyIoEngine/PtyStartInfoTests stay whole.
+max_line_length = 140
 
 # Microsoft .NET properties
 csharp_new_line_before_members_in_object_initializers = false
@@ -133,3 +138,11 @@ indent_size = 2
 
 [{*.yaml,*.yml}]
 indent_size = 2
+
+[*.cs]
+indent_size = 4
+# A switch section whose body is a block keeps the brace aligned with `case`.
+# Rider formats it that way already; Roslyn's default indents the brace and its
+# contents one level deeper, so without this the two formatters fight over
+# every such block.
+csharp_indent_case_contents_when_block = false
