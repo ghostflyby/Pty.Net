@@ -108,12 +108,12 @@ public sealed partial class PtyStream
                         case NativeMethods.Eintr:
                             continue;
                         case NativeMethods.Eagain:
-                        {
-                            // Spurious poll wakeup: nothing actually available. A hangup
-                            // reported by the poll above still ends here — read(2) on the
-                            // master returns 0 (EOF) once the slave is gone.
-                            return 0;
-                        }
+                            {
+                                // Spurious poll wakeup: nothing actually available. A hangup
+                                // reported by the poll above still ends here — read(2) on the
+                                // master returns 0 (EOF) once the slave is gone.
+                                return 0;
+                            }
                         case NativeMethods.Eio:
                             return 0;
                         default:

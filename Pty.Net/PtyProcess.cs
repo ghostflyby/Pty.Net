@@ -7,8 +7,8 @@ namespace Ghostflyby.Pty;
 /// <summary>
 /// A child process attached to a pseudo-terminal (PTY).
 /// <para>
-    /// Use it to drive an interactive shell: write commands to <see cref="Input"/>,
-    /// read back the terminal output from <see cref="Output"/>. The child's stdout
+/// Use it to drive an interactive shell: write commands to <see cref="Input"/>,
+/// read back the terminal output from <see cref="Output"/>. The child's stdout
 /// and stderr are merged into the one terminal stream; there is no separate stderr.
 /// </para>
 /// <para>

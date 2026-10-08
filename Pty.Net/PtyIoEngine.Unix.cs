@@ -189,7 +189,7 @@ internal static class PtyIoEngine
         // control messages and is effectively unbounded in practice.
         private readonly Channel<Control> inbox = Channel.CreateUnbounded<Control>(
             new UnboundedChannelOptions
-                { SingleReader = true, SingleWriter = false, AllowSynchronousContinuations = false });
+            { SingleReader = true, SingleWriter = false, AllowSynchronousContinuations = false });
 
         // Self-pipe: [0] read end (engine only), [1] write end (any thread). Both ends
         // stay blocking; the drain uses poll-before-read and Post uses poll-before-write,
@@ -522,15 +522,15 @@ internal static class PtyIoEngine
                     case Eintr:
                         continue;
                     case Eagain:
-                    {
-                        // Spurious wakeup: the data was consumed before this read ran (e.g.
-                        // by a concurrent read on the same stream), or the readiness state
-                        // changed. Stay registered for the next POLLIN — not an error. If the
-                        // fd also reports hangup/error, the slave is gone: that is EOF.
-                        if ((revents & (NativeMethods.PollEvents.Pollhup | NativeMethods.PollEvents.Pollerr)) != 0)
-                            Complete(op, OpStatus.Succeeded, 0, null);
-                        return;
-                    }
+                        {
+                            // Spurious wakeup: the data was consumed before this read ran (e.g.
+                            // by a concurrent read on the same stream), or the readiness state
+                            // changed. Stay registered for the next POLLIN — not an error. If the
+                            // fd also reports hangup/error, the slave is gone: that is EOF.
+                            if ((revents & (NativeMethods.PollEvents.Pollhup | NativeMethods.PollEvents.Pollerr)) != 0)
+                                Complete(op, OpStatus.Succeeded, 0, null);
+                            return;
+                        }
                     case Eio:
                         Complete(op, OpStatus.Succeeded, 0, null); // slave closed: EOF on both platforms
                         return;
@@ -564,15 +564,15 @@ internal static class PtyIoEngine
                     case Eintr:
                         continue;
                     case Eagain:
-                    {
-                        // The pty buffer is full for now; resume on the next POLLOUT. If the
-                        // slave is gone (HUP/ERR), the remaining bytes can never be written.
-                        if ((revents & (NativeMethods.PollEvents.Pollhup | NativeMethods.PollEvents.Pollerr |
-                                        NativeMethods.PollEvents.Pollnval)) != 0)
-                            Complete(op, OpStatus.Failed, 0,
-                                new IOException("pty write failed: the child closed the terminal"));
-                        return;
-                    }
+                        {
+                            // The pty buffer is full for now; resume on the next POLLOUT. If the
+                            // slave is gone (HUP/ERR), the remaining bytes can never be written.
+                            if ((revents & (NativeMethods.PollEvents.Pollhup | NativeMethods.PollEvents.Pollerr |
+                                            NativeMethods.PollEvents.Pollnval)) != 0)
+                                Complete(op, OpStatus.Failed, 0,
+                                    new IOException("pty write failed: the child closed the terminal"));
+                            return;
+                        }
                     case Eio:
                         Complete(op, OpStatus.Failed, 0,
                             new IOException("pty write failed: the child closed the terminal (EIO)"));
