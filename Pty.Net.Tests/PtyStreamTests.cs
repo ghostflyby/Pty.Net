@@ -48,7 +48,8 @@ public class PtyStreamTests : IDisposable
         await bash.Input.WriteLineAsync($"printf 'short'; echo {Done}");
 
         var buf = new byte[1024];
-        var n = await Stream.ReadAsync(buf, TestContext.Current.CancellationToken).AsTask().WaitAsync(Timeout, TestContext.Current.CancellationToken);
+        var n = await Stream.ReadAsync(buf, TestContext.Current.CancellationToken).AsTask()
+            .WaitAsync(Timeout, TestContext.Current.CancellationToken);
 
         // The payload is only ~30 bytes, but the Git Bash prompt and terminal control
         // sequences add a variable prefix, so the exact count is not fixed (Windows CI
@@ -76,13 +77,15 @@ public class PtyStreamTests : IDisposable
         var buf = new byte[256];
         var seen = new StringBuilder();
 
-        var n = await Stream.ReadAsync(buf, cts.Token).AsTask().WaitAsync(Timeout, TestContext.Current.CancellationToken);
+        var n = await Stream.ReadAsync(buf, cts.Token).AsTask()
+            .WaitAsync(Timeout, TestContext.Current.CancellationToken);
         Assert.True(n > 0);
         seen.Append(Encoding.UTF8.GetString(buf, 0, n));
 
         while (!seen.ToString().Contains("ALREADY-THERE", StringComparison.Ordinal))
         {
-            n = await Stream.ReadAsync(buf, cts.Token).AsTask().WaitAsync(Timeout, TestContext.Current.CancellationToken);
+            n = await Stream.ReadAsync(buf, cts.Token).AsTask()
+                .WaitAsync(Timeout, TestContext.Current.CancellationToken);
             Assert.True(n > 0);
             seen.Append(Encoding.UTF8.GetString(buf, 0, n));
         }
@@ -107,7 +110,8 @@ public class PtyStreamTests : IDisposable
 
         var sw = Stopwatch.StartNew();
         await cts.CancelAsync();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => read).WaitAsync(Timeout, TestContext.Current.CancellationToken);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => read)
+            .WaitAsync(Timeout, TestContext.Current.CancellationToken);
         sw.Stop();
 
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(1), $"cancel took {sw.Elapsed}");
@@ -126,7 +130,8 @@ public class PtyStreamTests : IDisposable
         // Partial reads may surface leftover output first; keep reading until EOF (0).
         var n = await read.WaitAsync(Timeout, TestContext.Current.CancellationToken);
         while (n > 0)
-            n = await Stream.ReadAsync(new byte[16], cts.Token).AsTask().WaitAsync(Timeout, TestContext.Current.CancellationToken);
+            n = await Stream.ReadAsync(new byte[16], cts.Token).AsTask()
+                .WaitAsync(Timeout, TestContext.Current.CancellationToken);
 
         Assert.Equal(0, n);
     }
@@ -157,7 +162,8 @@ public class PtyStreamTests : IDisposable
         TestBash.Drain(bash.Output, TimeSpan.FromMilliseconds(500)); // let cat start reading
 
         using var cts = new CancellationTokenSource();
-        await bash.Input.WriteAsync("hello-async-write\n".AsMemory(), cts.Token).WaitAsync(Timeout, TestContext.Current.CancellationToken);
+        await bash.Input.WriteAsync("hello-async-write\n".AsMemory(), cts.Token)
+            .WaitAsync(Timeout, TestContext.Current.CancellationToken);
         await bash.Input.WriteAsync("\x04".AsMemory(), CancellationToken.None); // EOT ends cat
 
         var output = TestBash.ReadUntil(bash.Output, Done, Timeout);
@@ -193,7 +199,8 @@ public class PtyStreamTests : IDisposable
 
         var sw = Stopwatch.StartNew();
         await cts.CancelAsync();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => write).WaitAsync(Timeout, TestContext.Current.CancellationToken);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => write)
+            .WaitAsync(Timeout, TestContext.Current.CancellationToken);
         sw.Stop();
 
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(1), $"cancel took {sw.Elapsed}");

@@ -101,7 +101,9 @@ internal static partial class NativeMethods
     // arm64 — posix_openpt is non-variadic and portable).
 #if OSX
     internal const int ONonblock = 0x0004;
+
     internal const int ONoctty = 0x20000;
+
     // O_CLOEXEC for open(2): macOS uses 0x1000000 (Linux uses 0x80000; the value is
     // per-platform, so it sits in the per-platform section).
     internal const int OCloexec = 0x1000000;
@@ -394,7 +396,8 @@ internal static partial class NativeMethods
     // struct timespec* — IntPtr.Zero means block indefinitely. Either list may be null
     // with count 0; the eventlist is written back with returned events.
     [LibraryImport("libc", SetLastError = true)]
-    internal static partial int kevent(int kq, [In] Kevent[]? changelist, int nchanges, [Out] Kevent[]? eventlist, int nevents, IntPtr timeout);
+    internal static partial int kevent(int kq, [In] Kevent[]? changelist, int nchanges, [Out] Kevent[]? eventlist,
+        int nevents, IntPtr timeout);
 #endif
 
 #if OSX

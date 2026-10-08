@@ -64,6 +64,7 @@ public sealed partial class PtyProcess
             if (grantRc == 0)
                 unlockRc = NativeMethods.unlockpt(masterFd);
         }
+
         if (masterFd < 0 || grantRc != 0 || unlockRc != 0)
         {
             FreeNative(envp);
@@ -90,7 +91,8 @@ public sealed partial class PtyProcess
 #if OSX
         var slaveFd = NativeMethods.open(slavePath, NativeMethods.ORdwr | NativeMethods.ONoctty);
 #elif LINUX
-        var slaveFd = NativeMethods.open(slavePath, NativeMethods.ORdwr | NativeMethods.ONoctty | NativeMethods.OCloexec);
+        var slaveFd =
+ NativeMethods.open(slavePath, NativeMethods.ORdwr | NativeMethods.ONoctty | NativeMethods.OCloexec);
 #endif
         if (slaveFd < 0)
         {
@@ -117,6 +119,7 @@ public sealed partial class PtyProcess
                 resizeRc = NativeMethods.IoCtl(masterFd, NativeMethods.Tiocswinsz, (IntPtr)p);
             }
         }
+
         if (resizeRc != 0)
         {
             var err = Marshal.GetLastPInvokeError();
@@ -145,6 +148,7 @@ public sealed partial class PtyProcess
             NativeMethods.close(masterFd);
             throw new IOException($"pipe failed: errno={err}");
         }
+
         // All child-only copies close in the kernel at exec. The child never calls
         // close(2) between fork and exec.
         if (NativeMethods.Fcntl(masterFd, NativeMethods.FSetfd, NativeMethods.FdCloexec) != 0 ||
@@ -186,6 +190,7 @@ public sealed partial class PtyProcess
             {
                 throw new IOException($"posix_spawnattr_init failed: errno={Marshal.GetLastPInvokeError()}");
             }
+
             var flagsRc = NativeMethods.posix_spawnattr_setflags(
                 spawnAttr,
                 NativeMethods.PosixSpawnFlags.Setexec |
@@ -223,8 +228,10 @@ public sealed partial class PtyProcess
                     if (!started)
                         Thread.Sleep(10 << attempt); // background GC draining; back off
                 }
+
                 if (!started)
-                    throw new IOException("fork launch failed: the GC could not be paused (concurrent GC in progress).");
+                    throw new IOException(
+                        "fork launch failed: the GC could not be paused (concurrent GC in progress).");
 
                 try
                 {
@@ -234,6 +241,7 @@ public sealed partial class PtyProcess
                         var err = Marshal.GetLastPInvokeError();
                         throw new IOException($"fork failed: errno={err}");
                     }
+
                     if (pid == 0)
                     {
                         // Child: never returns, never allocates, and never closes a fd.
@@ -259,12 +267,20 @@ public sealed partial class PtyProcess
                             }
                         }
                     }
+
                     // The region may have been force-terminated meanwhile (other
                     // threads' allocations drained the budget); EndNoGCRegion then
                     // throws even though Start succeeded — swallow that specific
                     // outcome, the child is already forked and unaffected.
-                    try { GC.EndNoGCRegion(); }
-                    catch (InvalidOperationException ex) { PtyDiagnostics.Log($"no-gc region ended early: {ex.Message}"); }
+                    try
+                    {
+                        GC.EndNoGCRegion();
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        PtyDiagnostics.Log($"no-gc region ended early: {ex.Message}");
+                    }
+
                     // Logging after the region ends: the interpolated string allocates
                     // even when diagnostics are disabled, and allocations inside an
                     // active no-GC region eat its budget.
@@ -272,8 +288,15 @@ public sealed partial class PtyProcess
                 }
                 catch
                 {
-                    try { GC.EndNoGCRegion(); }
-                    catch (InvalidOperationException) { /* region already terminated */ }
+                    try
+                    {
+                        GC.EndNoGCRegion();
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        /* region already terminated */
+                    }
+
                     throw;
                 }
 
@@ -359,9 +382,15 @@ public sealed partial class PtyProcess
             Write = (delegate* unmanaged[Cdecl]<int, IntPtr, nuint, nint>)NativeLibrary.GetExport(process, "write"),
             Exit = (delegate* unmanaged[Cdecl]<int, int>)NativeLibrary.GetExport(process, "_exit"),
 #if OSX
-            PosixSpawn = (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, IntPtr, IntPtr, IntPtr, int>)NativeLibrary.GetExport(process, "posix_spawn"),
-            FileActionsInit = (delegate* unmanaged[Cdecl]<IntPtr, int>)NativeLibrary.GetExport(process, "posix_spawn_file_actions_init"),
-            FileActionsAddDup2 = (delegate* unmanaged[Cdecl]<IntPtr, int, int, int>)NativeLibrary.GetExport(process, "posix_spawn_file_actions_adddup2"),
+            PosixSpawn =
+                (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, IntPtr, IntPtr, IntPtr, int>)
+                NativeLibrary.GetExport(process, "posix_spawn"),
+            FileActionsInit =
+                (delegate* unmanaged[Cdecl]<IntPtr, int>)NativeLibrary.GetExport(process,
+                    "posix_spawn_file_actions_init"),
+            FileActionsAddDup2 =
+                (delegate* unmanaged[Cdecl]<IntPtr, int, int, int>)NativeLibrary.GetExport(process,
+                    "posix_spawn_file_actions_adddup2"),
             Dup2 = (delegate* unmanaged[Cdecl]<int, int, int>)NativeLibrary.GetExport(process, "dup2"),
             Setsid = (delegate* unmanaged[Cdecl]<int>)NativeLibrary.GetExport(process, "setsid"),
             Open = (delegate* unmanaged[Cdecl]<IntPtr, int, int>)NativeLibrary.GetExport(process, "open"),
@@ -373,14 +402,16 @@ public sealed partial class PtyProcess
             Setsid = (delegate* unmanaged[Cdecl]<int>)NativeLibrary.GetExport(process, "setsid"),
             Open = (delegate* unmanaged[Cdecl]<IntPtr, int, int>)NativeLibrary.GetExport(process, "open"),
             Chdir = (delegate* unmanaged[Cdecl]<IntPtr, int>)NativeLibrary.GetExport(process, "chdir"),
-            Execve = (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, int>)NativeLibrary.GetExport(process, "execve"),
+            Execve =
+ (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, int>)NativeLibrary.GetExport(process, "execve"),
             Close = (delegate* unmanaged[Cdecl]<int, int>)NativeLibrary.GetExport(process, "close"),
             Error = (delegate* unmanaged[Cdecl]<int*>)NativeLibrary.GetExport(process, "__errno_location"),
             Signal = (delegate* unmanaged[Cdecl]<int, IntPtr, IntPtr>)NativeLibrary.GetExport(process, "signal"),
             // syscall(2) is variadic; a fixed signature is safe here — Linux reads the
             // leading arguments from registers on both x86_64 and arm64 (the same
             // pattern as NativeMethods' two-argument syscall for pidfd_open).
-            Syscall = (delegate* unmanaged[Cdecl]<long, uint, uint, IntPtr, long>)NativeLibrary.GetExport(process, "syscall"),
+            Syscall =
+ (delegate* unmanaged[Cdecl]<long, uint, uint, IntPtr, long>)NativeLibrary.GetExport(process, "syscall"),
 #endif
         };
         WarmUpChildSignatures(process, api);
@@ -433,7 +464,9 @@ public sealed partial class PtyProcess
     private unsafe struct ChildNativeApi
     {
         internal delegate* unmanaged[Cdecl]<int, IntPtr, nuint, nint> Write;
+
         internal delegate* unmanaged[Cdecl]<int, int> Exit;
+
         // posix_spawn(pid*, path, file_actions, attr, argv, envp) — with the SETEXEC
         // attr flag this replaces the calling (forked) process in place; with
         // CLOEXEC_DEFAULT the kernel closes every fd the file actions did not create.
@@ -529,9 +562,11 @@ public sealed partial class PtyProcess
         // which harmlessly re-closes already-closed fds.
         var sweepManually = true;
         if (errWrite > 3)
-            sweepManually = api.Syscall(NativeMethods.CloseRangeSyscallNumber, 3, (uint)(errWrite - 1), IntPtr.Zero) != 0;
+            sweepManually =
+ api.Syscall(NativeMethods.CloseRangeSyscallNumber, 3, (uint)(errWrite - 1), IntPtr.Zero) != 0;
         if (!sweepManually && errWrite < int.MaxValue - 1)
-            sweepManually = api.Syscall(NativeMethods.CloseRangeSyscallNumber, (uint)Math.Max(errWrite + 1, 3), uint.MaxValue, IntPtr.Zero) != 0;
+            sweepManually =
+ api.Syscall(NativeMethods.CloseRangeSyscallNumber, (uint)Math.Max(errWrite + 1, 3), uint.MaxValue, IntPtr.Zero) != 0;
         if (sweepManually)
         {
             for (var fd = 3; fd < NativeMethods.FdIsolationCap; fd++)
@@ -569,6 +604,7 @@ public sealed partial class PtyProcess
             ReportChildError(api, errWrite, *api.Error());
             api.Exit(127);
         }
+
         if (api.FileActionsAddDup2((IntPtr)fileActions, cttyFd, 0) != 0 ||
             api.FileActionsAddDup2((IntPtr)fileActions, cttyFd, 1) != 0 ||
             api.FileActionsAddDup2((IntPtr)fileActions, cttyFd, 2) != 0)
@@ -659,8 +695,10 @@ public sealed partial class PtyProcess
                     if (Marshal.GetLastPInvokeError() == NativeMethods.Eintr)
                         continue;
                     KillAndReapStuckChild(pid);
-                    throw new IOException($"fork/exec launch failed: poll error waiting for the child to exec (pid={pid}).");
+                    throw new IOException(
+                        $"fork/exec launch failed: poll error waiting for the child to exec (pid={pid}).");
                 }
+
                 if (pr == 0)
                 {
                     // Timeout: the child is not making progress. Capture the kernel-side
@@ -688,6 +726,7 @@ public sealed partial class PtyProcess
                 return -1; // read error: treat as launched (defensive)
             }
         }
+
         return MemoryMarshal.Read<int>(buf);
     }
 
@@ -735,7 +774,8 @@ public sealed partial class PtyProcess
             var syscall = File.ReadAllText($"/proc/{pid}/syscall").Trim();
             var cmdline = File.ReadAllText($"/proc/{pid}/cmdline").Replace('\0', ' ').Trim();
             var status = File.ReadAllText($"/proc/{pid}/status");
-            var line = (string l) => status.Split('\n').FirstOrDefault(x => x.StartsWith(l, StringComparison.Ordinal))?.Trim();
+            var line =
+ (string l) => status.Split('\n').FirstOrDefault(x => x.StartsWith(l, StringComparison.Ordinal))?.Trim();
             return $" stuck: syscall='{syscall}' cmdline='{cmdline}' {line("State")} {line("SigBlk")} {line("SigIgn")} {line("SigCgt")}";
         }
         catch
@@ -850,6 +890,7 @@ public sealed partial class PtyProcess
             PtyDiagnostics.Log($"sighup skipped pid={Pid} not-our-session-leader");
             return;
         }
+
         var result = NativeMethods.kill(Pid, NativeMethods.Signals.Hup);
         var errno = result == 0 ? 0 : Marshal.GetLastPInvokeError();
         PtyDiagnostics.Log($"sighup pid={Pid} result={result} errno={errno} state={DescribeUnixState()}");
@@ -882,6 +923,7 @@ public sealed partial class PtyProcess
             PtyDiagnostics.Log($"sigkill skipped pid={Pid} not-our-session-leader");
             return true; // pid no longer ours: nothing to kill, do not retry
         }
+
         var result = NativeMethods.kill(Pid, NativeMethods.Signals.Kill);
         var errno = result == 0 ? 0 : Marshal.GetLastPInvokeError();
         PtyDiagnostics.Log($"sigkill pid={Pid} result={result} errno={errno} state={DescribeUnixState()}");
@@ -933,7 +975,8 @@ public sealed partial class PtyProcess
         var pgidErrno = pgid < 0 ? Marshal.GetLastPInvokeError() : 0;
         var sid = NativeMethods.getsid(pid);
         var sidErrno = sid < 0 ? Marshal.GetLastPInvokeError() : 0;
-        return $"alive-probe={probe} errno={probeErrno} pgid={pgid} pgid-errno={pgidErrno} sid={sid} sid-errno={sidErrno}";
+        return
+            $"alive-probe={probe} errno={probeErrno} pgid={pgid} pgid-errno={pgidErrno} sid={sid} sid-errno={sidErrno}";
     }
 
     private string DescribeUnixState() => DescribeUnixState(Pid);
@@ -1020,8 +1063,10 @@ public sealed partial class PtyProcess
         return errno switch
         {
             NativeMethods.ENoent => new FileNotFoundException($"The executable '{file}' was not found."),
-            NativeMethods.Enotdir => new DirectoryNotFoundException($"A component of the executable path '{file}' is not a directory."),
-            NativeMethods.Eacces => new UnauthorizedAccessException($"The executable '{file}' could not be executed: permission denied."),
+            NativeMethods.Enotdir => new DirectoryNotFoundException(
+                $"A component of the executable path '{file}' is not a directory."),
+            NativeMethods.Eacces => new UnauthorizedAccessException(
+                $"The executable '{file}' could not be executed: permission denied."),
             _ => new IOException($"fork/exec failed for '{file}': errno={errno}"),
         };
     }

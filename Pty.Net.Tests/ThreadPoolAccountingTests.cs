@@ -30,7 +30,8 @@ public class ThreadPoolAccountingTests
         {
             var (file, args) = TestBash.SleepProcess(1000);
             all[i] = PtyProcess.Start(file, args);
-            _ = all[i].WaitForExitAsync(System.Threading.Timeout.InfiniteTimeSpan, TestContext.Current.CancellationToken);
+            _ = all[i].WaitForExitAsync(System.Threading.Timeout.InfiniteTimeSpan,
+                TestContext.Current.CancellationToken);
         }
 
         // Windows launches one child process per session (cmd/ping — lighter than
@@ -52,7 +53,8 @@ public class ThreadPoolAccountingTests
         foreach (var p in all)
         {
             p.Kill();
-            await p.WaitForExitAsync(Timeout, TestContext.Current.CancellationToken).WaitAsync(Timeout, TestContext.Current.CancellationToken);
+            await p.WaitForExitAsync(Timeout, TestContext.Current.CancellationToken)
+                .WaitAsync(Timeout, TestContext.Current.CancellationToken);
             await p.DisposeAsync();
         }
 
@@ -111,6 +113,7 @@ public class ThreadPoolAccountingTests
     private static async Task CancelAndExpectOce(Task<int> read, CancellationTokenSource cts)
     {
         await cts.CancelAsync();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => read).WaitAsync(Timeout, TestContext.Current.CancellationToken);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => read)
+            .WaitAsync(Timeout, TestContext.Current.CancellationToken);
     }
 }

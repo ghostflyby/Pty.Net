@@ -8,7 +8,7 @@ name: publish
 # nuget.org (owner: ghostflyby, repo: ghostflyby/Pty.Net, workflow file: publish.yml).
 on:
   push:
-    tags: ['v*.*.*']
+    tags: [ 'v*.*.*' ]
 
 # A publish must never be cancelled mid-flight (a half-pushed release), and two pushes
 # of the same tag cannot happen — but guard anyway: same-ref publishes serialize.
@@ -35,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        os: [ windows-latest, ubuntu-latest, macos-latest ]
     steps:
       - uses: actions/checkout@v7
 
@@ -46,7 +46,7 @@ jobs:
 
       - name: Set version from tag
         run: |
-          "VERSION=$($env:GITHUB_REF_NAME -replace '^v','')" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+          "VERSION=$( $env:GITHUB_REF_NAME -replace '^v', '' )" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
 
       # A release candidate must pass the full suite on the OS whose dll it ships.
       - name: Test
@@ -104,69 +104,124 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           $version = $env:GITHUB_REF_NAME -replace '^v', ''
           "VERSION=$version" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
-          if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
-              throw "tag '$env:GITHUB_REF_NAME' is not a valid vX.Y.Z[(-suffix)] version"
+          if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$')
+          {
+            throw "tag '$env:GITHUB_REF_NAME' is not a valid vX.Y.Z[(-suffix)] version"
           }
           # Refuse versions nuget.org already has, before anything builds. With
           # --skip-duplicate gone from the push this is the belt to its suspenders,
           # and it gives traceability-only tag pushes (a re-tag of a historical
           # version) a clear early exit instead of a full build that cannot be
           # pushed.
-          $index = try { Invoke-RestMethod -Uri 'https://api.nuget.org/v3-flatcontainer/ghostflyby.pty/index.json' -TimeoutSec 30 } catch { $null }
-          if ($index -and ($index.versions -contains $version)) {
-              throw "version '$version' is already published on nuget.org — refusing to republish (traceability tag only)"
+          $index = try
+          {
+            Invoke-RestMethod -Uri 'https://api.nuget.org/v3-flatcontainer/ghostflyby.pty/index.json' -TimeoutSec 30
+          }
+          catch
+          {
+            $null
+          }
+          if ($index -and ($index.versions -contains $version))
+          {
+            throw "version '$version' is already published on nuget.org — refusing to republish (traceability tag only)"
           }
           # The tag commit must sit on main's history: a tag on a side branch or a
           # stray commit never reaches the production publish.
           $onMain = $false
-          try {
-              git merge-base --is-ancestor "$env:GITHUB_SHA" origin/main 2>$null
-              $onMain = ($LASTEXITCODE -eq 0)
-          } catch {
-              $global:LASTEXITCODE = 0
-              $onMain = $false
+          try
+          {
+            git merge-base --is-ancestor "$env:GITHUB_SHA" origin/main 2> $null
+            $onMain = ($LASTEXITCODE -eq 0)
           }
-          if (-not $onMain) { throw "tag commit $env:GITHUB_SHA is not an ancestor of origin/main" }
+          catch
+          {
+            $global:LASTEXITCODE = 0
+            $onMain = $false
+          }
+          if (-not $onMain)
+          {
+            throw "tag commit $env:GITHUB_SHA is not an ancestor of origin/main"
+          }
           # And its CI must have passed: a release rides on the commit the
           # six-platform suite ran against.
-          $run = try {
-              gh run list --workflow ci.yml --commit "$env:GITHUB_SHA" --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>$null
-          } catch {
-              $global:LASTEXITCODE = 0
-              $null
+          $run = try
+          {
+            gh run list --workflow ci.yml --commit "$env:GITHUB_SHA" --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2> $null
           }
-          if (-not $run) { throw "no successful ci.yml run found for tag commit $env:GITHUB_SHA — tag before merging, not after" }
+          catch
+          {
+            $global:LASTEXITCODE = 0
+            $null
+          }
+          if (-not $run)
+          {
+            throw "no successful ci.yml run found for tag commit $env:GITHUB_SHA — tag before merging, not after"
+          }
           Write-Host "ok: tag commit is on main with green CI (run $run)"
           # 'gh release list' exits 1 when no release exists yet (first publish); with
           # $PSNativeCommandUseErrorActionPreference = $true that becomes a terminating
           # error, so wrap it. The catch must also reset $LASTEXITCODE: pwsh exits the
           # script with the last external command's code, so a swallowed '1' would still
           # fail the step.
-          $latest = try {
-              gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>$null
-          } catch {
-              $global:LASTEXITCODE = 0
-              $null
+          $latest = try
+          {
+            gh release list --limit 1 --json tagName --jq '.[0].tagName' 2> $null
           }
-          if ($latest) {
-              function Test-Newer([string]$candidate, [string]$previous) {
-                  $c = $candidate -split '-'; $p = $previous -split '-'
-                  $cNum = [version]$c[0]; $pNum = [version]$p[0]
-                  if ($cNum -gt $pNum) { return $true }
-                  if ($cNum -lt $pNum) { return $false }
-                  $cPre = if ($c.Count -gt 1) { $c[1] } else { '' }
-                  $pPre = if ($p.Count -gt 1) { $p[1] } else { '' }
-                  if ($pPre -eq '' -and $cPre -ne '') { return $false }   # 1.0.0-beta < 1.0.0
-                  if ($cPre -eq '' -and $pPre -ne '') { return $true }
-                  return $cPre -gt $pPre
+          catch
+          {
+            $global:LASTEXITCODE = 0
+            $null
+          }
+          if ($latest)
+          {
+            function Test-Newer([string]$candidate, [string]$previous)
+            {
+              $c = $candidate -split '-'; $p = $previous -split '-'
+              $cNum = [version]$c[0]; $pNum = [version]$p[0]
+              if ($cNum -gt $pNum)
+              {
+                return $true
               }
-              $latestV = $latest -replace '^v', ''
-              if (-not (Test-Newer $version $latestV)) {
-                  throw "version '$version' is not newer than the latest release '$latestV'"
+              if ($cNum -lt $pNum)
+              {
+                return $false
               }
-              Write-Host "ok: $version > $latestV"
-          } else {
-              Write-Host 'no previous release; this is the first publish'
+              $cPre = if ($c.Count -gt 1)
+              {
+                $c[1]
+              }
+              else
+              {
+                ''
+              }
+              $pPre = if ($p.Count -gt 1)
+              {
+                $p[1]
+              }
+              else
+              {
+                ''
+              }
+              if ($pPre -eq '' -and $cPre -ne '')
+              {
+                return $false
+              }   # 1.0.0-beta < 1.0.0
+              if ($cPre -eq '' -and $pPre -ne '')
+              {
+                return $true
+              }
+              return $cPre -gt $pPre
+            }
+            $latestV = $latest -replace '^v', ''
+            if (-not (Test-Newer $version $latestV))
+            {
+              throw "version '$version' is not newer than the latest release '$latestV'"
+            }
+            Write-Host "ok: $version > $latestV"
+          }
+          else
+          {
+            Write-Host 'no previous release; this is the first publish'
           }
           # Normal path ends cleanly even if an external command left $LASTEXITCODE set;
           # throw paths above terminate with a non-zero exit before reaching here.
@@ -185,16 +240,23 @@ jobs:
           # corresponding PDB with the DLL that produced it: the final snupkg must
           # mirror the final nupkg's DLL hierarchy exactly.
           $platforms = [ordered]@{
-            'pkg-ubuntu-latest' = @{ Rids = @('linux-x64','linux-arm64') }
-            'pkg-macos-latest'  = @{ Rids = @('osx-x64','osx-arm64') }
-            'pkg-windows-latest' = @{ Rids = @('win-x64','win-arm64') }
+            'pkg-ubuntu-latest' = @{ Rids = @('linux-x64', 'linux-arm64') }
+            'pkg-macos-latest' = @{ Rids = @('osx-x64', 'osx-arm64') }
+            'pkg-windows-latest' = @{ Rids = @('win-x64', 'win-arm64') }
           }
-          $sources = @{}
-          foreach ($art in $platforms.Keys) {
+          $sources = @{ }
+          foreach ($art in $platforms.Keys)
+          {
             $nupkgs = @(Get-ChildItem -Path "pkgs/$art" -Filter '*.nupkg' -Recurse)
             $snupkgs = @(Get-ChildItem -Path "pkgs/$art" -Filter '*.snupkg' -Recurse)
-            if ($nupkgs.Count -ne 1) { throw "$art must contain exactly one nupkg, found $($nupkgs.Count)" }
-            if ($snupkgs.Count -ne 1) { throw "$art must contain exactly one snupkg, found $($snupkgs.Count)" }
+            if ($nupkgs.Count -ne 1)
+            {
+              throw "$art must contain exactly one nupkg, found $( $nupkgs.Count )"
+            }
+            if ($snupkgs.Count -ne 1)
+            {
+              throw "$art must contain exactly one snupkg, found $( $snupkgs.Count )"
+            }
             $sources[$art] = @{ Nupkg = $nupkgs[0]; Snupkg = $snupkgs[0] }
           }
 
@@ -206,43 +268,60 @@ jobs:
           $refSource = $sources['pkg-ubuntu-latest']
           $refNupkg = [System.IO.Compression.ZipFile]::OpenRead($refSource.Nupkg.FullName)
           $refSnupkg = [System.IO.Compression.ZipFile]::OpenRead($refSource.Snupkg.FullName)
-          try {
+          try
+          {
             $refDll = $refNupkg.Entries | Where-Object { $_.FullName -eq 'lib/net10.0/Ghostflyby.Pty.dll' } | Select-Object -First 1
             $refXml = $refNupkg.Entries | Where-Object { $_.FullName -eq 'lib/net10.0/Ghostflyby.Pty.xml' } | Select-Object -First 1
             $refPdb = $refSnupkg.Entries | Where-Object { $_.FullName -eq 'lib/net10.0/Ghostflyby.Pty.pdb' } | Select-Object -First 1
-            if (-not $refDll -or -not $refXml -or -not $refPdb) { throw 'Ubuntu reference package is missing its DLL, XML, or PDB' }
+            if (-not $refDll -or -not $refXml -or -not $refPdb)
+            {
+              throw 'Ubuntu reference package is missing its DLL, XML, or PDB'
+            }
             [System.IO.Compression.ZipFileExtensions]::ExtractToFile($refDll, 'merged/ref/net10.0/Ghostflyby.Pty.dll', $true)
             [System.IO.Compression.ZipFileExtensions]::ExtractToFile($refXml, 'merged/ref/net10.0/Ghostflyby.Pty.xml', $true)
             [System.IO.Compression.ZipFileExtensions]::ExtractToFile($refPdb, 'merged-symbols/ref/net10.0/Ghostflyby.Pty.pdb', $true)
-          } finally {
+          }
+          finally
+          {
             $refNupkg.Dispose()
             $refSnupkg.Dispose()
           }
 
-          foreach ($art in $platforms.Keys) {
+          foreach ($art in $platforms.Keys)
+          {
             $source = $sources[$art]
             $nupkg = [System.IO.Compression.ZipFile]::OpenRead($source.Nupkg.FullName)
             $snupkg = [System.IO.Compression.ZipFile]::OpenRead($source.Snupkg.FullName)
-            try {
+            try
+            {
               $dll = $nupkg.Entries | Where-Object { $_.FullName -eq 'lib/net10.0/Ghostflyby.Pty.dll' } | Select-Object -First 1
               $pdb = $snupkg.Entries | Where-Object { $_.FullName -eq 'lib/net10.0/Ghostflyby.Pty.pdb' } | Select-Object -First 1
-              if (-not $dll -or -not $pdb) { throw "$art is missing its DLL or PDB" }
+              if (-not $dll -or -not $pdb)
+              {
+                throw "$art is missing its DLL or PDB"
+              }
               $tmpDll = [System.IO.Path]::GetTempFileName()
               $tmpPdb = [System.IO.Path]::GetTempFileName()
-              try {
+              try
+              {
                 [System.IO.Compression.ZipFileExtensions]::ExtractToFile($dll, $tmpDll, $true)
                 [System.IO.Compression.ZipFileExtensions]::ExtractToFile($pdb, $tmpPdb, $true)
-                foreach ($rid in $platforms[$art].Rids) {
+                foreach ($rid in $platforms[$art].Rids)
+                {
                   $dllPath = "merged/runtimes/$rid/lib/net10.0/Ghostflyby.Pty.dll"
                   $pdbPath = "merged-symbols/runtimes/$rid/lib/net10.0/Ghostflyby.Pty.pdb"
                   New-Item -ItemType Directory -Force -Path (Split-Path $dllPath), (Split-Path $pdbPath) | Out-Null
                   Copy-Item -LiteralPath $tmpDll -Destination $dllPath -Force
                   Copy-Item -LiteralPath $tmpPdb -Destination $pdbPath -Force
                 }
-              } finally {
+              }
+              finally
+              {
                 Remove-Item -LiteralPath $tmpDll, $tmpPdb -Force -ErrorAction SilentlyContinue
               }
-            } finally {
+            }
+            finally
+            {
               $nupkg.Dispose()
               $snupkg.Dispose()
             }
@@ -252,28 +331,46 @@ jobs:
           # those trees were rebuilt above and the symbols tree is rebuilt separately.
           $base = $sources['pkg-ubuntu-latest'].Nupkg
           $zip = [System.IO.Compression.ZipFile]::OpenRead($base.FullName)
-          try {
-            foreach ($entry in $zip.Entries) {
-              if ($entry.FullName -like 'lib/*' -or $entry.FullName -like 'ref/*') { continue }
+          try
+          {
+            foreach ($entry in $zip.Entries)
+            {
+              if ($entry.FullName -like 'lib/*' -or $entry.FullName -like 'ref/*')
+              {
+                continue
+              }
               $dest = Join-Path 'merged' $entry.FullName
               New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
               [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
             }
-          } finally { $zip.Dispose() }
+          }
+          finally
+          {
+            $zip.Dispose()
+          }
           [System.IO.Compression.ZipFile]::CreateFromDirectory('merged', "Ghostflyby.Pty.$version.nupkg")
 
           # Build the snupkg from one platform symbol package's metadata, replacing
           # its original lib PDB with the PDB tree that mirrors the final nupkg.
           $symbolBase = $sources['pkg-ubuntu-latest'].Snupkg
           $zip = [System.IO.Compression.ZipFile]::OpenRead($symbolBase.FullName)
-          try {
-            foreach ($entry in $zip.Entries) {
-              if ($entry.FullName -like 'lib/*') { continue }
+          try
+          {
+            foreach ($entry in $zip.Entries)
+            {
+              if ($entry.FullName -like 'lib/*')
+              {
+                continue
+              }
               $dest = Join-Path 'merged-symbols' $entry.FullName
               New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
               [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
             }
-          } finally { $zip.Dispose() }
+          }
+          finally
+          {
+            $zip.Dispose()
+          }
           [System.IO.Compression.ZipFile]::CreateFromDirectory('merged-symbols', "Ghostflyby.Pty.$version.snupkg")
 
       - name: Verify assembled packages
@@ -283,31 +380,56 @@ jobs:
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $nupkg = [System.IO.Compression.ZipFile]::OpenRead("Ghostflyby.Pty.$env:VERSION.nupkg")
           $snupkg = [System.IO.Compression.ZipFile]::OpenRead("Ghostflyby.Pty.$env:VERSION.snupkg")
-          try {
+          try
+          {
             $dllPaths = @($nupkg.Entries | Where-Object { $_.FullName -match '\.(dll|exe)$' } | ForEach-Object { $_.FullName })
-            if ($dllPaths.Count -ne 7) { throw "expected 7 managed assemblies in nupkg, found $($dllPaths.Count)" }
+            if ($dllPaths.Count -ne 7)
+            {
+              throw "expected 7 managed assemblies in nupkg, found $( $dllPaths.Count )"
+            }
             $expectedPdbPaths = @($dllPaths | ForEach-Object { $_ -replace '\.(dll|exe)$', '.pdb' } | Sort-Object)
             $pdbPaths = @($snupkg.Entries | Where-Object { $_.FullName -match '\.pdb$' } | ForEach-Object { $_.FullName } | Sort-Object)
-            if (($expectedPdbPaths -join "`n") -ne ($pdbPaths -join "`n")) {
-              throw "PDB paths do not mirror DLL paths: expected [$($expectedPdbPaths -join ', ')], found [$($pdbPaths -join ', ')]"
+            if (($expectedPdbPaths -join "`n") -ne ($pdbPaths -join "`n"))
+            {
+              throw "PDB paths do not mirror DLL paths: expected [$( $expectedPdbPaths -join ', ' )], found [$( $pdbPaths -join ', ' )]"
             }
             $badSymbols = @($snupkg.Entries | Where-Object { $_.FullName -match '\.(dll|exe)$' })
-            if ($badSymbols.Count -gt 0) { throw "snupkg contains executable entries: $($badSymbols.FullName -join ', ')" }
-            $allowed = @('.pdb','.nuspec','.xml','.psmdcp','.rels','.p7s')
+            if ($badSymbols.Count -gt 0)
+            {
+              throw "snupkg contains executable entries: $( $badSymbols.FullName -join ', ' )"
+            }
+            $allowed = @('.pdb', '.nuspec', '.xml', '.psmdcp', '.rels', '.p7s')
             $badExtensions = @($snupkg.Entries | Where-Object {
               $ext = [System.IO.Path]::GetExtension($_.FullName).ToLowerInvariant()
               $ext -and $ext -notin $allowed
             })
-            if ($badExtensions.Count -gt 0) { throw "snupkg contains unsupported entries: $($badExtensions.FullName -join ', ')" }
+            if ($badExtensions.Count -gt 0)
+            {
+              throw "snupkg contains unsupported entries: $( $badExtensions.FullName -join ', ' )"
+            }
             $nupkgNuspec = $nupkg.Entries | Where-Object { $_.FullName -like '*.nuspec' } | Select-Object -First 1
             $snupkgNuspec = $snupkg.Entries | Where-Object { $_.FullName -like '*.nuspec' } | Select-Object -First 1
-            if (-not $nupkgNuspec -or -not $snupkgNuspec) { throw 'both packages must contain a nuspec' }
+            if (-not $nupkgNuspec -or -not $snupkgNuspec)
+            {
+              throw 'both packages must contain a nuspec'
+            }
             $nupkgNuspecText = [System.IO.StreamReader]::new($nupkgNuspec.Open()).ReadToEnd()
             $snupkgNuspecText = [System.IO.StreamReader]::new($snupkgNuspec.Open()).ReadToEnd()
-            if ($nupkgNuspecText -notmatch '<id>Ghostflyby\.Pty</id>' -or $snupkgNuspecText -notmatch '<id>Ghostflyby\.Pty</id>') { throw 'package id mismatch' }
-            if ($nupkgNuspecText -notmatch "<version>$env:VERSION</version>" -or $snupkgNuspecText -notmatch "<version>$env:VERSION</version>") { throw 'package version mismatch' }
-            if ($snupkgNuspecText -notmatch 'packageType name="SymbolsPackage"') { throw 'snupkg is missing SymbolsPackage type' }
-          } finally {
+            if ($nupkgNuspecText -notmatch '<id>Ghostflyby\.Pty</id>' -or $snupkgNuspecText -notmatch '<id>Ghostflyby\.Pty</id>')
+            {
+              throw 'package id mismatch'
+            }
+            if ($nupkgNuspecText -notmatch "<version>$env:VERSION</version>" -or $snupkgNuspecText -notmatch "<version>$env:VERSION</version>")
+            {
+              throw 'package version mismatch'
+            }
+            if ($snupkgNuspecText -notmatch 'packageType name="SymbolsPackage"')
+            {
+              throw 'snupkg is missing SymbolsPackage type'
+            }
+          }
+          finally
+          {
             $nupkg.Dispose()
             $snupkg.Dispose()
           }
@@ -323,7 +445,8 @@ jobs:
           Copy-Item "Ghostflyby.Pty.$version.nupkg" "$env:RUNNER_TEMP/local-source/"
           New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP/consumer" | Out-Null
           Push-Location "$env:RUNNER_TEMP/consumer"
-          try {
+          try
+          {
             $proj = @(
               '<Project Sdk="Microsoft.NET.Sdk">'
               '  <PropertyGroup>'
@@ -342,7 +465,8 @@ jobs:
             $sourceArg = "--source:$env:RUNNER_TEMP/local-source", "--source:https://api.nuget.org/v3/index.json"
             # Supported RIDs: the runtime host must receive exactly the matching
             # runtimes/{rid} dll — no more, no less.
-            foreach ($rid in 'win-x64','linux-x64','osx-arm64','linux-arm64','win-arm64','osx-x64') {
+            foreach ($rid in 'win-x64', 'linux-x64', 'osx-arm64', 'linux-arm64', 'win-arm64', 'osx-x64')
+            {
               dotnet restore -r $rid $sourceArg --nologo
               $assets = Get-Content 'obj/project.assets.json' -Raw | ConvertFrom-Json
               # A RID restore produces both the portable and the RID-specific target;
@@ -351,13 +475,20 @@ jobs:
               # empty — this bit the first v0.3.0 publish attempt, whose check
               # asserted runtimeTargets non-empty and failed on a correct package).
               $pkg = $assets.targets."net10.0/$rid"."Ghostflyby.Pty/$version"
-              if (-not $pkg) { throw "${rid}: package missing from restore targets" }
-              if (-not $pkg.compile.'ref/net10.0/Ghostflyby.Pty.dll') { throw "${rid}: no compile asset — ref/ layout broken" }
-              $runtime = @(@($pkg.runtime.PSObject.Properties.Name) | Where-Object { $_ }) # $pkg.runtime is ABSENT (null) for RIDs with no runtime asset; @($null...) would count 1
-              if ($runtime.Count -ne 1 -or $runtime[0] -ne "runtimes/$rid/lib/net10.0/Ghostflyby.Pty.dll") {
-                throw "${rid}: expected exactly runtimes/$rid/lib/net10.0/Ghostflyby.Pty.dll, got: $($runtime -join ', ')"
+              if (-not $pkg)
+              {
+                throw "${rid}: package missing from restore targets"
               }
-              Write-Host "ok: $rid -> $($runtime[0])"
+              if (-not $pkg.compile.'ref/net10.0/Ghostflyby.Pty.dll')
+              {
+                throw "${rid}: no compile asset — ref/ layout broken"
+              }
+              $runtime = @(@($pkg.runtime.PSObject.Properties.Name) | Where-Object { $_ }) # $pkg.runtime is ABSENT (null) for RIDs with no runtime asset; @($null...) would count 1
+              if ($runtime.Count -ne 1 -or $runtime[0] -ne "runtimes/$rid/lib/net10.0/Ghostflyby.Pty.dll")
+              {
+                throw "${rid}: expected exactly runtimes/$rid/lib/net10.0/Ghostflyby.Pty.dll, got: $( $runtime -join ', ' )"
+              }
+              Write-Host "ok: $rid -> $( $runtime[0] )"
             }
             # Unsupported RIDs. NuGet's RID graph decides what they receive, not us:
             # ios-* and browser-wasm have no compatible asset and stay compile-only
@@ -367,23 +498,39 @@ jobs:
             # are identical architecture-neutral managed IL, so that fallback is the
             # same bytes either way — assert the graph behavior, not absence.
             $unsupported = @{
-              'ios-arm64'     = $null
-              'browser-wasm'  = $null
+              'ios-arm64' = $null
+              'browser-wasm' = $null
               'android-arm64' = 'runtimes/linux-arm64/lib/net10.0/Ghostflyby.Pty.dll'
             }
-            foreach ($rid in $unsupported.Keys) {
+            foreach ($rid in $unsupported.Keys)
+            {
               dotnet restore -r $rid $sourceArg --nologo
               $assets = Get-Content 'obj/project.assets.json' -Raw | ConvertFrom-Json
               $pkg = $assets.targets."net10.0/$rid"."Ghostflyby.Pty/$version"
-              if (-not $pkg) { throw "${rid}: package missing from restore targets" }
-              if (-not $pkg.compile.'ref/net10.0/Ghostflyby.Pty.dll') { throw "${rid}: no compile asset — an unsupported RID must still restore for compilation" }
+              if (-not $pkg)
+              {
+                throw "${rid}: package missing from restore targets"
+              }
+              if (-not $pkg.compile.'ref/net10.0/Ghostflyby.Pty.dll')
+              {
+                throw "${rid}: no compile asset — an unsupported RID must still restore for compilation"
+              }
               $runtime = @(@($pkg.runtime.PSObject.Properties.Name) | Where-Object { $_ }) # $pkg.runtime is ABSENT (null) for RIDs with no runtime asset; @($null...) would count 1
               $expected = $unsupported[$rid]
-              if ($expected) {
-                if ($runtime.Count -ne 1 -or $runtime[0] -cne $expected) { throw "${rid}: expected $expected (RID-graph fallback), got: $($runtime -join ', ')" }
+              if ($expected)
+              {
+                if ($runtime.Count -ne 1 -or $runtime[0] -cne $expected)
+                {
+                  throw "${rid}: expected $expected (RID-graph fallback), got: $( $runtime -join ', ' )"
+                }
                 Write-Host "ok: $rid -> $expected (RID-graph fallback)"
-              } else {
-                if ($runtime.Count -gt 0) { throw "${rid}: got runtime assets for an unsupported RID: $($runtime -join ', ')" }
+              }
+              else
+              {
+                if ($runtime.Count -gt 0)
+                {
+                  throw "${rid}: got runtime assets for an unsupported RID: $( $runtime -join ', ' )"
+                }
                 Write-Host "ok: $rid -> compile-only (no runtime asset)"
               }
             }
@@ -392,12 +539,25 @@ jobs:
             dotnet restore $sourceArg --nologo
             $assets = Get-Content 'obj/project.assets.json' -Raw | ConvertFrom-Json
             $pkg = $assets.targets.'net10.0'."Ghostflyby.Pty/$version"
-            if (-not $pkg) { throw 'portable: package missing from restore targets' }
-            if (-not $pkg.compile.'ref/net10.0/Ghostflyby.Pty.dll') { throw 'portable: no compile asset — ref/ layout broken' }
+            if (-not $pkg)
+            {
+              throw 'portable: package missing from restore targets'
+            }
+            if (-not $pkg.compile.'ref/net10.0/Ghostflyby.Pty.dll')
+            {
+              throw 'portable: no compile asset — ref/ layout broken'
+            }
             $runtime = @(@($pkg.runtime.PSObject.Properties.Name) | Where-Object { $_ }) # $pkg.runtime is ABSENT (null) for RIDs with no runtime asset; @($null...) would count 1
-            if ($runtime.Count -gt 0) { throw "portable: unexpected runtime assets: $($runtime -join ', ')" }
+            if ($runtime.Count -gt 0)
+            {
+              throw "portable: unexpected runtime assets: $( $runtime -join ', ' )"
+            }
             Write-Host 'ok: portable restore'
-          } finally { Pop-Location }
+          }
+          finally
+          {
+            Pop-Location
+          }
 
       # Signed provenance for the exact artifacts about to be pushed: a consumer
       # (or nuget.org's UI) can verify these bytes were built by this repository's
@@ -453,9 +613,10 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           # The working tree is the tag commit: its Unshipped entries are what shipped.
           $tagUnshipped = @(Get-Content 'Pty.Net/PublicAPI.Unshipped.txt' | Where-Object { $_ -and -not $_.StartsWith('#') })
-          if ($tagUnshipped.Count -eq 0) {
-              Write-Host 'no unshipped API on this tag; nothing to move'
-              exit 0
+          if ($tagUnshipped.Count -eq 0)
+          {
+            Write-Host 'no unshipped API on this tag; nothing to move'
+            exit 0
           }
           git fetch origin main
           git checkout -b "housekeeping/shipped-v$env:VERSION" FETCH_HEAD
@@ -471,10 +632,10 @@ jobs:
           $newUnshipped = @($unshipped | Where-Object { $_ -notin $tagUnshipped })
           # Sort by the stripped symbol key, matching the existing Shipped ordering.
           $key = { param($s) ($s -replace '^\*REMOVED\*', '') -replace '^(static |override )', '' }
-          $newShipped = @($newShipped | Sort-Object -Property @{Expression = $key})
-          $newUnshipped = @($newUnshipped | Sort-Object -Property @{Expression = $key})
-          "#nullable enable`n$($newShipped -join "`n")`n" | Set-Content -Path $shippedPath -NoNewline
-          "#nullable enable`n$($newUnshipped -join "`n")`n" | Set-Content -Path $unshippedPath -NoNewline
+          $newShipped = @($newShipped | Sort-Object -Property @{ Expression = $key })
+          $newUnshipped = @($newUnshipped | Sort-Object -Property @{ Expression = $key })
+          "#nullable enable`n$( $newShipped -join "`n" )`n" | Set-Content -Path $shippedPath -NoNewline
+          "#nullable enable`n$( $newUnshipped -join "`n" )`n" | Set-Content -Path $unshippedPath -NoNewline
           git add $shippedPath $unshippedPath
           git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' `
             commit -m "chore: move shipped API to Shipped for $env:GITHUB_REF_NAME"

@@ -42,8 +42,10 @@ public class PtyStartInfoTests
     [Fact]
     public void Equality_EnvironmentValueDifferenceMatters()
     {
-        var a = new PtyStartInfo("/bin/bash") { Environment = ImmutableDictionary<string, string?>.Empty.Add("K", "v") };
-        var b = new PtyStartInfo("/bin/bash") { Environment = ImmutableDictionary<string, string?>.Empty.Add("K", "other") };
+        var a = new PtyStartInfo("/bin/bash")
+            { Environment = ImmutableDictionary<string, string?>.Empty.Add("K", "v") };
+        var b = new PtyStartInfo("/bin/bash")
+            { Environment = ImmutableDictionary<string, string?>.Empty.Add("K", "other") };
 
         Assert.True(a != b);
         Assert.NotEqual(a.GetHashCode(), b.GetHashCode());
@@ -54,7 +56,8 @@ public class PtyStartInfoTests
     {
         var a = new PtyStartInfo("/bin/bash") { OutputEncoding = System.Text.Encoding.UTF8 };
         // A different Encoding instance with the same code page is the same encoding.
-        var b = new PtyStartInfo("/bin/bash") { OutputEncoding = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false) };
+        var b = new PtyStartInfo("/bin/bash")
+            { OutputEncoding = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false) };
 
         Assert.True(a == b);
     }

@@ -148,7 +148,8 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// </summary>
     public StreamReader Output { get; }
 
-    private PtyProcess(PtyStream stream, int pid, Encoding? inputEncoding, Encoding? outputEncoding, SafeProcessHandle? processHandle)
+    private PtyProcess(PtyStream stream, int pid, Encoding? inputEncoding, Encoding? outputEncoding,
+        SafeProcessHandle? processHandle)
     {
         BaseStream = stream;
         // Null encoding means UTF-8 — the terminal default on macOS and Linux and the
@@ -161,12 +162,14 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         // transports UTF-8 bytes); Unix uses the stream directly. Facades never own
         // the underlying stream (leaveOpen below): PtyProcess is the single owner and
         // disposes it, so disposing one facade must not break its siblings.
-        CreateFacades(effectiveInputEncoding, effectiveOutputEncoding, out var inputFacadeStream, out var outputFacadeStream);
+        CreateFacades(effectiveInputEncoding, effectiveOutputEncoding, out var inputFacadeStream,
+            out var outputFacadeStream);
         Input = new StreamWriter(inputFacadeStream, effectiveInputEncoding, bufferSize: 1024, leaveOpen: true)
         {
             AutoFlush = true,
         };
-        Output = new StreamReader(outputFacadeStream, effectiveOutputEncoding, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+        Output = new StreamReader(outputFacadeStream, effectiveOutputEncoding, detectEncodingFromByteOrderMarks: false,
+            bufferSize: 1024, leaveOpen: true);
         Pid = pid;
         ProcessHandle = processHandle;
         // The process-wide reaper owns the exit wait for this child: it sets ExitCode and
@@ -230,7 +233,8 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(initialCols);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(initialRows);
         if (initialCols > short.MaxValue || initialRows > short.MaxValue)
-            throw new ArgumentOutOfRangeException(nameof(initialCols), "Terminal dimensions are limited to 32767 per axis.");
+            throw new ArgumentOutOfRangeException(nameof(initialCols),
+                "Terminal dimensions are limited to 32767 per axis.");
 
         // A bad working directory would otherwise surface as an ambiguous spawn errno
         // (the child cannot chdir, so it never starts) instead of a deterministically
@@ -451,7 +455,8 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(columns);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(rows);
         if (columns > short.MaxValue || rows > short.MaxValue)
-            throw new ArgumentOutOfRangeException(nameof(columns), "Terminal dimensions are limited to 32767 per axis.");
+            throw new ArgumentOutOfRangeException(nameof(columns),
+                "Terminal dimensions are limited to 32767 per axis.");
         BaseStream.SetWindowSize(columns, rows);
     }
 
@@ -478,7 +483,8 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
                 return;
             disposed = true;
 
-            PtyDiagnostics.Log($"dispose begin pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"} signal={TerminationSignal?.ToString() ?? "null"}");
+            PtyDiagnostics.Log(
+                $"dispose begin pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"} signal={TerminationSignal?.ToString() ?? "null"}");
 
             TerminateGracefully();
 
@@ -494,9 +500,11 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
             // so this wait is bounded in practice; if it ever stalls — a child surviving
             // even SIGKILL — that is a genuine platform failure we surface by blocking
             // rather than silently deferring to the background reaper.
-            PtyDiagnostics.Log($"dispose waiting exit-signal pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"} signal={TerminationSignal?.ToString() ?? "null"}");
+            PtyDiagnostics.Log(
+                $"dispose waiting exit-signal pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"} signal={TerminationSignal?.ToString() ?? "null"}");
             ExitSignal.Wait();
-            PtyDiagnostics.Log($"dispose exit-signal completed pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"} signal={TerminationSignal?.ToString() ?? "null"}");
+            PtyDiagnostics.Log(
+                $"dispose exit-signal completed pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"} signal={TerminationSignal?.ToString() ?? "null"}");
             if (HasExited)
                 ProcessHandle?.Dispose();
         }
@@ -524,14 +532,17 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
                 return;
             disposed = true;
 
-            PtyDiagnostics.Log($"dispose-async begin pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"} signal={TerminationSignal?.ToString() ?? "null"}");
+            PtyDiagnostics.Log(
+                $"dispose-async begin pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"} signal={TerminationSignal?.ToString() ?? "null"}");
 
             await TerminateGracefullyAsync().ConfigureAwait(false);
             await BaseStream.DisposeAsync();
 
-            PtyDiagnostics.Log($"dispose-async waiting exit-signal pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"} signal={TerminationSignal?.ToString() ?? "null"}");
+            PtyDiagnostics.Log(
+                $"dispose-async waiting exit-signal pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"} signal={TerminationSignal?.ToString() ?? "null"}");
             await ExitSignal.ConfigureAwait(false);
-            PtyDiagnostics.Log($"dispose-async exit-signal completed pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"} signal={TerminationSignal?.ToString() ?? "null"}");
+            PtyDiagnostics.Log(
+                $"dispose-async exit-signal completed pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"} signal={TerminationSignal?.ToString() ?? "null"}");
             if (HasExited)
                 ProcessHandle?.Dispose();
         }
@@ -636,7 +647,8 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         var exited = Exited;
         if (Interlocked.CompareExchange(ref terminationStatus, status, null) is not null)
         {
-            PtyDiagnostics.Log($"on-reaped duplicate ignored pid={Pid} status={status} published={Volatile.Read(ref terminationStatus)}");
+            PtyDiagnostics.Log(
+                $"on-reaped duplicate ignored pid={Pid} status={status} published={Volatile.Read(ref terminationStatus)}");
             return false;
         }
 
@@ -666,6 +678,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
                 }
             }
         }
+
         return true;
     }
 

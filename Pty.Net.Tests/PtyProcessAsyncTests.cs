@@ -21,7 +21,8 @@ public class PtyProcessAsyncTests
         await using var p = PtyProcess.Start(file, args);
 
         var sw = Stopwatch.StartNew();
-        var exited = await p.WaitForExitAsync(TimeSpan.FromMilliseconds(200), TestContext.Current.CancellationToken).WaitAsync(Timeout, TestContext.Current.CancellationToken);
+        var exited = await p.WaitForExitAsync(TimeSpan.FromMilliseconds(200), TestContext.Current.CancellationToken)
+            .WaitAsync(Timeout, TestContext.Current.CancellationToken);
         sw.Stop();
 
         Assert.False(exited);
@@ -35,7 +36,8 @@ public class PtyProcessAsyncTests
         await using var bash = TestBash.Start();
         await bash.Input.WriteLineAsync("exit");
 
-        Assert.True(await bash.WaitForExitAsync(Timeout, TestContext.Current.CancellationToken).WaitAsync(Timeout, TestContext.Current.CancellationToken));
+        Assert.True(await bash.WaitForExitAsync(Timeout, TestContext.Current.CancellationToken)
+            .WaitAsync(Timeout, TestContext.Current.CancellationToken));
         Assert.Equal(0, bash.ExitCode);
     }
 
@@ -46,7 +48,8 @@ public class PtyProcessAsyncTests
         var (file, args) = TestBash.ShortLivedProcess();
         await using var p = PtyProcess.Start(file, args);
 
-        Assert.True(await p.WaitForExitAsync(Timeout, TestContext.Current.CancellationToken).WaitAsync(Timeout, TestContext.Current.CancellationToken));
+        Assert.True(await p.WaitForExitAsync(Timeout, TestContext.Current.CancellationToken)
+            .WaitAsync(Timeout, TestContext.Current.CancellationToken));
         Assert.Equal(0, p.ExitCode);
     }
 
@@ -60,7 +63,8 @@ public class PtyProcessAsyncTests
         var wait = p.WaitForExitAsync(System.Threading.Timeout.InfiniteTimeSpan, cts.Token);
         await cts.CancelAsync();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => wait).WaitAsync(Timeout, TestContext.Current.CancellationToken);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => wait)
+            .WaitAsync(Timeout, TestContext.Current.CancellationToken);
     }
 
     // --- DisposeAsync -----------------------------------------------------
@@ -70,7 +74,8 @@ public class PtyProcessAsyncTests
     {
         var bash = TestBash.Start();
         await bash.Input.WriteLineAsync("exit");
-        await bash.WaitForExitAsync(Timeout, TestContext.Current.CancellationToken).WaitAsync(Timeout, TestContext.Current.CancellationToken);
+        await bash.WaitForExitAsync(Timeout, TestContext.Current.CancellationToken)
+            .WaitAsync(Timeout, TestContext.Current.CancellationToken);
 
         await bash.DisposeAsync(); // must complete and not throw
 
@@ -304,7 +309,8 @@ public class PtyProcessAsyncTests
         try
         {
             p.Kill();
-            Assert.True(handlerStarted.Wait(Timeout, TestContext.Current.CancellationToken), "exit handler did not start");
+            Assert.True(handlerStarted.Wait(Timeout, TestContext.Current.CancellationToken),
+                "exit handler did not start");
             Assert.True(await wait.WaitAsync(Timeout, TestContext.Current.CancellationToken));
         }
         finally
