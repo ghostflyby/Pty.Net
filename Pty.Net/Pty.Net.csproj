@@ -1,110 +1,110 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
-    <PropertyGroup>
-        <TargetFramework>net10.0</TargetFramework>
-        <RootNamespace>Ghostflyby.Pty</RootNamespace>
-        <!-- The shipped package/assembly name: the repo is Pty.Net, the NuGet id is
-             vendor-prefixed (Ghostflyby.Pty) to avoid colliding with the unlisted
-             Pty.Net package on nuget.org. -->
-        <AssemblyName>Ghostflyby.Pty</AssemblyName>
-        <PackageId>Ghostflyby.Pty</PackageId>
-        <!-- NuGet package metadata. Description and tags mirror the GitHub repo
-             description and topics — keep them in sync. No <Version> here on purpose:
-             the version is derived from the git tag at publish time (vX.Y.Z → X.Y.Z),
-             so the tag is the single source of truth and this file never drifts. -->
-        <Authors>ghostflyby</Authors>
-        <Description>The multi-platform pty wrapper in pure C# with P/Invoke: drive interactive shells with a real terminal on Windows, macOS, and Linux.</Description>
-        <!-- SPDX expression: nuget.org renders the Apache-2.0 badge from it. The license
-             text itself lives at the repo root (LICENSE). -->
-        <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
-        <PackageReadmeFile>README.md</PackageReadmeFile>
-        <RepositoryType>git</RepositoryType>
-        <RepositoryUrl>https://github.com/ghostflyby/Pty.Net</RepositoryUrl>
-        <PackageProjectUrl>https://github.com/ghostflyby/Pty.Net</PackageProjectUrl>
-        <PackageTags>pty;pseudo-terminal;conpty;csharp;dotnet;dotnet-library</PackageTags>
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Ghostflyby.Pty</RootNamespace>
+    <!-- The shipped package/assembly name: the repo is Pty.Net, the NuGet id is
+         vendor-prefixed (Ghostflyby.Pty) to avoid colliding with the unlisted
+         Pty.Net package on nuget.org. -->
+    <AssemblyName>Ghostflyby.Pty</AssemblyName>
+    <PackageId>Ghostflyby.Pty</PackageId>
+    <!-- NuGet package metadata. Description and tags mirror the GitHub repo
+         description and topics — keep them in sync. No <Version> here on purpose:
+         the version is derived from the git tag at publish time (vX.Y.Z → X.Y.Z),
+         so the tag is the single source of truth and this file never drifts. -->
+    <Authors>ghostflyby</Authors>
+    <Description>The multi-platform pty wrapper in pure C# with P/Invoke: drive interactive shells with a real terminal on Windows, macOS, and Linux.</Description>
+    <!-- SPDX expression: nuget.org renders the Apache-2.0 badge from it. The license
+         text itself lives at the repo root (LICENSE). -->
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryType>git</RepositoryType>
+    <RepositoryUrl>https://github.com/ghostflyby/Pty.Net</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/ghostflyby/Pty.Net</PackageProjectUrl>
+    <PackageTags>pty;pseudo-terminal;conpty;csharp;dotnet;dotnet-library</PackageTags>
 
-        <!-- Symbols: dotnet pack emits a snupkg next to the nupkg (the publish
-             workflow pushes it). SourceLink then lets a consumer's debugger step
-             into the library source instead of "Cannot step in — no source".
-             Each OS build job compiles a different #if/#elif file set, so the
-             platform assemblies and PDBs are kept together. The publish job
-             rebuilds one snupkg from all three platform artifacts, placing each
-             PDB beside the matching final package DLL for both architecture RIDs.
-             ContinuousIntegrationBuild keeps the compilation deterministic
-             (normalized paths), which SourceLink requires. -->
-        <IncludeSymbols>true</IncludeSymbols>
-        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
-        <PublishRepositoryUrl>true</PublishRepositoryUrl>
-        <EmbedUntrackedSources>true</EmbedUntrackedSources>
-        <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
-        <ImplicitUsings>enable</ImplicitUsings>
-        <Nullable>enable</Nullable>
-        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Symbols: dotnet pack emits a snupkg next to the nupkg (the publish
+         workflow pushes it). SourceLink then lets a consumer's debugger step
+         into the library source instead of "Cannot step in — no source".
+         Each OS build job compiles a different #if/#elif file set, so the
+         platform assemblies and PDBs are kept together. The publish job
+         rebuilds one snupkg from all three platform artifacts, placing each
+         PDB beside the matching final package DLL for both architecture RIDs.
+         ContinuousIntegrationBuild keeps the compilation deterministic
+         (normalized paths), which SourceLink requires. -->
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
-        <!-- No reflection / dynamic loading / dynamic linking: declare AOT compat so the
-             AOT analyzers run at build time (IL20xx diagnostics) instead of needing a
-             full AOT publish smoke test. -->
-        <IsAotCompatible>true</IsAotCompatible>
+    <!-- No reflection / dynamic loading / dynamic linking: declare AOT compat so the
+         AOT analyzers run at build time (IL20xx diagnostics) instead of needing a
+         full AOT publish smoke test. -->
+    <IsAotCompatible>true</IsAotCompatible>
 
-        <!-- Documentation is part of the public contract: always emit the XML doc file.
-             Every warning is a build error (TreatWarningsAsErrors), so a missing or
-             malformed doc comment, a dangling cref, a missing <param> tag, or any other
-             new warning from a future SDK fails the build. -->
-        <GenerateDocumentationFile>true</GenerateDocumentationFile>
-        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Documentation is part of the public contract: always emit the XML doc file.
+         Every warning is a build error (TreatWarningsAsErrors), so a missing or
+         malformed doc comment, a dangling cref, a missing <param> tag, or any other
+         new warning from a future SDK fails the build. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
 
-        <!-- Platform symbol used by #if in NativeMethods.Unix.cs / PtyProcess.Start.Unix.cs.
-             The SDK may define OSX/LINUX automatically from the build host, but be explicit.
-             Windows needs no define: the Windows files are compiled via file globs below. -->
-        <DefineConstants Condition="$([MSBuild]::IsOSPlatform('OSX'))">$(DefineConstants);OSX</DefineConstants>
-        <DefineConstants Condition="$([MSBuild]::IsOSPlatform('Linux'))">$(DefineConstants);LINUX</DefineConstants>
+    <!-- Platform symbol used by #if in NativeMethods.Unix.cs / PtyProcess.Start.Unix.cs.
+         The SDK may define OSX/LINUX automatically from the build host, but be explicit.
+         Windows needs no define: the Windows files are compiled via file globs below. -->
+    <DefineConstants Condition="$([MSBuild]::IsOSPlatform('OSX'))">$(DefineConstants);OSX</DefineConstants>
+    <DefineConstants Condition="$([MSBuild]::IsOSPlatform('Linux'))">$(DefineConstants);LINUX</DefineConstants>
 
-        <!-- CsWin32 build-task mode makes it emit [LibraryImport] externs (the plain
-             source-generator mode emits [DllImport], which would trip the IL20xx
-             diagnostics under IsAotCompatible). Windows-only. -->
-        <CsWin32RunAsBuildTask Condition="$([MSBuild]::IsOSPlatform('Windows'))">true</CsWin32RunAsBuildTask>
-    </PropertyGroup>
+    <!-- CsWin32 build-task mode makes it emit [LibraryImport] externs (the plain
+         source-generator mode emits [DllImport], which would trip the IL20xx
+         diagnostics under IsAotCompatible). Windows-only. -->
+    <CsWin32RunAsBuildTask Condition="$([MSBuild]::IsOSPlatform('Windows'))">true</CsWin32RunAsBuildTask>
+  </PropertyGroup>
 
-    <!-- Platform split by file globs instead of inline #if: PtyProcess.cs and PtyReaper.cs
-         are platform-free and reach platform code through partial methods; each platform
-         half lives in a .Windows.cs / .Unix.cs file compiled only on its platform.
-         The .Unix.cs set also carries the macOS/Linux (#if OSX/LINUX) differences. -->
-    <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
-        <Compile Remove="**/*.Unix.cs" />
-        <Compile Update="PtyProcess.Start.Windows.cs;PtyReaper.Windows.cs;PtyStream.Windows.cs;WindowsPty.Windows.cs" />
-    </ItemGroup>
-    <ItemGroup Condition="!$([MSBuild]::IsOSPlatform('Windows'))">
-        <Compile Remove="**/*.Windows.cs" />
-        <Compile Update="NativeMethods.Unix.cs;PtyIoEngine.Unix.cs;PtyProcess.Start.Unix.cs;PtyReaper.Unix.cs;PtyStream.Unix.cs" />
-    </ItemGroup>
+  <!-- Platform split by file globs instead of inline #if: PtyProcess.cs and PtyReaper.cs
+       are platform-free and reach platform code through partial methods; each platform
+       half lives in a .Windows.cs / .Unix.cs file compiled only on its platform.
+       The .Unix.cs set also carries the macOS/Linux (#if OSX/LINUX) differences. -->
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+    <Compile Remove="**/*.Unix.cs"/>
+    <Compile Update="PtyProcess.Start.Windows.cs;PtyReaper.Windows.cs;PtyStream.Windows.cs;WindowsPty.Windows.cs"/>
+  </ItemGroup>
+  <ItemGroup Condition="!$([MSBuild]::IsOSPlatform('Windows'))">
+    <Compile Remove="**/*.Windows.cs"/>
+    <Compile Update="NativeMethods.Unix.cs;PtyIoEngine.Unix.cs;PtyProcess.Start.Unix.cs;PtyReaper.Unix.cs;PtyStream.Unix.cs"/>
+  </ItemGroup>
 
-    <!-- Windows-only: CsWin32 source-generates the ConPTY interop (CreatePseudoConsole +
-         CreateProcessW + attribute list) under Windows.Win32.PInvoke. PrivateAssets
-         keeps the generator package out of consumers. -->
-    <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
-        <PackageReference Include="Microsoft.Windows.CsWin32" Version="0.3.298" PrivateAssets="all" />
-    </ItemGroup>
+  <!-- Windows-only: CsWin32 source-generates the ConPTY interop (CreatePseudoConsole +
+       CreateProcessW + attribute list) under Windows.Win32.PInvoke. PrivateAssets
+       keeps the generator package out of consumers. -->
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+    <PackageReference Include="Microsoft.Windows.CsWin32" Version="0.3.298" PrivateAssets="all"/>
+  </ItemGroup>
 
-    <!-- The test suite reads internal state (pipe handles, debug trace) directly. -->
-    <ItemGroup>
-        <InternalsVisibleTo Include="Pty.Net.Tests" />
-    </ItemGroup>
+  <!-- The test suite reads internal state (pipe handles, debug trace) directly. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Pty.Net.Tests"/>
+  </ItemGroup>
 
-    <!-- Ship the README inside the package: nuget.org renders it on the package page
-         (PackageReadmeFile above). -->
-    <ItemGroup>
-        <None Include="$(MSBuildThisFileDirectory)../README.md" Link="README.md" Pack="true" PackagePath="\" />
-    </ItemGroup>
+  <!-- Ship the README inside the package: nuget.org renders it on the package page
+       (PackageReadmeFile above). -->
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../README.md" Link="README.md" Pack="true" PackagePath="\"/>
+  </ItemGroup>
 
-    <!-- Public API contract: PublicApiAnalyzers fails the build whenever a public symbol
-         is missing from PublicAPI.Shipped.txt / PublicAPI.Unshipped.txt or the shipped
-         surface changes incompatibly. The baseline files are explicit here even though
-         the package also wires them up automatically. PrivateAssets keeps the analyzer
-         and its rules out of consumers. -->
-    <ItemGroup>
-        <PackageReference Include="Microsoft.CodeAnalysis.PublicApiAnalyzers" Version="5.6.0" PrivateAssets="all" />
-        <AdditionalFiles Include="PublicAPI.Shipped.txt" />
-        <AdditionalFiles Include="PublicAPI.Unshipped.txt" />
-    </ItemGroup>
+  <!-- Public API contract: PublicApiAnalyzers fails the build whenever a public symbol
+       is missing from PublicAPI.Shipped.txt / PublicAPI.Unshipped.txt or the shipped
+       surface changes incompatibly. The baseline files are explicit here even though
+       the package also wires them up automatically. PrivateAssets keeps the analyzer
+       and its rules out of consumers. -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.PublicApiAnalyzers" Version="5.6.0" PrivateAssets="all"/>
+    <AdditionalFiles Include="PublicAPI.Shipped.txt"/>
+    <AdditionalFiles Include="PublicAPI.Unshipped.txt"/>
+  </ItemGroup>
 
 </Project>

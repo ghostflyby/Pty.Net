@@ -48,7 +48,7 @@ public partial class SignalIsolationTests
         }
 
         [LibraryImport("libc", SetLastError = true)]
-        [SuppressMessage("ReSharper","InconsistentNaming")]
+        [SuppressMessage("ReSharper", "InconsistentNaming")]
         internal static partial IntPtr signal(Signals signum, IntPtr handler);
     }
 }

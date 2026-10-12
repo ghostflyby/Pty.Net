@@ -1,16 +1,21 @@
 # Pty.Net
 
-The multi-platform pty wrapper in pure C# with P/Invoke: drive interactive shells with a real terminal on Windows, macOS, and Linux.
+The multi-platform pty wrapper in pure C# with P/Invoke: drive interactive shells with a real terminal on Windows,
+macOS, and Linux.
 
-[![CI](https://github.com/ghostflyby/Pty.Net/actions/workflows/ci.yml/badge.svg)](https://github.com/ghostflyby/Pty.Net/actions/workflows/ci.yml) · [![NuGet Version](https://img.shields.io/nuget/v/Ghostflyby.Pty)](https://www.nuget.org/packages/Ghostflyby.Pty) · License: [Apache-2.0](LICENSE)
+[![CI](https://github.com/ghostflyby/Pty.Net/actions/workflows/ci.yml/badge.svg)](https://github.com/ghostflyby/Pty.Net/actions/workflows/ci.yml) · [![NuGet Version](https://img.shields.io/nuget/v/Ghostflyby.Pty)](https://www.nuget.org/packages/Ghostflyby.Pty) ·
+License: [Apache-2.0](LICENSE)
 
 ## Features
 
-- **Real pseudo-terminal sessions** — full-screen programs, job control, and terminal escape sequences behave as they do in a real terminal.
+- **Real pseudo-terminal sessions** — full-screen programs, job control, and terminal escape sequences behave as they do
+  in a real terminal.
 - **Cross-platform** — ConPTY on Windows; `posix_openpt` + fork/exec on macOS and Linux. Architecture-neutral managed IL (one package covers x64 and arm64).
 - **Text and raw I/O** — `Input`/`Output` text facades over the raw `BaseStream`.
-- **Deterministic termination** — a configurable graceful-close window, then a force kill; `Dispose` blocks until the cleanup has actually completed.
-- **Exit notification with the terminal result** — `Exited` supplies the process after its normal exit code or Unix termination signal has been published.
+- **Deterministic termination** — a configurable graceful-close window, then a force kill; `Dispose` blocks until the
+  cleanup has actually completed.
+- **Exit notification with the terminal result** — `Exited` supplies the process after its normal exit code or Unix
+  termination signal has been published.
 - **AOT compatible** — no reflection, no dynamic loading; the pty stays out of the way of trimmed/published apps.
 
 ## Install
@@ -88,10 +93,10 @@ in `Environment` override inherited variables, and a `null` value removes one.
 
 ## Termination
 
-| Method | Unix | Windows |
-|---|---|---|
-| `RequestClose()` | `SIGHUP` | `CTRL_CLOSE_EVENT` (async) |
-| `Kill()` | `SIGKILL` | `TerminateProcess` |
+| Method                         | Unix                        | Windows                                        |
+|--------------------------------|-----------------------------|------------------------------------------------|
+| `RequestClose()`               | `SIGHUP`                    | `CTRL_CLOSE_EVENT` (async)                     |
+| `Kill()`                       | `SIGKILL`                   | `TerminateProcess`                             |
 | `Dispose()` / `DisposeAsync()` | `SIGHUP` → wait → `SIGKILL` | `CTRL_CLOSE_EVENT` → wait → `TerminateProcess` |
 
 - **`RequestClose`** asks the terminal session to close; the child decides how to

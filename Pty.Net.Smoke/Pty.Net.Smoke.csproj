@@ -1,28 +1,28 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-    <!-- Consumer-facing smoke test: consumes the real Ghostflyby.Pty package from
-         nuget.org exactly like a user, then runs one real pty session. Kept out of the
-         solution so it does not affect the library build/test. The publish workflow
-         runs it on the same OS matrix as the test suite and overrides the version with
-         the tag. -->
-    <PropertyGroup>
-        <OutputType>Exe</OutputType>
-        <TargetFramework>net10.0</TargetFramework>
-        <Nullable>enable</Nullable>
-        <ImplicitUsings>enable</ImplicitUsings>
-        <!-- Drives the #if WINDOWS shell selection in Program.cs. MSBuild's $(OS)
-             is Windows_NT only on Windows, so the Unix builds compile the bash
-             branch; without this the Windows build also compiled the bash branch
-             and the smoke run resolved C:\Windows\SYSTEM32\bash.exe (WSL), which
-             has no distro on the runners. -->
-        <DefineConstants Condition="'$(OS)' == 'Windows_NT'">$(DefineConstants);WINDOWS</DefineConstants>
-        <!-- Default for local runs; the publish workflow overrides it with the tag
-             version (dotnet run -p:GhostflybyPtyVersion=$VERSION). -->
-        <GhostflybyPtyVersion Condition="'$(GhostflybyPtyVersion)' == ''">0.1.0</GhostflybyPtyVersion>
-    </PropertyGroup>
+  <!-- Consumer-facing smoke test: consumes the real Ghostflyby.Pty package from
+       nuget.org exactly like a user, then runs one real pty session. Kept out of the
+       solution so it does not affect the library build/test. The publish workflow
+       runs it on the same OS matrix as the test suite and overrides the version with
+       the tag. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Drives the #if WINDOWS shell selection in Program.cs. MSBuild's $(OS)
+         is Windows_NT only on Windows, so the Unix builds compile the bash
+         branch; without this the Windows build also compiled the bash branch
+         and the smoke run resolved C:\Windows\SYSTEM32\bash.exe (WSL), which
+         has no distro on the runners. -->
+    <DefineConstants Condition="'$(OS)' == 'Windows_NT'">$(DefineConstants);WINDOWS</DefineConstants>
+    <!-- Default for local runs; the publish workflow overrides it with the tag
+         version (dotnet run -p:GhostflybyPtyVersion=$VERSION). -->
+    <GhostflybyPtyVersion Condition="'$(GhostflybyPtyVersion)' == ''">0.1.0</GhostflybyPtyVersion>
+  </PropertyGroup>
 
-    <ItemGroup>
-        <PackageReference Include="Ghostflyby.Pty" Version="$(GhostflybyPtyVersion)" />
-    </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Ghostflyby.Pty" Version="$(GhostflybyPtyVersion)"/>
+  </ItemGroup>
 
 </Project>

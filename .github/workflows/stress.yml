@@ -16,7 +16,7 @@ on:
         description: Full test-suite runs per OS
         default: '5'
   pull_request:
-    types: [labeled]
+    types: [ labeled ]
 
 concurrency:
   group: stress-${{ github.ref }}
@@ -39,7 +39,7 @@ jobs:
         # billing. macOS runners bill at 10x on private repos, so kqueue stress
         # is currently covered only by local runs; add macos-latest here only if
         # a kqueue-specific signal shows up that the other halves cannot catch.
-        os: [ubuntu-latest, windows-latest]
+        os: [ ubuntu-latest, windows-latest ]
     steps:
       - uses: actions/checkout@v7
 

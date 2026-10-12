@@ -21,12 +21,11 @@ First stable release of Ghostflyby.Pty for .NET 10. The API, platform matrix,
 package layout, symbols, source links, security scanning, and release pipeline
 have been validated through the 0.5.x pre-1.0 releases.
 
-
 CI, security-gate and documentation hardening ahead of 1.0.0; runtime behavior
 is unchanged.
 
-- Cleanup: `DisposeAsync` now disposes the underlying pty stream asynchronously
-  (`DisposeAsync`) instead of calling the blocking `Dispose`. The rest is hygiene
+- Cleanup: `DisposeAsync` now disposes the underlying pty stream asynchronously (`DisposeAsync`) instead of calling the
+  blocking `Dispose`. The rest is hygiene
   surfaced by ReSharper — dead locals/exports, redundant `unsafe`, unused
   parameters — and the test suite moved to async disposal and cancellation.
 - Performance (Windows): a direction whose configured encoding is UTF-8 now uses
@@ -35,8 +34,8 @@ is unchanged.
   Non-UTF-8 encodings bridge exactly as before.
 - CI: the native runner matrix now covers every shipped RID — `windows-11-arm`
   (win-arm64) and `macos-15-intel` (osx-x64) join the test suite and the post-publish
-  package smoke, so all six runtime folders are exercised on their own platform
-  (the platform-split DLL checks key off `runner.os`, not the label). `macos-15-intel`
+  package smoke, so all six runtime folders are exercised on their own platform (the platform-split DLL checks key off
+  `runner.os`, not the label). `macos-15-intel`
   is GitHub's final Intel image and retires August 2027.
 - Security: CodeQL C# analysis (default + `security-extended` suites, one database
   per compiled OS half) uploads to the Security tab on pushes, PRs, and a weekly
@@ -83,8 +82,8 @@ runtime code is unchanged.
   collector was retired with the v2 runner; the 30-minute job timeout is the
   hang net.
 - Publish pipeline: snupkg symbols + SourceLink (`PublishRepositoryUrl`),
-  build-provenance attestation for the assembled package, and tag validation
-  (tag commit must be a main ancestor with green CI; a version already on
+  build-provenance attestation for the assembled package, and tag validation (tag commit must be a main ancestor with
+  green CI; a version already on
   nuget.org is refused before any build — this also makes the no-`--skip-duplicate`
   push safe).
 - `dotnet nuget push` no longer passes `--skip-duplicate`: a duplicate-version
@@ -99,8 +98,8 @@ runtime code is unchanged.
 Unix spawn rebuilt around fork/exec with a real controlling terminal, plus the
 reliability and packaging work that came out of stress-testing it:
 
-- **Unix spawn**: `posix_openpt` + `fork()`; the child becomes a session leader
-  (`setsid`) and reopens the pty slave without `O_NOCTTY` to obtain a genuine
+- **Unix spawn**: `posix_openpt` + `fork()`; the child becomes a session leader (`setsid`) and reopens the pty slave
+  without `O_NOCTTY` to obtain a genuine
   controlling terminal (macOS `posix_spawn` with `SETEXEC|CLOEXEC_DEFAULT`,
   Linux `execve` + `close_range(2)` sweep). Replaces `posix_spawnp`.
 - **Fork robustness**: no-GC region around the fork survives force-termination;

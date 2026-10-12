@@ -188,8 +188,7 @@ internal static class PtyIoEngine
         // Waiters hold no thread while pending, so the queue only carries transient
         // control messages and is effectively unbounded in practice.
         private readonly Channel<Control> inbox = Channel.CreateUnbounded<Control>(
-            new UnboundedChannelOptions
-                { SingleReader = true, SingleWriter = false, AllowSynchronousContinuations = false });
+            new UnboundedChannelOptions { SingleReader = true, SingleWriter = false, AllowSynchronousContinuations = false });
 
         // Self-pipe: [0] read end (engine only), [1] write end (any thread). Both ends
         // stay blocking; the drain uses poll-before-read and Post uses poll-before-write,

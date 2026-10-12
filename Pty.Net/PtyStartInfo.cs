@@ -92,9 +92,7 @@ public sealed class PtyStartInfo : IEquatable<PtyStartInfo>
     public bool InheritParentEnvironment { get; init; } = true;
 
     /// <summary>Creates an empty launch description; set <see cref="FileName"/> before starting.</summary>
-    public PtyStartInfo()
-    {
-    }
+    public PtyStartInfo() { }
 
     /// <summary>Creates a launch description for <paramref name="fileName"/>.</summary>
     /// <param name="fileName">The executable to run (see <see cref="FileName"/>).</param>
@@ -204,14 +202,14 @@ public sealed class PtyStartInfo : IEquatable<PtyStartInfo>
             return true;
 
         return string.Equals(FileName, other.FileName, StringComparison.Ordinal)
-            && InheritParentEnvironment == other.InheritParentEnvironment
-            && Column == other.Column
-            && Row == other.Row
-            && InputEncoding.CodePage == other.InputEncoding.CodePage
-            && OutputEncoding.CodePage == other.OutputEncoding.CodePage
-            && string.Equals(WorkingDirectory, other.WorkingDirectory, StringComparison.Ordinal)
-            && Arguments.SequenceEqual(other.Arguments, StringComparer.Ordinal)
-            && EnvironmentContentsEqual(Environment, other.Environment);
+               && InheritParentEnvironment == other.InheritParentEnvironment
+               && Column == other.Column
+               && Row == other.Row
+               && InputEncoding.CodePage == other.InputEncoding.CodePage
+               && OutputEncoding.CodePage == other.OutputEncoding.CodePage
+               && string.Equals(WorkingDirectory, other.WorkingDirectory, StringComparison.Ordinal)
+               && Arguments.SequenceEqual(other.Arguments, StringComparer.Ordinal)
+               && EnvironmentContentsEqual(Environment, other.Environment);
     }
 
     /// <inheritdoc />
@@ -242,7 +240,8 @@ public sealed class PtyStartInfo : IEquatable<PtyStartInfo>
     /// <inheritdoc />
     public override string ToString()
     {
-        return $"PtyStartInfo {{ FileName = {FileName}, Arguments = [{string.Join(", ", Arguments)}], Column = {Column}, Row = {Row} }}";
+        return
+            $"PtyStartInfo {{ FileName = {FileName}, Arguments = [{string.Join(", ", Arguments)}], Column = {Column}, Row = {Row} }}";
     }
 
     /// <summary>Content-based value equality (collections entry-by-entry; see the type documentation).</summary>

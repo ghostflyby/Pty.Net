@@ -14,7 +14,8 @@ internal static class PtyDiagnostics
     /// returns up to ten times per second per watched child) — the interpolated string
     /// would otherwise allocate on every iteration even with diagnostics disabled.
     /// </summary>
-    internal static bool Enabled { get; } = string.Equals(Environment.GetEnvironmentVariable("PTY_REAPER_DIAG"), "1", StringComparison.Ordinal);
+    internal static bool Enabled { get; } = string.Equals(Environment.GetEnvironmentVariable("PTY_REAPER_DIAG"), "1",
+        StringComparison.Ordinal);
 
     internal static void Log(string message)
     {

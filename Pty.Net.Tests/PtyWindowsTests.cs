@@ -31,7 +31,8 @@ public class PtyWindowsTests
     [Fact]
     public void PowerShell_OutputAndExitCodeRoundTrip()
     {
-        using var p = PtyProcess.Start("powershell.exe", ["-NoProfile", "-Command", "Write-Output 'ps-AAAA'; Write-Output 'ps-DONE'; exit 3"]);
+        using var p =
+ PtyProcess.Start("powershell.exe", ["-NoProfile", "-Command", "Write-Output 'ps-AAAA'; Write-Output 'ps-DONE'; exit 3"]);
         var output = TestBash.ReadUntil(p.Output, "ps-DONE", Timeout);
 
         Assert.Contains("ps-AAAA", output);

@@ -186,7 +186,7 @@ public class PtyProcessTests : IDisposable
 
         // "isatty=True sid=<n> pid=<n> pgrp=<n> tcgetpgrp=<n>"
         Assert.Contains("isatty=True", output);
-        Assert.Matches(@"sid=(\d+)\s+pid=\1", output); // session leader
+        Assert.Matches(@"sid=(\d+)\s+pid=\1", output);        // session leader
         Assert.Matches(@"pgrp=(\d+)\s+tcgetpgrp=\1", output); // foreground on the ctty
     }
 

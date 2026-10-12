@@ -69,17 +69,20 @@ public class StreamSemanticsTests
     public async Task WaitForExit_PreservesOutputProducedBeforeAndDuringWait()
     {
 #if WINDOWS
-        using var p = PtyProcess.Start("cmd.exe", ["/c", "echo BEFORE-MARKER & ping -n 2 127.0.0.1 >nul & echo AFTER-MARKER"]);
+        using var p =
+ PtyProcess.Start("cmd.exe", ["/c", "echo BEFORE-MARKER & ping -n 2 127.0.0.1 >nul & echo AFTER-MARKER"]);
         const string before = "BEFORE-MARKER";
         const string after = "AFTER-MARKER";
 #else
-        await using var p = PtyProcess.Start("bash", ["--noprofile", "--norc", "-c", "echo BEFORE-MARKER; sleep 0.4; echo AFTER-MARKER"]);
+        await using var p = PtyProcess.Start("bash",
+            ["--noprofile", "--norc", "-c", "echo BEFORE-MARKER; sleep 0.4; echo AFTER-MARKER"]);
         const string before = "BEFORE-MARKER";
         const string after = "AFTER-MARKER";
 #endif
         // Wait for exit WITHOUT reading first: the drain now buffers what it would
         // previously have discarded on Unix.
-        Assert.True(await p.WaitForExitAsync(Timeout, TestContext.Current.CancellationToken).WaitAsync(Timeout, TestContext.Current.CancellationToken));
+        Assert.True(await p.WaitForExitAsync(Timeout, TestContext.Current.CancellationToken)
+            .WaitAsync(Timeout, TestContext.Current.CancellationToken));
 
         using var cts = new CancellationTokenSource(Timeout);
         var text = new StringBuilder();

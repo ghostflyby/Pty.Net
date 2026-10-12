@@ -47,12 +47,15 @@ internal static partial class PtyReaper
     private sealed class ReaperThread
     {
         private const int MaxEvents = 64;
+
         private const int Eintr = NativeMethods.Eintr;
+
         // Retry interval for processes whose registration failed: long enough that a
         // transient resource shortage usually clears, short enough that the child's exit
         // is still collected promptly. Only active while a retry is pending — otherwise
         // the wait blocks indefinitely.
         private const int RetryIntervalMs = 100;
+
         // macOS-only: EVFILT_USER ident for the self-wake channel (any non-conflicting id).
         private const nuint WakeIdent = 1;
 
@@ -64,17 +67,22 @@ internal static partial class PtyReaper
 #endif
 
         private readonly Lock sync = new();
+
         private readonly Dictionary<int, PtyProcess> byPid = [];
+
         // macOS-only: pids seen stuck mid-exit (tty teardown wait) -> first-seen tick.
         // After StuckExitGraceMs the reaper closes the pty master to end the wait.
         private readonly Dictionary<int, long> stuckExiting = [];
+
         // Grace window before the reaper closes the master on a stuck mid-exit: long
         // enough that a reader polling the output at a human cadence keeps draining,
         // short enough that "wait for Exited without reading" stays responsive.
         private const int StuckExitGraceMs = 2000;
+
         // Processes whose Watch arrived and are not yet registered. Drained every loop
         // iteration; a registration failure moves the process to retryWatch.
         private readonly Queue<PtyProcess> pendingWatch = [];
+
         // Processes whose registration failed while they were still alive. Scanned in
         // full every RetryIntervalMs: each is reaped if it has exited or re-registered
         // if it has not. A scan always touches every entry, so no process can starve
@@ -89,7 +97,8 @@ internal static partial class PtyReaper
         // epoll_event is packed (12 bytes) on x86_64 and natural (16 bytes) elsewhere
         // (see NativeMethods.EpollIsPacked); the reaper selects the variant at runtime.
         private readonly NativeMethods.EpollEvent[] linuxEvents = new NativeMethods.EpollEvent[MaxEvents];
-        private readonly NativeMethods.EpollEventPacked[] linuxEventsPacked = new NativeMethods.EpollEventPacked[MaxEvents];
+        private readonly NativeMethods.EpollEventPacked[] linuxEventsPacked =
+ new NativeMethods.EpollEventPacked[MaxEvents];
         // epoll_ctl(EPOLL_CTL_DEL) needs a non-null event pointer on older kernels but
         // ignores its contents; one reused struct per layout avoids per-reap construction.
         private NativeMethods.EpollEvent nullEpollEvent;
@@ -156,6 +165,7 @@ internal static partial class PtyReaper
                 byPid[process.Pid] = process;
                 pendingWatch.Enqueue(process);
             }
+
             Wake();
         }
 
@@ -184,6 +194,7 @@ internal static partial class PtyReaper
                         DrainWake();
                         continue;
                     }
+
                     ReapProcess(EventPid(i));
                 }
 #if OSX
@@ -220,6 +231,7 @@ internal static partial class PtyReaper
                         return;
                     process = pendingWatch.Dequeue();
                 }
+
                 PtyDiagnostics.Log($"watch drain pid={process.Pid}");
 
                 // Already exited before registration: collect it now, never register.
@@ -232,6 +244,7 @@ internal static partial class PtyReaper
                     {
                         byPid.Remove(process.Pid);
                     }
+
                     continue;
                 }
 
@@ -266,8 +279,10 @@ internal static partial class PtyReaper
                     {
                         byPid.Remove(process.Pid);
                     }
+
                     continue;
                 }
+
                 if (Register(process))
                     retryWatch.RemoveAt(i);
                 // Still alive and still failing: leave it for the next scan.
@@ -340,6 +355,7 @@ internal static partial class PtyReaper
                 // Same fallback as above: the child exited between waitpid and kevent.
                 return TryReapProcess(process);
             }
+
             PtyDiagnostics.Log($"register kevent succeeded pid={pid}");
 
             // The kernel does not backfill an already-fired NOTE_EXIT: if the child exited
@@ -355,8 +371,10 @@ internal static partial class PtyReaper
                 {
                     byPid.Remove(process.Pid);
                 }
+
                 return true;
             }
+
             return true;
 #endif
         }
@@ -377,6 +395,7 @@ internal static partial class PtyReaper
             {
                 byPid.Remove(process.Pid);
             }
+
             return true;
         }
 
@@ -411,6 +430,7 @@ internal static partial class PtyReaper
             {
                 byPid[pid] = process;
             }
+
             if (!Register(process))
             {
                 lock (sync)
@@ -451,7 +471,8 @@ internal static partial class PtyReaper
                                 stuckExiting[process.Pid] = firstSeen = now;
                             if (now - firstSeen >= StuckExitGraceMs)
                             {
-                                PtyDiagnostics.Log($"stuck-exit close-master pid={process.Pid} after={now - firstSeen}ms");
+                                PtyDiagnostics.Log(
+                                    $"stuck-exit close-master pid={process.Pid} after={now - firstSeen}ms");
                                 process.CloseTerminalForStuckExit();
                             }
                             else
@@ -460,8 +481,10 @@ internal static partial class PtyReaper
                             }
                         }
                     }
+
                     continue;
                 }
+
                 stuckExiting.Remove(process.Pid);
                 Unregister(process.Pid);
                 if (process.OnReaped(status))
@@ -536,6 +559,7 @@ internal static partial class PtyReaper
                         PtyDiagnostics.Log($"wait events result={n}");
                     return n;
                 }
+
                 if (Marshal.GetLastPInvokeError() == Eintr)
                     continue;
                 throw new IOException($"Pty.Net reaper wait failed: errno={Marshal.GetLastPInvokeError()}");

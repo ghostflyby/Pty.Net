@@ -69,8 +69,7 @@ public class StartExceptionTests
     {
         var missing = MissingPath("workdir");
 
-        var ex = Assert.Throws<DirectoryNotFoundException>(
-            () => PtyProcess.Start(TestBash.BashPath, [], missing));
+        var ex = Assert.Throws<DirectoryNotFoundException>(() => PtyProcess.Start(TestBash.BashPath, [], missing));
 
         Assert.Contains(missing, ex.Message);
     }

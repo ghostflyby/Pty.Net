@@ -118,6 +118,7 @@ internal static class TestBash
             max = Math.Max(max, available);
             Thread.Sleep(25);
         }
+
         return max;
     }
 
