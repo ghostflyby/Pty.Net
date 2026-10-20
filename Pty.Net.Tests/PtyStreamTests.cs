@@ -13,11 +13,11 @@ public class PtyStreamTests : IDisposable
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(5);
     private const string Done = "__DONE__";
 
-    private readonly PtyProcess bash = TestBash.Start();
+    private readonly PtyProcess _bash = TestBash.Start();
 
-    public void Dispose() => bash.Dispose();
+    public void Dispose() => _bash.Dispose();
 
-    private PtyStream Stream => bash.BaseStream;
+    private PtyStream Stream => _bash.BaseStream;
 
     /// <summary>
     /// Turns off the tty line-discipline echo so command output is not mixed with
@@ -28,16 +28,16 @@ public class PtyStreamTests : IDisposable
     /// </summary>
     private void DisableEcho()
     {
-        bash.Input.WriteLine("stty -echo; printf \"__E\"\"CHO_SYNC__\"");
-        TestBash.ReadUntil(bash.Output, "__ECHO_SYNC__", Timeout);
-        TestBash.Drain(bash.Output, TimeSpan.FromMilliseconds(50));
+        _bash.Input.WriteLine("stty -echo; printf \"__E\"\"CHO_SYNC__\"");
+        TestBash.ReadUntil(_bash.Output, "__ECHO_SYNC__", Timeout);
+        TestBash.Drain(_bash.Output, TimeSpan.FromMilliseconds(50));
     }
 
     /// <summary>Waits for the shell prompt and drains it, leaving the session idle.</summary>
     private void WaitForIdlePrompt()
     {
-        TestBash.ReadUntil(bash.Output, "$", Timeout);
-        TestBash.Drain(bash.Output, TimeSpan.FromMilliseconds(50));
+        TestBash.ReadUntil(_bash.Output, "$", Timeout);
+        TestBash.Drain(_bash.Output, TimeSpan.FromMilliseconds(50));
     }
 
     /// <summary>Reading returns whatever is available promptly — not necessarily a full buffer.</summary>
@@ -45,7 +45,7 @@ public class PtyStreamTests : IDisposable
     public async Task ReadAsync_ReturnsAvailableBytesNotFullBuffer()
     {
         DisableEcho();
-        await bash.Input.WriteLineAsync($"printf 'short'; echo {Done}");
+        await _bash.Input.WriteLineAsync($"printf 'short'; echo {Done}");
 
         var buf = new byte[1024];
         var n = await Stream.ReadAsync(buf, TestContext.Current.CancellationToken).AsTask()
@@ -71,7 +71,7 @@ public class PtyStreamTests : IDisposable
     public async Task ReadAsync_ReadsDataThatWasAlreadyAvailable()
     {
         DisableEcho();
-        await bash.Input.WriteLineAsync($"printf 'ALREADY-THERE'; echo {Done}");
+        await _bash.Input.WriteLineAsync($"printf 'ALREADY-THERE'; echo {Done}");
 
         using var cts = new CancellationTokenSource();
         var buf = new byte[256];
@@ -125,7 +125,7 @@ public class PtyStreamTests : IDisposable
         using var cts = new CancellationTokenSource();
         var read = Stream.ReadAsync(new byte[16], cts.Token).AsTask();
 
-        await bash.Input.WriteLineAsync("exit");
+        await _bash.Input.WriteLineAsync("exit");
 
         // Partial reads may surface leftover output first; keep reading until EOF (0).
         var n = await read.WaitAsync(Timeout, TestContext.Current.CancellationToken);
@@ -141,8 +141,8 @@ public class PtyStreamTests : IDisposable
     public void Read_ReturnsZeroAfterChildExit()
     {
         WaitForIdlePrompt();
-        bash.Input.WriteLine("exit");
-        bash.WaitForExit(Timeout);
+        _bash.Input.WriteLine("exit");
+        _bash.WaitForExit(Timeout);
 
         // Like the async variant, partial reads may surface leftover output first
         // (the exit echo; on Windows the exit-wait drain preserves those bytes for
@@ -158,15 +158,15 @@ public class PtyStreamTests : IDisposable
     public async Task WriteAsync_Completes()
     {
         DisableEcho();
-        await bash.Input.WriteLineAsync($"cat; echo {Done}");
-        TestBash.Drain(bash.Output, TimeSpan.FromMilliseconds(500)); // let cat start reading
+        await _bash.Input.WriteLineAsync($"cat; echo {Done}");
+        TestBash.Drain(_bash.Output, TimeSpan.FromMilliseconds(500)); // let cat start reading
 
         using var cts = new CancellationTokenSource();
-        await bash.Input.WriteAsync("hello-async-write\n".AsMemory(), cts.Token)
+        await _bash.Input.WriteAsync("hello-async-write\n".AsMemory(), cts.Token)
             .WaitAsync(Timeout, TestContext.Current.CancellationToken);
-        await bash.Input.WriteAsync("\x04".AsMemory(), CancellationToken.None); // EOT ends cat
+        await _bash.Input.WriteAsync("\x04".AsMemory(), CancellationToken.None); // EOT ends cat
 
-        var output = TestBash.ReadUntil(bash.Output, Done, Timeout);
+        var output = TestBash.ReadUntil(_bash.Output, Done, Timeout);
         Assert.Contains("hello-async-write", output);
     }
 
@@ -183,9 +183,9 @@ public class PtyStreamTests : IDisposable
     public async Task WriteAsync_BlockedOnFullPtyBuffer_CancelsImmediately()
     {
         WaitForIdlePrompt();
-        await bash.Input.WriteLineAsync("stty -icanon min 1 time 0"); // non-canonical: bounded input queue
-        TestBash.Drain(bash.Output, TimeSpan.FromMilliseconds(300));
-        await bash.Input.WriteLineAsync("exec sleep 1000"); // child stops reading stdin
+        await _bash.Input.WriteLineAsync("stty -icanon min 1 time 0"); // non-canonical: bounded input queue
+        TestBash.Drain(_bash.Output, TimeSpan.FromMilliseconds(300));
+        await _bash.Input.WriteLineAsync("exec sleep 1000"); // child stops reading stdin
         await Task.Delay(300, TestContext.Current.CancellationToken);
 
         using var cts = new CancellationTokenSource();
@@ -218,7 +218,7 @@ public class PtyStreamTests : IDisposable
             .ToArray();
         await Task.Delay(200, TestContext.Current.CancellationToken); // let them all register before output flows
 
-        await bash.Input.WriteLineAsync($"seq 1 500; echo {Done}"); // ~2 KB of output
+        await _bash.Input.WriteLineAsync($"seq 1 500; echo {Done}"); // ~2 KB of output
 
         var results = await Task.WhenAll(reads).WaitAsync(Timeout, TestContext.Current.CancellationToken);
         Assert.All(results, n => Assert.True(n > 0, "every overlapping read should get data"));
@@ -289,7 +289,7 @@ public class PtyStreamTests : IDisposable
         Stream.Flush(); // open: no-op, must not throw
         Assert.True(Stream.FlushAsync(TestContext.Current.CancellationToken).IsCompletedSuccessfully);
 
-        bash.Dispose(); // the process owns the stream: dispose closed it
+        _bash.Dispose(); // the process owns the stream: dispose closed it
 
         Assert.Throws<ObjectDisposedException>(() => Stream.Flush());
     }

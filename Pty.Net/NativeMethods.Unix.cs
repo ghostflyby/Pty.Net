@@ -420,7 +420,7 @@ internal static partial class NativeMethods
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int getsid(int pid);
 
-    internal static int poll(Span<PollFd> fds, int timeout)
+    internal static int Poll(Span<PollFd> fds, int timeout)
     {
         return poll(fds, (nuint)fds.Length, timeout);
     }

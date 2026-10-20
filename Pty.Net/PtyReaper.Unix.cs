@@ -60,19 +60,19 @@ internal static partial class PtyReaper
         private const nuint WakeIdent = 1;
 
         // Event source: an epoll instance on Linux, a kqueue on macOS.
-        private readonly int eventFd;
+        private readonly int _eventFd;
 #if LINUX
         // Linux-only: the eventfd used to wake the loop when a process is queued.
         private readonly int wakeFd;
 #endif
 
-        private readonly Lock sync = new();
+        private readonly Lock _sync = new();
 
-        private readonly Dictionary<int, PtyProcess> byPid = [];
+        private readonly Dictionary<int, PtyProcess> _byPid = [];
 
         // macOS-only: pids seen stuck mid-exit (tty teardown wait) -> first-seen tick.
         // After StuckExitGraceMs the reaper closes the pty master to end the wait.
-        private readonly Dictionary<int, long> stuckExiting = [];
+        private readonly Dictionary<int, long> _stuckExiting = [];
 
         // Grace window before the reaper closes the master on a stuck mid-exit: long
         // enough that a reader polling the output at a human cadence keeps draining,
@@ -81,13 +81,13 @@ internal static partial class PtyReaper
 
         // Processes whose Watch arrived and are not yet registered. Drained every loop
         // iteration; a registration failure moves the process to retryWatch.
-        private readonly Queue<PtyProcess> pendingWatch = [];
+        private readonly Queue<PtyProcess> _pendingWatch = [];
 
         // Processes whose registration failed while they were still alive. Scanned in
         // full every RetryIntervalMs: each is reaped if it has exited or re-registered
         // if it has not. A scan always touches every entry, so no process can starve
         // behind a persistently failing one.
-        private readonly List<PtyProcess> retryWatch = [];
+        private readonly List<PtyProcess> _retryWatch = [];
 
 #if LINUX
         // Linux-only: pid -> pidfd, for unregistering a reaped process. Kept out of the
@@ -104,7 +104,7 @@ internal static partial class PtyReaper
         private NativeMethods.EpollEvent nullEpollEvent;
         private NativeMethods.EpollEventPacked nullEpollEventPacked;
 #elif OSX
-        private readonly NativeMethods.Kevent[] macEvents = new NativeMethods.Kevent[MaxEvents];
+        private readonly NativeMethods.Kevent[] _macEvents = new NativeMethods.Kevent[MaxEvents];
 #else
 #error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
 #endif
@@ -135,8 +135,8 @@ internal static partial class PtyReaper
                     throw new IOException($"epoll_ctl (wake) failed: errno={Marshal.GetLastPInvokeError()}");
             }
 #elif OSX
-            eventFd = NativeMethods.kqueue();
-            if (eventFd < 0)
+            _eventFd = NativeMethods.kqueue();
+            if (_eventFd < 0)
                 throw new IOException($"kqueue failed: errno={Marshal.GetLastPInvokeError()}");
 
             // EVFILT_USER self-wake channel; EV_CLEAR resets it after each delivery, so
@@ -147,7 +147,7 @@ internal static partial class PtyReaper
                 Filter = NativeMethods.EvfilUser,
                 Flags = NativeMethods.EvAdd | NativeMethods.EvClear,
             };
-            if (NativeMethods.kevent(eventFd, [wake], 1, null, 0, IntPtr.Zero) != 0)
+            if (NativeMethods.kevent(_eventFd, [wake], 1, null, 0, IntPtr.Zero) != 0)
                 throw new IOException($"kevent (wake) failed: errno={Marshal.GetLastPInvokeError()}");
 #else
 #error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
@@ -160,10 +160,10 @@ internal static partial class PtyReaper
         public void WatchProcess(PtyProcess process)
         {
             PtyDiagnostics.Log($"watch enqueue pid={process.Pid}");
-            lock (sync)
+            lock (_sync)
             {
-                byPid[process.Pid] = process;
-                pendingWatch.Enqueue(process);
+                _byPid[process.Pid] = process;
+                _pendingWatch.Enqueue(process);
             }
 
             Wake();
@@ -217,7 +217,7 @@ internal static partial class PtyReaper
         /// Registers every queued process: reaps those that already exited (the spawn-to-
         /// register window), registers the survivors for an exit event. Runs on the loop
         /// thread, so no registration can interleave with event dispatch. A registration
-        /// that fails while the process is still alive moves it to <see cref="retryWatch"/>,
+        /// that fails while the process is still alive moves it to <see cref="_retryWatch"/>,
         /// which the loop scans on its own interval.
         /// </summary>
         private void DrainPendingWatch()
@@ -225,11 +225,11 @@ internal static partial class PtyReaper
             while (true)
             {
                 PtyProcess? process;
-                lock (sync)
+                lock (_sync)
                 {
-                    if (pendingWatch.Count == 0)
+                    if (_pendingWatch.Count == 0)
                         return;
-                    process = pendingWatch.Dequeue();
+                    process = _pendingWatch.Dequeue();
                 }
 
                 PtyDiagnostics.Log($"watch drain pid={process.Pid}");
@@ -238,11 +238,11 @@ internal static partial class PtyReaper
                 if (process.TryReap(out var status))
                 {
                     PtyDiagnostics.Log($"watch drain reaped pid={process.Pid} status={status}");
-                    stuckExiting.Remove(process.Pid);
+                    _stuckExiting.Remove(process.Pid);
                     process.OnReaped(status);
-                    lock (sync)
+                    lock (_sync)
                     {
-                        byPid.Remove(process.Pid);
+                        _byPid.Remove(process.Pid);
                     }
 
                     continue;
@@ -251,9 +251,9 @@ internal static partial class PtyReaper
                 if (!Register(process))
                 {
                     PtyDiagnostics.Log($"watch register deferred pid={process.Pid}");
-                    lock (sync)
+                    lock (_sync)
                     {
-                        retryWatch.Add(process);
+                        _retryWatch.Add(process);
                     }
                 }
             }
@@ -267,24 +267,24 @@ internal static partial class PtyReaper
         /// </summary>
         private void ScanRetryWatch()
         {
-            for (var i = retryWatch.Count - 1; i >= 0; i--)
+            for (var i = _retryWatch.Count - 1; i >= 0; i--)
             {
-                var process = retryWatch[i];
+                var process = _retryWatch[i];
                 if (process.TryReap(out var status))
                 {
-                    stuckExiting.Remove(process.Pid);
+                    _stuckExiting.Remove(process.Pid);
                     process.OnReaped(status);
-                    retryWatch.RemoveAt(i);
-                    lock (sync)
+                    _retryWatch.RemoveAt(i);
+                    lock (_sync)
                     {
-                        byPid.Remove(process.Pid);
+                        _byPid.Remove(process.Pid);
                     }
 
                     continue;
                 }
 
                 if (Register(process))
-                    retryWatch.RemoveAt(i);
+                    _retryWatch.RemoveAt(i);
                 // Still alive and still failing: leave it for the next scan.
             }
         }
@@ -348,7 +348,7 @@ internal static partial class PtyReaper
                 Flags = NativeMethods.EvAdd,
                 Fflags = NativeMethods.NoteExit,
             };
-            if (NativeMethods.kevent(eventFd, [ev], 1, null, 0, IntPtr.Zero) != 0)
+            if (NativeMethods.kevent(_eventFd, [ev], 1, null, 0, IntPtr.Zero) != 0)
             {
                 var errno = Marshal.GetLastPInvokeError();
                 PtyDiagnostics.Log($"register kevent failed pid={pid} errno={errno}");
@@ -367,9 +367,9 @@ internal static partial class PtyReaper
                 PtyDiagnostics.Log($"register postcheck reaped pid={pid} status={status}");
                 Unregister(pid);
                 process.OnReaped(status);
-                lock (sync)
+                lock (_sync)
                 {
-                    byPid.Remove(process.Pid);
+                    _byPid.Remove(process.Pid);
                 }
 
                 return true;
@@ -389,11 +389,11 @@ internal static partial class PtyReaper
             if (!process.TryReap(out var status))
                 return false;
             PtyDiagnostics.Log($"try-reap completed pid={process.Pid} status={status}");
-            stuckExiting.Remove(process.Pid);
+            _stuckExiting.Remove(process.Pid);
             process.OnReaped(status);
-            lock (sync)
+            lock (_sync)
             {
-                byPid.Remove(process.Pid);
+                _byPid.Remove(process.Pid);
             }
 
             return true;
@@ -408,9 +408,9 @@ internal static partial class PtyReaper
         {
             PtyDiagnostics.Log($"reap event pid={pid}");
             PtyProcess? process;
-            lock (sync)
+            lock (_sync)
             {
-                if (!byPid.Remove(pid, out process))
+                if (!_byPid.Remove(pid, out process))
                     return;
             }
 
@@ -419,23 +419,23 @@ internal static partial class PtyReaper
             if (process.TryReap(out var status))
             {
                 PtyDiagnostics.Log($"reap event waitpid completed pid={pid} status={status}");
-                stuckExiting.Remove(pid);
+                _stuckExiting.Remove(pid);
                 process.OnReaped(status);
                 return;
             }
 
             // The event fired but the wait did not collect the child (kernel/race
             // anomaly): re-register so the next event can finish the job.
-            lock (sync)
+            lock (_sync)
             {
-                byPid[pid] = process;
+                _byPid[pid] = process;
             }
 
             if (!Register(process))
             {
-                lock (sync)
+                lock (_sync)
                 {
-                    retryWatch.Add(process);
+                    _retryWatch.Add(process);
                 }
             }
         }
@@ -451,11 +451,11 @@ internal static partial class PtyReaper
         private void ScanRegisteredProcesses()
         {
             PtyProcess[] snapshot;
-            lock (sync)
+            lock (_sync)
             {
-                if (byPid.Count == 0)
+                if (_byPid.Count == 0)
                     return;
-                snapshot = [.. byPid.Values];
+                snapshot = [.. _byPid.Values];
             }
 
             foreach (var process in snapshot)
@@ -465,10 +465,10 @@ internal static partial class PtyReaper
                     if (process.IsStuckExiting())
                     {
                         var now = Environment.TickCount64;
-                        lock (sync)
+                        lock (_sync)
                         {
-                            if (!stuckExiting.TryGetValue(process.Pid, out var firstSeen))
-                                stuckExiting[process.Pid] = firstSeen = now;
+                            if (!_stuckExiting.TryGetValue(process.Pid, out var firstSeen))
+                                _stuckExiting[process.Pid] = firstSeen = now;
                             if (now - firstSeen >= StuckExitGraceMs)
                             {
                                 PtyDiagnostics.Log(
@@ -485,14 +485,14 @@ internal static partial class PtyReaper
                     continue;
                 }
 
-                stuckExiting.Remove(process.Pid);
+                _stuckExiting.Remove(process.Pid);
                 Unregister(process.Pid);
                 if (process.OnReaped(status))
                 {
-                    lock (sync)
+                    lock (_sync)
                     {
-                        byPid.Remove(process.Pid);
-                        retryWatch.Remove(process);
+                        _byPid.Remove(process.Pid);
+                        _retryWatch.Remove(process);
                     }
                 }
             }
@@ -519,7 +519,7 @@ internal static partial class PtyReaper
                 Filter = NativeMethods.EvfilProc,
                 Flags = NativeMethods.EvDelete,
             };
-            _ = NativeMethods.kevent(eventFd, [ev], 1, null, 0, IntPtr.Zero);
+            _ = NativeMethods.kevent(_eventFd, [ev], 1, null, 0, IntPtr.Zero);
 #endif
         }
 
@@ -547,7 +547,7 @@ internal static partial class PtyReaper
                     TvNsec = (RetryIntervalMs % 1000) * 1_000_000,
                 };
                 var timeoutPtr = (IntPtr)(&ts);
-                var n = NativeMethods.kevent(eventFd, null, 0, macEvents, MaxEvents, timeoutPtr);
+                var n = NativeMethods.kevent(_eventFd, null, 0, _macEvents, MaxEvents, timeoutPtr);
 #else
 #error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
 #endif
@@ -575,7 +575,7 @@ internal static partial class PtyReaper
                 ? linuxEventsPacked[i].Data == 0
                 : linuxEvents[i].Data == 0;
 #elif OSX
-            return macEvents[i].Ident == WakeIdent && macEvents[i].Filter == NativeMethods.EvfilUser;
+            return _macEvents[i].Ident == WakeIdent && _macEvents[i].Filter == NativeMethods.EvfilUser;
 #endif
         }
 
@@ -584,7 +584,7 @@ internal static partial class PtyReaper
 #if LINUX
             return (int)(NativeMethods.EpollIsPacked ? linuxEventsPacked[i].Data : linuxEvents[i].Data);
 #elif OSX
-            return (int)macEvents[i].Ident;
+            return (int)_macEvents[i].Ident;
 #endif
         }
 
@@ -610,7 +610,7 @@ internal static partial class PtyReaper
             };
             while (true)
             {
-                var result = NativeMethods.kevent(eventFd, [ev], 1, null, 0, IntPtr.Zero);
+                var result = NativeMethods.kevent(_eventFd, [ev], 1, null, 0, IntPtr.Zero);
                 if (result == 0)
                 {
                     PtyDiagnostics.Log("wake succeeded");

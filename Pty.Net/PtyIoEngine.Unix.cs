@@ -187,37 +187,37 @@ internal static class PtyIoEngine
     {
         // Waiters hold no thread while pending, so the queue only carries transient
         // control messages and is effectively unbounded in practice.
-        private readonly Channel<Control> inbox = Channel.CreateUnbounded<Control>(
+        private readonly Channel<Control> _inbox = Channel.CreateUnbounded<Control>(
             new UnboundedChannelOptions { SingleReader = true, SingleWriter = false, AllowSynchronousContinuations = false });
 
         // Self-pipe: [0] read end (engine only), [1] write end (any thread). Both ends
         // stay blocking; the drain uses poll-before-read and Post uses poll-before-write,
         // so neither can ever block. The engine poll's finite timeout is the backstop.
-        private readonly int wakeRead;
-        private readonly int wakeWrite;
+        private readonly int _wakeRead;
+        private readonly int _wakeWrite;
 
         // Engine thread only.
-        private readonly Dictionary<(int Fd, OperationKind Kind), Slot> slots = [];
+        private readonly Dictionary<(int Fd, OperationKind Kind), Slot> _slots = [];
 
         // Handles that PtyStream.Dispose has torn down (via AbortHandle). AbortHandle
         // queues a CancelHandle message, but a concurrent Enqueue may deliver its
         // Register message *after* CancelHandle has already scanned the slots — without
         // this marker that op would then be registered with no one left to cancel it.
         // A ConditionalWeakTable keeps the marker without keeping the handle alive.
-        private readonly ConditionalWeakTable<SafeFileHandle, object> canceledHandles = new();
-        private readonly byte[] wakeBuffer = new byte[64];
-        private NativeMethods.PollFd[] pollFds = new NativeMethods.PollFd[64];
-        private int pollCount;
-        private readonly IntPtr wakeBufPtr;
+        private readonly ConditionalWeakTable<SafeFileHandle, object> _canceledHandles = new();
+        private readonly byte[] _wakeBuffer = new byte[64];
+        private NativeMethods.PollFd[] _pollFds = new NativeMethods.PollFd[64];
+        private int _pollCount;
+        private readonly IntPtr _wakeBufPtr;
 
         private IoThread(int wakeRead, int wakeWrite)
         {
-            this.wakeRead = wakeRead;
-            this.wakeWrite = wakeWrite;
-            var wakePin1 = wakeBuffer.AsMemory().Pin();
+            this._wakeRead = wakeRead;
+            this._wakeWrite = wakeWrite;
+            var wakePin1 = _wakeBuffer.AsMemory().Pin();
             unsafe
             {
-                wakeBufPtr = (IntPtr)wakePin1.Pointer;
+                _wakeBufPtr = (IntPtr)wakePin1.Pointer;
             }
         }
 
@@ -236,7 +236,7 @@ internal static class PtyIoEngine
         /// <summary>Queues a control message and interrupts the poll loop with a self-pipe byte.</summary>
         public void Post(Control c)
         {
-            inbox.Writer.TryWrite(c);
+            _inbox.Writer.TryWrite(c);
             Wake();
         }
 
@@ -251,15 +251,15 @@ internal static class PtyIoEngine
         {
             // A collection expression is fine here: only the poll return value matters,
             // the copied Revents is never read back.
-            var pollFd = new NativeMethods.PollFd { Fd = wakeWrite, Events = NativeMethods.PollEvents.Pollout };
+            var pollFd = new NativeMethods.PollFd { Fd = _wakeWrite, Events = NativeMethods.PollEvents.Pollout };
             int r;
             do
             {
-                r = NativeMethods.poll([pollFd], -1);
+                r = NativeMethods.Poll([pollFd], -1);
             } while (r < 0 && Marshal.GetLastPInvokeError() == Eintr);
 
             if (r > 0)
-                _ = NativeMethods.write(wakeWrite, wakeBufPtr, 1);
+                _ = NativeMethods.write(_wakeWrite, _wakeBufPtr, 1);
         }
 
         // ---------------------------------------------------------------- loop
@@ -285,28 +285,28 @@ internal static class PtyIoEngine
                     // [0, pollCount), so poll exactly that range — passing the whole
                     // array would poll stale entries left over from a larger previous
                     // iteration (closed or reused fds), corrupting results and latency.
-                    r = NativeMethods.poll(pollFds.AsSpan(0, pollCount), PollSafetyTimeoutMs);
+                    r = NativeMethods.Poll(_pollFds.AsSpan(0, _pollCount), PollSafetyTimeoutMs);
                 } while (r < 0 && Marshal.GetLastPInvokeError() == Eintr);
 
                 if (r < 0)
                     throw new IOException($"Pty.Net poll failed: errno={Marshal.GetLastPInvokeError()}");
 
-                if (pollCount > 0 && (pollFds[0].Revents & NativeMethods.PollEvents.Pollin) != 0)
+                if (_pollCount > 0 && (_pollFds[0].Revents & NativeMethods.PollEvents.Pollin) != 0)
                     DrainWakePipe();
 
-                for (var i = 1; i < pollCount; i++)
+                for (var i = 1; i < _pollCount; i++)
                 {
-                    var revents = pollFds[i].Revents;
+                    var revents = _pollFds[i].Revents;
                     if (revents == 0)
                         continue;
                     // Each poll entry was built for one (fd, direction) slot; the Events
                     // field (untouched by poll) identifies which one. The slot may have
                     // been completed (and replaced) earlier in this same iteration; a
                     // stale entry then simply doesn't match anymore.
-                    var kind = (pollFds[i].Events & NativeMethods.PollEvents.Pollin) != 0
+                    var kind = (_pollFds[i].Events & NativeMethods.PollEvents.Pollin) != 0
                         ? OperationKind.Read
                         : OperationKind.Write;
-                    if (!slots.TryGetValue((pollFds[i].Fd, kind), out var slot) ||
+                    if (!_slots.TryGetValue((_pollFds[i].Fd, kind), out var slot) ||
                         slot.Current is not { Done: false } op)
                         continue;
                     Dispatch(op, revents);
@@ -316,7 +316,7 @@ internal static class PtyIoEngine
 
         private void DrainInbox()
         {
-            while (inbox.Reader.TryRead(out var c))
+            while (_inbox.Reader.TryRead(out var c))
             {
                 switch (c.Kind)
                 {
@@ -351,7 +351,7 @@ internal static class PtyIoEngine
                 // is already torn down and no Abort will ever arrive for this op.
                 // (AddRef above still succeeded because the actual close is deferred
                 // while other ops hold refs, so IsClosed alone cannot detect this.)
-                if (canceledHandles.TryGetValue(op.Handle, out _))
+                if (_canceledHandles.TryGetValue(op.Handle, out _))
                 {
                     Complete(op, OpStatus.Failed, 0,
                         new ObjectDisposedException("PtyStream", "The pty stream was disposed."));
@@ -372,10 +372,10 @@ internal static class PtyIoEngine
                 // One slot per (fd, direction): a pending read never blocks a write on
                 // the same stream (and vice versa).
                 var key = (op.Fd, op.Kind);
-                if (!slots.TryGetValue(key, out var slot))
+                if (!_slots.TryGetValue(key, out var slot))
                 {
                     slot = new Slot();
-                    slots[key] = slot;
+                    _slots[key] = slot;
                 }
 
                 op.Slot = slot;
@@ -456,7 +456,7 @@ internal static class PtyIoEngine
         {
             // Snapshot first: Complete may remove or replace slot.Current while we run.
             var toAbort = new List<Operation>();
-            foreach (var slot in slots.Values)
+            foreach (var slot in _slots.Values)
             {
                 if (slot.Current is { Done: false } c && ReferenceEquals(c.Handle, handle))
                     toAbort.Add(c);
@@ -472,7 +472,7 @@ internal static class PtyIoEngine
 
             // Remember the handle so any Register that arrives *after* this message is
             // rejected instead of being registered with no cancel to ever come.
-            canceledHandles.AddOrUpdate(handle, Sentinel.Value);
+            _canceledHandles.AddOrUpdate(handle, Sentinel.Value);
         }
 
         private static class Sentinel
@@ -499,7 +499,7 @@ internal static class PtyIoEngine
 
         private void DispatchRead(Operation op, NativeMethods.PollEvents revents)
         {
-            // Poll asserted POLLIN, so a read normally returns data. A single read:
+            // The poll(2) call asserted POLLIN, so a read normally returns data. A single read:
             // partial reads are legal and the caller can issue another op for the
             // rest. If the slave is gone, poll reports HUP — read to confirm EOF.
             while (true)
@@ -602,7 +602,7 @@ internal static class PtyIoEngine
                 {
                     slot.Current = slot.Waiters.Count > 0 ? slot.Waiters.Dequeue() : null;
                     if (slot.Current is null)
-                        slots.Remove((op.Fd, op.Kind));
+                        _slots.Remove((op.Fd, op.Kind));
                 }
                 // (A queued waiter that was canceled is simply no longer in the queue.)
             }
@@ -634,16 +634,16 @@ internal static class PtyIoEngine
 
         private void BuildPollSet()
         {
-            pollFds[0] = new NativeMethods.PollFd { Fd = wakeRead, Events = NativeMethods.PollEvents.Pollin };
-            pollCount = 1;
-            foreach (var slot in slots.Values)
+            _pollFds[0] = new NativeMethods.PollFd { Fd = _wakeRead, Events = NativeMethods.PollEvents.Pollin };
+            _pollCount = 1;
+            foreach (var slot in _slots.Values)
             {
                 var op = slot.Current;
                 if (op is null || op.Done)
                     continue;
-                if (pollCount == pollFds.Length)
-                    Array.Resize(ref pollFds, pollFds.Length * 2);
-                pollFds[pollCount++] = new NativeMethods.PollFd
+                if (_pollCount == _pollFds.Length)
+                    Array.Resize(ref _pollFds, _pollFds.Length * 2);
+                _pollFds[_pollCount++] = new NativeMethods.PollFd
                 {
                     Fd = op.Fd,
                     Events = op.Kind == OperationKind.Read
@@ -658,13 +658,13 @@ internal static class PtyIoEngine
         {
             // A collection expression is fine here: only the poll return value matters,
             // the copied Revents is never read back.
-            var pollFd = new NativeMethods.PollFd { Fd = wakeRead, Events = NativeMethods.PollEvents.Pollin };
+            var pollFd = new NativeMethods.PollFd { Fd = _wakeRead, Events = NativeMethods.PollEvents.Pollin };
             while (true)
             {
                 int r;
                 do
                 {
-                    r = NativeMethods.poll([pollFd], 0);
+                    r = NativeMethods.Poll([pollFd], 0);
                 } while (r < 0 && Marshal.GetLastPInvokeError() == Eintr);
 
                 if (r <= 0)
@@ -673,7 +673,7 @@ internal static class PtyIoEngine
                 nint n;
                 do
                 {
-                    n = NativeMethods.read(wakeRead, wakeBufPtr, (nuint)wakeBuffer.Length);
+                    n = NativeMethods.read(_wakeRead, _wakeBufPtr, (nuint)_wakeBuffer.Length);
                 } while (n < 0 && Marshal.GetLastPInvokeError() == Eintr);
 
                 if (n <= 0)

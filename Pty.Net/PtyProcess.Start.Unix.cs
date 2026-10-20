@@ -687,7 +687,7 @@ public sealed partial class PtyProcess
             {
                 var remaining = (int)Math.Clamp(
                     (deadline - DateTime.UtcNow).TotalMilliseconds, 0, int.MaxValue);
-                var pr = NativeMethods.poll(
+                var pr = NativeMethods.Poll(
                     [new NativeMethods.PollFd { Fd = fd, Events = NativeMethods.PollEvents.Pollin }],
                     remaining);
                 if (pr < 0)
