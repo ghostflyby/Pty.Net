@@ -18,47 +18,47 @@ public sealed partial class PtyStream
     // returns (see CloseConsoleAndDrain).
     private const int CloseDrainGraceMs = 1000;
 
-    private readonly NamedPipeClientStream inputWrite;
-    private readonly NamedPipeClientStream outputRead;
-    private readonly ClosePseudoConsoleSafeHandle pseudoConsole;
-    private readonly CancellationTokenSource pumpCancellation = new();
-    private readonly System.Threading.Lock readGate = new();
-    private readonly Queue<BufferChunk> chunks = [];
+    private readonly NamedPipeClientStream _inputWrite;
+    private readonly NamedPipeClientStream _outputRead;
+    private readonly ClosePseudoConsoleSafeHandle _pseudoConsole;
+    private readonly CancellationTokenSource _pumpCancellation = new();
+    private readonly System.Threading.Lock _readGate = new();
+    private readonly Queue<BufferChunk> _chunks = [];
     // One-shot wakeup gates (AsyncManualResetEvent-like) for waiters of the buffered
     // data and the buffer space respectively. Per-cycle TCS instead of per-waiter:
     // a burst of N blocked readers shares a single task, and timed-out/canceled
     // waiters need no bookkeeping.
-    private readonly SignalGate dataGate = new();
-    private readonly SignalGate spaceGate = new();
-    private readonly Task pumpTask;
-    private readonly TaskCompletionSource<bool> consoleCloseCompletion = NewSignal();
-    private int bufferedBytes;
-    private int exitWaiters;
-    private bool teardownStarted;
-    private bool outputEof;
-    private Exception? pumpError;
-    private int consoleCloseStarted;
-    private int disposed;
+    private readonly SignalGate _dataGate = new();
+    private readonly SignalGate _spaceGate = new();
+    private readonly Task _pumpTask;
+    private readonly TaskCompletionSource<bool> _consoleCloseCompletion = NewSignal();
+    private int _bufferedBytes;
+    private int _exitWaiters;
+    private bool _teardownStarted;
+    private bool _outputEof;
+    private Exception? _pumpError;
+    private int _consoleCloseStarted;
+    private int _disposed;
 
     /// <summary>Takes ownership of both parent pipe ends and the pseudo console.</summary>
     internal PtyStream(
-        NamedPipeClientStream inputWrite,
-        NamedPipeClientStream outputRead,
-        ClosePseudoConsoleSafeHandle pseudoConsole)
+        NamedPipeClientStream _inputWrite,
+        NamedPipeClientStream _outputRead,
+        ClosePseudoConsoleSafeHandle _pseudoConsole)
     {
-        this.inputWrite = inputWrite;
-        this.outputRead = outputRead;
-        this.pseudoConsole = pseudoConsole;
-        pumpTask = PumpOutputAsync();
+        this._inputWrite = _inputWrite;
+        this._outputRead = _outputRead;
+        this._pseudoConsole = _pseudoConsole;
+        _pumpTask = PumpOutputAsync();
     }
 
-    internal bool IsClosed => Volatile.Read(ref disposed) != 0;
+    internal bool IsClosed => Volatile.Read(ref _disposed) != 0;
 
     /// <summary>There is no user-space buffering, so this does nothing beyond checking the stream is open.</summary>
     public override void Flush()
     {
         ThrowIfDisposed();
-        inputWrite.Flush();
+        _inputWrite.Flush();
     }
 
     /// <summary>
@@ -85,7 +85,7 @@ public sealed partial class PtyStream
     private int Read(Span<byte> target, int timeoutMs)
     {
         ThrowIfDisposed();
-        if (Volatile.Read(ref pendingAsyncReads) > 0)
+        if (Volatile.Read(ref _pendingAsyncReads) > 0)
             throw new InvalidOperationException(
                 "A pending async read is in progress on this pty stream; sync and async reads on the same stream cannot be mixed.");
 
@@ -99,7 +99,7 @@ public sealed partial class PtyStream
         while (true)
         {
             Task signal;
-            lock (readGate)
+            lock (_readGate)
             {
                 // A Dispose may have completed since the entry check. BCL Process
                 // semantics: reads pending at close throw ObjectDisposedException —
@@ -108,14 +108,14 @@ public sealed partial class PtyStream
                 var count = CopyBuffered(target);
                 if (count > 0)
                     return count;
-                if (outputEof)
+                if (_outputEof)
                     return 0;
-                if (pumpError is not null)
-                    throw new IOException("ConPTY output pump failed.", pumpError);
+                if (_pumpError is not null)
+                    throw new IOException("ConPTY output pump failed.", _pumpError);
                 if (timeoutMs == 0)
                     return 0;
 
-                signal = dataGate.GetWaitTask();
+                signal = _dataGate.GetWaitTask();
             }
 
             var remaining = timeoutMs < 0
@@ -147,13 +147,13 @@ public sealed partial class PtyStream
         if (buffer.IsEmpty)
             return 0;
 
-        Interlocked.Increment(ref pendingAsyncReads);
+        Interlocked.Increment(ref _pendingAsyncReads);
         try
         {
             while (true)
             {
                 Task signal;
-                lock (readGate)
+                lock (_readGate)
                 {
                     // BCL Process semantics: reads pending at close throw
                     // ObjectDisposedException instead of returning buffered bytes.
@@ -161,12 +161,12 @@ public sealed partial class PtyStream
                     var count = CopyBuffered(buffer.Span);
                     if (count > 0)
                         return count;
-                    if (outputEof)
+                    if (_outputEof)
                         return 0;
-                    if (pumpError is not null)
-                        throw new IOException("ConPTY output pump failed.", pumpError);
+                    if (_pumpError is not null)
+                        throw new IOException("ConPTY output pump failed.", _pumpError);
 
-                    signal = dataGate.GetWaitTask();
+                    signal = _dataGate.GetWaitTask();
                 }
 
                 // Cancellation just abandons this task: the gate stays armed for the
@@ -177,7 +177,7 @@ public sealed partial class PtyStream
         }
         finally
         {
-            Interlocked.Decrement(ref pendingAsyncReads);
+            Interlocked.Decrement(ref _pendingAsyncReads);
         }
     }
 
@@ -192,7 +192,7 @@ public sealed partial class PtyStream
     {
         ThrowIfDisposed();
         if (!buffer.IsEmpty)
-            inputWrite.Write(buffer);
+            _inputWrite.Write(buffer);
     }
 
     /// <summary>
@@ -211,7 +211,7 @@ public sealed partial class PtyStream
         ThrowIfDisposed();
         return buffer.IsEmpty
             ? ValueTask.CompletedTask
-            : inputWrite.WriteAsync(buffer, cancellationToken);
+            : _inputWrite.WriteAsync(buffer, cancellationToken);
     }
 
     // ------------------------------------------------------------ window size
@@ -230,7 +230,7 @@ public sealed partial class PtyStream
         // The CsWin32 friendly overload keeps the SafeHandle add-ref'd for the call;
         // COORD fields are short, so values are validated as ushort-range by the caller.
         var hr = PInvoke.ResizePseudoConsole(
-            pseudoConsole, new COORD { X = (short)columns, Y = (short)rows });
+            _pseudoConsole, new COORD { X = (short)columns, Y = (short)rows });
         if (hr.Failed)
             throw new Win32Exception(hr.Value, $"ResizePseudoConsole failed: {hr}");
     }
@@ -241,20 +241,20 @@ public sealed partial class PtyStream
     /// </summary>
     internal void EnterExitWait()
     {
-        lock (readGate)
+        lock (_readGate)
         {
-            exitWaiters++;
-            spaceGate.Set();
+            _exitWaiters++;
+            _spaceGate.Set();
         }
     }
 
     /// <summary>Balances <see cref="EnterExitWait"/> when a wait returns, times out, or is canceled.</summary>
     internal void ExitExitWait()
     {
-        lock (readGate)
+        lock (_readGate)
         {
-            if (exitWaiters > 0)
-                exitWaiters--;
+            if (_exitWaiters > 0)
+                _exitWaiters--;
         }
     }
 
@@ -269,7 +269,7 @@ public sealed partial class PtyStream
     internal void BeginAsyncClose()
     {
         BeginTeardown();
-        if (Interlocked.Exchange(ref consoleCloseStarted, 1) == 0)
+        if (Interlocked.Exchange(ref _consoleCloseStarted, 1) == 0)
             ThreadPool.QueueUserWorkItem(static state => ((PtyStream)state!).CloseConsoleAndDrain(), this);
     }
 
@@ -286,37 +286,37 @@ public sealed partial class PtyStream
     /// <param name="disposing">True when called from user code (not the finalizer).</param>
     protected override void Dispose(bool disposing)
     {
-        if (!disposing || Interlocked.Exchange(ref disposed, 1) != 0)
+        if (!disposing || Interlocked.Exchange(ref _disposed, 1) != 0)
         {
             base.Dispose(disposing);
             return;
         }
 
         BeginTeardown();
-        if (Interlocked.Exchange(ref consoleCloseStarted, 1) == 0)
+        if (Interlocked.Exchange(ref _consoleCloseStarted, 1) == 0)
             CloseConsoleAndDrain();
         else
-            consoleCloseCompletion.Task.GetAwaiter().GetResult();
+            _consoleCloseCompletion.Task.GetAwaiter().GetResult();
 
-        inputWrite.Dispose();
-        outputRead.Dispose();
-        pumpCancellation.Cancel();
-        ObservePump(pumpTask);
+        _inputWrite.Dispose();
+        _outputRead.Dispose();
+        _pumpCancellation.Cancel();
+        ObservePump(_pumpTask);
 
-        lock (readGate)
+        lock (_readGate)
         {
             // The pump has stopped by now (CloseConsoleAndDrain waited for or canceled
             // it), so the queue holds every un-consumed chunk: return them to the pool.
-            while (chunks.Count > 0)
-                ArrayPool<byte>.Shared.Return(chunks.Dequeue().Data);
+            while (_chunks.Count > 0)
+                ArrayPool<byte>.Shared.Return(_chunks.Dequeue().Data);
 
             // Wake parked readers: they re-check the disposed flag in their loops and
             // complete with ObjectDisposedException (BCL Process semantics) rather than
             // being handed buffered bytes or an artificial EOF.
-            dataGate.Set();
-            spaceGate.Set();
+            _dataGate.Set();
+            _spaceGate.Set();
         }
-        pumpCancellation.Dispose();
+        _pumpCancellation.Dispose();
         base.Dispose(disposing);
     }
 
@@ -326,7 +326,7 @@ public sealed partial class PtyStream
         {
             while (true)
             {
-                await WaitForBufferSpaceAsync(pumpCancellation.Token).ConfigureAwait(false);
+                await WaitForBufferSpaceAsync(_pumpCancellation.Token).ConfigureAwait(false);
 
                 // Rented from the shared pool for the chunk's lifetime and returned once
                 // it is fully consumed (CopyBuffered) or the stream is disposed: no fresh
@@ -335,7 +335,7 @@ public sealed partial class PtyStream
                 int count;
                 try
                 {
-                    count = await outputRead.ReadAsync(chunk.AsMemory(0, ReadChunkSize), pumpCancellation.Token)
+                    count = await _outputRead.ReadAsync(chunk.AsMemory(0, ReadChunkSize), _pumpCancellation.Token)
                         .ConfigureAwait(false);
                 }
                 catch
@@ -351,15 +351,15 @@ public sealed partial class PtyStream
                     return;
                 }
 
-                lock (readGate)
+                lock (_readGate)
                 {
-                    chunks.Enqueue(new BufferChunk(chunk, count));
-                    bufferedBytes += count;
-                    dataGate.Set();
+                    _chunks.Enqueue(new BufferChunk(chunk, count));
+                    _bufferedBytes += count;
+                    _dataGate.Set();
                 }
             }
         }
-        catch (OperationCanceledException) when (pumpCancellation.IsCancellationRequested)
+        catch (OperationCanceledException) when (_pumpCancellation.IsCancellationRequested)
         {
             PublishEof();
         }
@@ -367,17 +367,17 @@ public sealed partial class PtyStream
         {
             PublishEof();
         }
-        catch (IOException) when (pseudoConsole.IsClosed || IsClosed)
+        catch (IOException) when (_pseudoConsole.IsClosed || IsClosed)
         {
             PublishEof();
         }
         catch (Exception ex)
         {
-            lock (readGate)
+            lock (_readGate)
             {
-                pumpError = ex;
-                dataGate.Set();
-                spaceGate.Set();
+                _pumpError = ex;
+                _dataGate.Set();
+                _spaceGate.Set();
             }
         }
     }
@@ -387,11 +387,11 @@ public sealed partial class PtyStream
         while (true)
         {
             Task signal;
-            lock (readGate)
+            lock (_readGate)
             {
-                if (teardownStarted || exitWaiters > 0 || bufferedBytes < MaxBufferedBytes)
+                if (_teardownStarted || _exitWaiters > 0 || _bufferedBytes < MaxBufferedBytes)
                     return;
-                signal = spaceGate.GetWaitTask();
+                signal = _spaceGate.GetWaitTask();
             }
 
             await signal.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -402,7 +402,7 @@ public sealed partial class PtyStream
     {
         try
         {
-            pseudoConsole.Dispose();
+            _pseudoConsole.Dispose();
         }
         catch
         {
@@ -422,13 +422,13 @@ public sealed partial class PtyStream
             // observes it (ObservePump swallows the failure) and signals completion.
             try
             {
-                if (!pumpTask.Wait(CloseDrainGraceMs))
-                    pumpCancellation.Cancel();
+                if (!_pumpTask.Wait(CloseDrainGraceMs))
+                    _pumpCancellation.Cancel();
             }
             finally
             {
-                ObservePump(pumpTask);
-                consoleCloseCompletion.TrySetResult(true);
+                ObservePump(_pumpTask);
+                _consoleCloseCompletion.TrySetResult(true);
             }
         }
     }
@@ -436,42 +436,42 @@ public sealed partial class PtyStream
     private int CopyBuffered(Span<byte> target)
     {
         var copied = 0;
-        while (copied < target.Length && chunks.Count > 0)
+        while (copied < target.Length && _chunks.Count > 0)
         {
-            var chunk = chunks.Peek();
+            var chunk = _chunks.Peek();
             var count = Math.Min(target.Length - copied, chunk.Remaining);
             chunk.Data.AsSpan(chunk.Offset, count).CopyTo(target[copied..]);
             chunk.Offset += count;
             copied += count;
-            bufferedBytes -= count;
+            _bufferedBytes -= count;
             if (chunk.Remaining == 0)
             {
-                chunks.Dequeue();
+                _chunks.Dequeue();
                 // The chunk's rented buffer is fully consumed: give it back to the pool.
                 ArrayPool<byte>.Shared.Return(chunk.Data);
             }
         }
         if (copied > 0)
-            spaceGate.Set();
+            _spaceGate.Set();
         return copied;
     }
 
     private void BeginTeardown()
     {
-        lock (readGate)
+        lock (_readGate)
         {
-            teardownStarted = true;
-            spaceGate.Set();
+            _teardownStarted = true;
+            _spaceGate.Set();
         }
     }
 
     private void PublishEof()
     {
-        lock (readGate)
+        lock (_readGate)
         {
-            outputEof = true;
-            dataGate.Set();
-            spaceGate.Set();
+            _outputEof = true;
+            _dataGate.Set();
+            _spaceGate.Set();
         }
     }
 
@@ -489,7 +489,7 @@ public sealed partial class PtyStream
     /// </summary>
     private sealed class SignalGate
     {
-        private TaskCompletionSource<bool>? tcs;
+        private TaskCompletionSource<bool>? _tcs;
 
         /// <summary>
         /// The task to await for the next signal. All waiters active during one signal
@@ -499,15 +499,15 @@ public sealed partial class PtyStream
         /// </summary>
         public Task GetWaitTask()
         {
-            tcs ??= new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            return tcs.Task;
+            _tcs ??= new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            return _tcs.Task;
         }
 
         /// <summary>Completes all current waiters and disarms the gate for the next cycle.</summary>
         public void Set()
         {
-            tcs?.TrySetResult(true);
-            tcs = null;
+            _tcs?.TrySetResult(true);
+            _tcs = null;
         }
     }
 

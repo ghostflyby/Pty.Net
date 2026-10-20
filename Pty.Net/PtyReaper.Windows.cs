@@ -21,11 +21,11 @@ internal static partial class PtyReaper
 
     private sealed class ReaperThread
     {
-        private readonly object sync = new();
-        private readonly List<PtyProcess> watched = [];
+        private readonly object _sync = new();
+        private readonly List<PtyProcess> _watched = [];
         // Reusable snapshot array: copying the watch set into a fresh List every 10 ms
         // tick would churn one allocation for the whole lifetime of any watched process.
-        private PtyProcess[] snapshot = [];
+        private PtyProcess[] _snapshot = [];
 
         public ReaperThread()
         {
@@ -35,10 +35,10 @@ internal static partial class PtyReaper
 
         public void WatchProcess(PtyProcess process)
         {
-            lock (sync)
+            lock (_sync)
             {
-                watched.Add(process);
-                Monitor.Pulse(sync); // wake the loop if it was idle-waiting for work
+                _watched.Add(process);
+                Monitor.Pulse(_sync); // wake the loop if it was idle-waiting for work
             }
         }
 
@@ -48,32 +48,32 @@ internal static partial class PtyReaper
             while (true)
             {
                 int snapshotCount;
-                lock (sync)
+                lock (_sync)
                 {
-                    if (watched.Count == 0)
+                    if (_watched.Count == 0)
                     {
                         // Nothing to reap: sleep until the first Watch, so the process-wide
                         // reaper thread is fully idle (no polling) between sessions.
-                        Monitor.Wait(sync);
+                        Monitor.Wait(_sync);
                         continue;
                     }
 
                     // Grow the reusable snapshot on demand (never shrink), like the
                     // engine's poll set. CopyTo writes watched.Count elements at index 0.
-                    if (snapshot.Length < watched.Count)
-                        Array.Resize(ref snapshot, watched.Count);
-                    watched.CopyTo(snapshot);
-                    snapshotCount = watched.Count;
+                    if (_snapshot.Length < _watched.Count)
+                        Array.Resize(ref _snapshot, _watched.Count);
+                    _watched.CopyTo(_snapshot);
+                    snapshotCount = _watched.Count;
                 }
 
                 for (var i = 0; i < snapshotCount; i++)
                 {
-                    var p = snapshot[i];
+                    var p = _snapshot[i];
                     if (!p.TryReap(out var status)) continue;
                     p.OnReaped(status);
-                    lock (sync)
+                    lock (_sync)
                     {
-                        watched.Remove(p);
+                        _watched.Remove(p);
                     }
                 }
 
