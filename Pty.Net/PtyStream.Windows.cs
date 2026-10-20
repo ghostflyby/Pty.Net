@@ -263,7 +263,7 @@ public sealed partial class PtyStream
     /// sends CTRL_CLOSE_EVENT to the attached clients (the Windows analog of SIGHUP), so
     /// a still-alive child gets a chance to exit cleanly, and then drains the final
     /// frame. Used by the dispose grace window; the reaper also calls it once the child
-    /// exits. Idempotent: <see cref="consoleCloseStarted"/> ensures the close runs
+    /// exits. Idempotent: <see cref="_consoleCloseStarted"/> ensures the close runs
     /// exactly once, whichever path gets there first.
     /// </summary>
     internal void BeginAsyncClose()
@@ -481,7 +481,7 @@ public sealed partial class PtyStream
     /// <summary>
     /// One-shot wakeup gate for a class of waiters (buffered data / buffer space),
     /// like a reset-on-read AsyncManualResetEvent. All access happens under
-    /// <see cref="readGate"/>, so the predicate check, the task capture and the reset
+    /// <see cref="_readGate"/>, so the predicate check, the task capture and the reset
     /// are atomic with the publisher's state change (which precedes
     /// <see cref="Set"/>): a waiter that captured the task before the state change is
     /// woken by <see cref="Set"/>, one that captures after it sees the state directly —
