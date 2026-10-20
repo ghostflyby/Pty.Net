@@ -12,4 +12,6 @@ namespace Ghostflyby.Pty.Tests;
 /// relative to each other.
 /// </summary>
 [CollectionDefinition("thread-pool accounting", DisableParallelization = true)]
-public sealed class ThreadPoolAccountingCollection { }
+public sealed class ThreadPoolAccountingCollection
+{
+}
