@@ -19,7 +19,7 @@ public sealed partial class PtyStream : Stream
     // it: while an async read is pending, a sync read would race the reader for the same
     // bytes — which one wins is undefined and a lost race can even look like EOF. Mixing
     // is refused with a clear error instead of a wrong result.
-    private int pendingAsyncReads;
+    private int _pendingAsyncReads;
 
     /// <inheritdoc/>
     public override bool CanRead => true;

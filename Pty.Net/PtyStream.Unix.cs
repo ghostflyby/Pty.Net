@@ -16,29 +16,29 @@ namespace Ghostflyby.Pty;
 // Unix-only: compiled only by the non-Windows target (see csproj).
 public sealed partial class PtyStream
 {
-    private readonly SafeFileHandle handle;
+    private readonly SafeFileHandle _handle;
 
     // Exit-wait replay buffer: while a WaitForExit/Dispose wait drains the master (so
     // the child never blocks on a full pty buffer), the drained bytes land here instead
     // of being discarded, and every read path serves them before touching the fd again
     // — output remains readable after the wait, matching the Windows pump contract.
     // Unbounded by contract: memory grows with the output produced during the wait.
-    private readonly Lock replayLock = new();
-    private readonly List<byte[]> replayChunks = [];
-    private int replayBytes;
+    private readonly Lock _replayLock = new();
+    private readonly List<byte[]> _replayChunks = [];
+    private int _replayBytes;
 
     /// <summary>Takes ownership of <paramref name="handle"/> (the non-blocking pty master).</summary>
     internal PtyStream(SafeFileHandle handle)
     {
-        this.handle = handle;
+        this._handle = handle;
     }
 
-    internal bool IsClosed => handle.IsClosed;
+    internal bool IsClosed => _handle.IsClosed;
 
     /// <summary>There is no user-space buffering, so this does nothing beyond checking the stream is open.</summary>
     public override void Flush()
     {
-        ObjectDisposedException.ThrowIf(handle.IsClosed, this);
+        ObjectDisposedException.ThrowIf(_handle.IsClosed, this);
         // No userspace buffering, so there is nothing to flush.
     }
 
@@ -69,8 +69,8 @@ public sealed partial class PtyStream
     /// </summary>
     private int Read(Span<byte> buffer, int timeoutMs)
     {
-        ObjectDisposedException.ThrowIf(handle.IsClosed, this);
-        if (Volatile.Read(ref pendingAsyncReads) > 0)
+        ObjectDisposedException.ThrowIf(_handle.IsClosed, this);
+        if (Volatile.Read(ref _pendingAsyncReads) > 0)
             throw new InvalidOperationException(
                 "A pending async read is in progress on this pty stream; sync and async reads on the same stream cannot be mixed.");
         if (buffer.IsEmpty)
@@ -82,7 +82,7 @@ public sealed partial class PtyStream
         if (replayed > 0)
             return replayed;
 
-        var fd = (int)handle.DangerousGetHandle();
+        var fd = (int)_handle.DangerousGetHandle();
 
         if (!WaitForPoll(fd, NativeMethods.PollEvents.Pollin, timeoutMs, out _))
             return 0; // timed out with nothing available
@@ -137,13 +137,13 @@ public sealed partial class PtyStream
     /// <exception cref="ObjectDisposedException">The stream is disposed while the read is pending.</exception>
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(handle.IsClosed, this);
+        ObjectDisposedException.ThrowIf(_handle.IsClosed, this);
         if (buffer.IsEmpty)
             return 0;
 
         // After the engine copies bytes into the buffer it completes with the count,
         // so data already read wins over a concurrent cancellation by construction.
-        Interlocked.Increment(ref pendingAsyncReads);
+        Interlocked.Increment(ref _pendingAsyncReads);
         try
         {
             // Output drained during an exit wait is preserved (see DrainAvailableIntoReplay):
@@ -153,11 +153,11 @@ public sealed partial class PtyStream
             if (replayed > 0)
                 return replayed;
 
-            return await PtyIoEngine.ReadAsync(handle, buffer, cancellationToken).ConfigureAwait(false);
+            return await PtyIoEngine.ReadAsync(_handle, buffer, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
-            Interlocked.Decrement(ref pendingAsyncReads);
+            Interlocked.Decrement(ref _pendingAsyncReads);
         }
     }
 
@@ -170,9 +170,9 @@ public sealed partial class PtyStream
     /// </summary>
     internal bool DrainAvailableIntoReplay()
     {
-        if (handle.IsClosed)
+        if (_handle.IsClosed)
             return false;
-        var fd = (int)handle.DangerousGetHandle();
+        var fd = (int)_handle.DangerousGetHandle();
         // A hangup reported here (POLLHUP/POLLERR without POLLIN) needs no special
         // casing: the read below then yields 0 or EIO, handled as EOF.
         if (!WaitForPoll(fd, NativeMethods.PollEvents.Pollin, 0, out _))
@@ -217,10 +217,10 @@ public sealed partial class PtyStream
         if (bytes.IsEmpty)
             return;
         var copy = bytes.ToArray();
-        lock (replayLock)
+        lock (_replayLock)
         {
-            replayChunks.Add(copy);
-            replayBytes += copy.Length;
+            _replayChunks.Add(copy);
+            _replayBytes += copy.Length;
         }
     }
 
@@ -229,22 +229,22 @@ public sealed partial class PtyStream
     {
         if (target.IsEmpty)
             return 0;
-        lock (replayLock)
+        lock (_replayLock)
         {
-            if (replayBytes == 0)
+            if (_replayBytes == 0)
                 return 0;
             var copied = 0;
-            while (copied < target.Length && replayChunks.Count > 0)
+            while (copied < target.Length && _replayChunks.Count > 0)
             {
-                var chunk = replayChunks[0];
+                var chunk = _replayChunks[0];
                 var n = Math.Min(chunk.Length, target.Length - copied);
                 chunk.AsSpan(0, n).CopyTo(target.Slice(copied));
                 copied += n;
                 if (n == chunk.Length)
-                    replayChunks.RemoveAt(0);
+                    _replayChunks.RemoveAt(0);
                 else
-                    replayChunks[0] = chunk[n..].ToArray();
-                replayBytes -= n;
+                    _replayChunks[0] = chunk[n..].ToArray();
+                _replayBytes -= n;
             }
 
             return copied;
@@ -263,10 +263,10 @@ public sealed partial class PtyStream
     /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
     public override void Write(ReadOnlySpan<byte> buffer)
     {
-        ObjectDisposedException.ThrowIf(handle.IsClosed, this);
+        ObjectDisposedException.ThrowIf(_handle.IsClosed, this);
         if (buffer.IsEmpty)
             return;
-        var fd = (int)handle.DangerousGetHandle();
+        var fd = (int)_handle.DangerousGetHandle();
 
         unsafe
         {
@@ -315,10 +315,10 @@ public sealed partial class PtyStream
     /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
     public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(handle.IsClosed, this);
+        ObjectDisposedException.ThrowIf(_handle.IsClosed, this);
         if (buffer.IsEmpty)
             return ValueTask.CompletedTask;
-        return new ValueTask(PtyIoEngine.WriteAsync(handle, buffer, cancellationToken));
+        return new ValueTask(PtyIoEngine.WriteAsync(_handle, buffer, cancellationToken));
     }
 
     // ------------------------------------------------------------ window size
@@ -334,8 +334,8 @@ public sealed partial class PtyStream
     /// <exception cref="IOException">The ioctl failed.</exception>
     internal void SetWindowSize(int columns, int rows)
     {
-        ObjectDisposedException.ThrowIf(handle.IsClosed, this);
-        var fd = (int)handle.DangerousGetHandle();
+        ObjectDisposedException.ThrowIf(_handle.IsClosed, this);
+        var fd = (int)_handle.DangerousGetHandle();
 
         // Stack-allocated winsize, pinned for the ioctl. IoCtl selects the arm64
         // pad-register calling form that the variadic ABI requires (see the declaration).
@@ -362,9 +362,9 @@ public sealed partial class PtyStream
     {
         // Unregister everything engine-side first, so no poll is still watching this
         // fd when it is closed below (a closed-then-reused fd must never be polled).
-        PtyIoEngine.AbortHandle(handle);
+        PtyIoEngine.AbortHandle(_handle);
         if (disposing)
-            handle.Dispose();
+            _handle.Dispose();
         base.Dispose(disposing);
     }
 
@@ -396,7 +396,7 @@ public sealed partial class PtyStream
             int r;
             do
             {
-                r = NativeMethods.poll(pollFds, remainingMs);
+                r = NativeMethods.Poll(pollFds, remainingMs);
             } while (r < 0 && Marshal.GetLastPInvokeError() == NativeMethods.Eintr);
 
             switch (r)

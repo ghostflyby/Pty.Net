@@ -8,14 +8,14 @@ public class PtyProcessTests : IDisposable
     private const string Done = "__DONE__";
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(5);
 
-    private readonly PtyProcess bash = TestBash.Start();
+    private readonly PtyProcess _bash = TestBash.Start();
 
-    public void Dispose() => bash.Dispose();
+    public void Dispose() => _bash.Dispose();
 
     [Fact]
     public void StartsInteractiveBash_ShowsPrompt()
     {
-        var output = TestBash.ReadUntil(bash.Output, "$", Timeout);
+        var output = TestBash.ReadUntil(_bash.Output, "$", Timeout);
 
         Assert.Contains("$", output);
     }
@@ -25,8 +25,8 @@ public class PtyProcessTests : IDisposable
     {
         DisableEcho();
 
-        bash.Input.WriteLine($"echo hello-from-pty; echo {Done}");
-        var output = TestBash.ReadUntil(bash.Output, Done, Timeout);
+        _bash.Input.WriteLine($"echo hello-from-pty; echo {Done}");
+        var output = TestBash.ReadUntil(_bash.Output, Done, Timeout);
 
         Assert.Contains("hello-from-pty", output);
     }
@@ -36,14 +36,14 @@ public class PtyProcessTests : IDisposable
     {
         DisableEcho();
 
-        bash.Input.WriteLine($"echo one-AAAA; echo {Done}");
-        var one = TestBash.ReadUntil(bash.Output, Done, Timeout);
+        _bash.Input.WriteLine($"echo one-AAAA; echo {Done}");
+        var one = TestBash.ReadUntil(_bash.Output, Done, Timeout);
 
-        bash.Input.WriteLine($"echo two-BBBB; echo {Done}");
-        var two = TestBash.ReadUntil(bash.Output, Done, Timeout);
+        _bash.Input.WriteLine($"echo two-BBBB; echo {Done}");
+        var two = TestBash.ReadUntil(_bash.Output, Done, Timeout);
 
-        bash.Input.WriteLine($"echo three-CCCC; echo {Done}");
-        var three = TestBash.ReadUntil(bash.Output, Done, Timeout);
+        _bash.Input.WriteLine($"echo three-CCCC; echo {Done}");
+        var three = TestBash.ReadUntil(_bash.Output, Done, Timeout);
 
         Assert.Contains("one-AAAA", one);
         Assert.Contains("two-BBBB", two);
@@ -57,11 +57,11 @@ public class PtyProcessTests : IDisposable
 
         // Variables set by one command are still visible to the next one:
         // proof we are talking to the same interactive shell session.
-        bash.Input.WriteLine($"ANSWER=42; echo set-AAAA; echo {Done}");
-        Assert.Contains("set-AAAA", TestBash.ReadUntil(bash.Output, Done, Timeout));
+        _bash.Input.WriteLine($"ANSWER=42; echo set-AAAA; echo {Done}");
+        Assert.Contains("set-AAAA", TestBash.ReadUntil(_bash.Output, Done, Timeout));
 
-        bash.Input.WriteLine($"echo the-answer-is-$ANSWER; echo {Done}");
-        var output = TestBash.ReadUntil(bash.Output, Done, Timeout);
+        _bash.Input.WriteLine($"echo the-answer-is-$ANSWER; echo {Done}");
+        var output = TestBash.ReadUntil(_bash.Output, Done, Timeout);
 
         Assert.Contains("the-answer-is-42", output);
     }
@@ -71,12 +71,12 @@ public class PtyProcessTests : IDisposable
     {
         // Wait until bash is fully up (prompt visible) before sending exit,
         // otherwise the early input can be lost during startup.
-        TestBash.ReadUntil(bash.Output, "$", Timeout);
-        bash.Input.WriteLine("exit");
+        TestBash.ReadUntil(_bash.Output, "$", Timeout);
+        _bash.Input.WriteLine("exit");
 
-        Assert.True(bash.WaitForExit(Timeout));
-        Assert.Equal(0, bash.ExitCode);
-        Assert.Null(bash.TerminationSignal);
+        Assert.True(_bash.WaitForExit(Timeout));
+        Assert.Equal(0, _bash.ExitCode);
+        Assert.Null(_bash.TerminationSignal);
     }
 
 #if !WINDOWS
@@ -129,17 +129,17 @@ public class PtyProcessTests : IDisposable
         // Monitor (job control) must be on: this is the functional difference between a
         // proper pty session leader and a plain subprocess. It requires the child to have
         // a session with a controlling terminal (POSIX_SPAWN_SETSID = 0x0400 on macOS).
-        bash.Input.WriteLine($"set +H; echo {Done}"); // disable history expansion for the $! below
-        TestBash.ReadUntil(bash.Output, Done, Timeout);
+        _bash.Input.WriteLine($"set +H; echo {Done}"); // disable history expansion for the $! below
+        TestBash.ReadUntil(_bash.Output, Done, Timeout);
 
         // Background job reports its pid and is listed by jobs -l.
-        bash.Input.WriteLine($"sleep 0.5 & echo JOBPID=$!; echo {Done}");
-        var bg = TestBash.ReadUntil(bash.Output, Done, Timeout);
+        _bash.Input.WriteLine($"sleep 0.5 & echo JOBPID=$!; echo {Done}");
+        var bg = TestBash.ReadUntil(_bash.Output, Done, Timeout);
         Assert.Contains("[1]", bg);
         Assert.Contains("JOBPID=", bg);
 
-        bash.Input.WriteLine($"jobs -l; echo {Done}");
-        var jobs = TestBash.ReadUntil(bash.Output, Done, Timeout);
+        _bash.Input.WriteLine($"jobs -l; echo {Done}");
+        var jobs = TestBash.ReadUntil(_bash.Output, Done, Timeout);
         Assert.Contains("[1]", jobs);
         Assert.Contains("sleep 0.5", jobs);
     }
@@ -165,10 +165,10 @@ public class PtyProcessTests : IDisposable
         // The fixture bash IS the child under test: it is a session leader whose
         // stdio is the pty slave, so opening /dev/tty must succeed.
         DisableEcho();
-        bash.Input.WriteLine(
+        _bash.Input.WriteLine(
             "if : </dev/tty 2>/dev/null; then echo CTTY_OK; else echo CTTY_MISSING; fi; echo __DEVTTY_DONE__");
 
-        var output = TestBash.ReadUntil(bash.Output, "__DEVTTY_DONE__", Timeout);
+        var output = TestBash.ReadUntil(_bash.Output, "__DEVTTY_DONE__", Timeout);
 
         Assert.Contains("CTTY_OK", output);
         Assert.DoesNotContain("CTTY_MISSING", output);
@@ -200,8 +200,8 @@ public class PtyProcessTests : IDisposable
     public void Shell_SeesItsControllingTerminal()
     {
         DisableEcho();
-        bash.Input.WriteLine($"tty; echo {Done}");
-        var output = TestBash.ReadUntil(bash.Output, Done, Timeout);
+        _bash.Input.WriteLine($"tty; echo {Done}");
+        var output = TestBash.ReadUntil(_bash.Output, Done, Timeout);
 
         Assert.Matches(@"(/dev/ttys\d+|/dev/pts/\d+)", output);
     }
@@ -244,12 +244,12 @@ public class PtyProcessTests : IDisposable
     [Fact]
     public void Resize_RejectsInvalidDimensions()
     {
-        Assert.Throws<ArgumentOutOfRangeException>(() => bash.Resize(0, 24));
-        Assert.Throws<ArgumentOutOfRangeException>(() => bash.Resize(80, 0));
-        Assert.Throws<ArgumentOutOfRangeException>(() => bash.Resize(-1, 24));
-        Assert.Throws<ArgumentOutOfRangeException>(() => bash.Resize(80, -1));
-        Assert.Throws<ArgumentOutOfRangeException>(() => bash.Resize(32768, 24));
-        Assert.Throws<ArgumentOutOfRangeException>(() => bash.Resize(80, 32768));
+        Assert.Throws<ArgumentOutOfRangeException>(() => _bash.Resize(0, 24));
+        Assert.Throws<ArgumentOutOfRangeException>(() => _bash.Resize(80, 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => _bash.Resize(-1, 24));
+        Assert.Throws<ArgumentOutOfRangeException>(() => _bash.Resize(80, -1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => _bash.Resize(32768, 24));
+        Assert.Throws<ArgumentOutOfRangeException>(() => _bash.Resize(80, 32768));
     }
 
 #if !WINDOWS
@@ -265,15 +265,15 @@ public class PtyProcessTests : IDisposable
     {
         DisableEcho();
 
-        bash.Input.WriteLine($"stty size; echo {Done}");
-        var initial = TestBash.ReadUntil(bash.Output, Done, Timeout);
+        _bash.Input.WriteLine($"stty size; echo {Done}");
+        var initial = TestBash.ReadUntil(_bash.Output, Done, Timeout);
         // "rows cols" — the StartInfo default is 120 columns x 30 rows.
         Assert.Matches(@"\b30\s+120\b", initial);
 
-        bash.Resize(80, 24);
+        _bash.Resize(80, 24);
 
-        bash.Input.WriteLine($"stty size; echo {Done}");
-        var resized = TestBash.ReadUntil(bash.Output, Done, Timeout);
+        _bash.Input.WriteLine($"stty size; echo {Done}");
+        var resized = TestBash.ReadUntil(_bash.Output, Done, Timeout);
         Assert.Matches(@"\b24\s+80\b", resized);
     }
 #endif
@@ -292,17 +292,17 @@ public class PtyProcessTests : IDisposable
         DisableEcho();
 
         // Ready marker proves the trap is installed before we resize.
-        bash.Input.WriteLine($"trap 'echo WINCH-AAAA' WINCH; echo ready-BBBB; echo {Done}");
-        TestBash.ReadUntil(bash.Output, Done, Timeout);
+        _bash.Input.WriteLine($"trap 'echo WINCH-AAAA' WINCH; echo ready-BBBB; echo {Done}");
+        TestBash.ReadUntil(_bash.Output, Done, Timeout);
 
-        bash.Resize(100, 40);
+        _bash.Resize(100, 40);
 
         // The trap fires asynchronously; wait for its marker, then confirm the size too.
-        var output = TestBash.ReadUntil(bash.Output, "WINCH-AAAA", Timeout);
+        var output = TestBash.ReadUntil(_bash.Output, "WINCH-AAAA", Timeout);
         Assert.Contains("WINCH-AAAA", output);
 
-        bash.Input.WriteLine($"stty size; echo {Done}");
-        Assert.Matches(@"\b40\s+100\b", TestBash.ReadUntil(bash.Output, Done, Timeout));
+        _bash.Input.WriteLine($"stty size; echo {Done}");
+        Assert.Matches(@"\b40\s+100\b", TestBash.ReadUntil(_bash.Output, Done, Timeout));
     }
 #endif
 
@@ -313,8 +313,8 @@ public class PtyProcessTests : IDisposable
     {
         DisableEcho();
 
-        await bash.Input.WriteLineAsync($"echo async-AAAA; echo {Done}");
-        var output = TestBash.ReadUntil(bash.Output, Done, Timeout);
+        await _bash.Input.WriteLineAsync($"echo async-AAAA; echo {Done}");
+        var output = TestBash.ReadUntil(_bash.Output, Done, Timeout);
 
         Assert.Contains("async-AAAA", output);
     }
@@ -322,10 +322,10 @@ public class PtyProcessTests : IDisposable
     [Fact]
     public void ReadUntil_ReturnsEarlyWhenChildExits()
     {
-        bash.Input.WriteLine("exit");
+        _bash.Input.WriteLine("exit");
 
         // The reader hits EOF and returns what was read instead of hanging until the timeout.
-        var output = TestBash.ReadUntil(bash.Output, "never-appears", Timeout);
+        var output = TestBash.ReadUntil(_bash.Output, "never-appears", Timeout);
         Assert.False(string.IsNullOrEmpty(output));
     }
 
@@ -521,11 +521,11 @@ public class PtyProcessTests : IDisposable
     [Fact]
     public void WaitForExit_NoTimeout_ReturnsAfterChildExits()
     {
-        bash.Input.WriteLine("exit");
+        _bash.Input.WriteLine("exit");
 
-        bash.WaitForExit(); // must not throw and must return once the child is reaped
+        _bash.WaitForExit(); // must not throw and must return once the child is reaped
 
-        Assert.True(bash.HasExited);
+        Assert.True(_bash.HasExited);
     }
 
     /// <summary>
@@ -590,8 +590,8 @@ public class PtyProcessTests : IDisposable
     /// </summary>
     private void DisableEcho()
     {
-        bash.Input.WriteLine("stty -echo; printf \"__E\"\"CHO_SYNC__\"");
-        TestBash.ReadUntil(bash.Output, "__ECHO_SYNC__", Timeout);
-        TestBash.Drain(bash.Output, TimeSpan.FromMilliseconds(50));
+        _bash.Input.WriteLine("stty -echo; printf \"__E\"\"CHO_SYNC__\"");
+        TestBash.ReadUntil(_bash.Output, "__ECHO_SYNC__", Timeout);
+        TestBash.Drain(_bash.Output, TimeSpan.FromMilliseconds(50));
     }
 }

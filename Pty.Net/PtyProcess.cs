@@ -20,7 +20,7 @@ namespace Ghostflyby.Pty;
 /// </summary>
 public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
 {
-    private readonly SemaphoreSlim gate = new(1, 1);
+    private readonly SemaphoreSlim _gate = new(1, 1);
 
     /// <summary>
     /// Completion signal for the exit wait: completed exactly once, by the process-wide
@@ -31,17 +31,17 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// and completes the moment the reaper collects the child. Lazy so a process that is
     /// never waited on (the common case) allocates no completion source.
     /// </summary>
-    private readonly Lazy<TaskCompletionSource<bool>> exitSignal = new(
+    private readonly Lazy<TaskCompletionSource<bool>> _exitSignal = new(
         () => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously),
         LazyThreadSafetyMode.ExecutionAndPublication);
 
-    private bool disposed;
+    private bool _disposed;
 
     /// <summary>Set once a force kill has been issued (<see cref="Kill()"/> or the
     /// graceful window in <see cref="Dispose"/>/<see cref="DisposeAsync"/> expired), so
     /// later <see cref="Kill()"/> and <see cref="RequestClose()"/> calls stay no-ops.
     /// Volatile: written from the calling thread, read from any thread.</summary>
-    private int killRequested; // 0/1
+    private int _killRequested; // 0/1
 
     /// <summary>OS process id of the child.</summary>
     public int Pid { get; }
@@ -55,17 +55,17 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
 
     internal sealed class TerminationStatus
     {
-        private readonly int value;
-        private readonly bool isSignal;
+        private readonly int _value;
+        private readonly bool _isSignal;
 
         private TerminationStatus(int value, bool isSignal)
         {
-            this.value = value;
-            this.isSignal = isSignal;
+            this._value = value;
+            this._isSignal = isSignal;
         }
 
-        internal int? ExitCode => isSignal ? null : value;
-        internal int? Signal => isSignal ? value : null;
+        internal int? ExitCode => _isSignal ? null : _value;
+        internal int? Signal => _isSignal ? _value : null;
 
         internal static TerminationStatus Exited(int exitCode) => new(exitCode, false);
 
@@ -76,7 +76,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         }
 
         public override string ToString() =>
-            isSignal ? $"signal={value}" : $"exitCode={value}";
+            _isSignal ? $"signal={_value}" : $"exitCode={_value}";
     }
 
     /// <summary>
@@ -84,14 +84,14 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// reference represents both completion and the exit-code/signal union, so readers
     /// cannot observe a partially published or internally contradictory result.
     /// </summary>
-    private TerminationStatus? terminationStatus;
+    private TerminationStatus? _terminationStatus;
 
     /// <summary>
     /// Exit code of the child after a normal exit; null while it is running or when a
     /// Unix signal terminated it.
     /// <para>Windows exit codes preserve all 32 bits.</para>
     /// </summary>
-    public int? ExitCode => Volatile.Read(ref terminationStatus)?.ExitCode;
+    public int? ExitCode => Volatile.Read(ref _terminationStatus)?.ExitCode;
 
     /// <summary>
     /// Native Unix signal number that terminated the child; null while it is running,
@@ -99,13 +99,13 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// <para>This is the positive value reported by waitpid(2)'s WTERMSIG result; signal
     /// numbers are platform-specific. Core-dump status is not exposed.</para>
     /// </summary>
-    public int? TerminationSignal => Volatile.Read(ref terminationStatus)?.Signal;
+    public int? TerminationSignal => Volatile.Read(ref _terminationStatus)?.Signal;
 
     /// <summary>
     /// True once the child has been reaped. While false, <see cref="ExitCode"/> and
     /// <see cref="TerminationSignal"/> are both null; once true, exactly one is non-null.
     /// </summary>
-    public bool HasExited => Volatile.Read(ref terminationStatus) is not null;
+    public bool HasExited => Volatile.Read(ref _terminationStatus) is not null;
 
     /// <summary>
     /// Raised once the child has been reaped by the process-wide reaper. The sole argument
@@ -291,17 +291,17 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
             var deadline = infinite ? DateTime.MaxValue : DateTime.UtcNow + timeout;
             while (true)
             {
-                gate.Wait();
+                _gate.Wait();
                 try
                 {
-                    ObjectDisposedException.ThrowIf(disposed, this);
+                    ObjectDisposedException.ThrowIf(_disposed, this);
                     DrainOutput(); // keep the pty buffer flowing while we wait
                     if (HasExited)
                         return true;
                 }
                 finally
                 {
-                    gate.Release();
+                    _gate.Release();
                 }
 
                 // The reaper completes the exit signal the moment it collects the child,
@@ -349,17 +349,17 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
                 if (HasExited)
                     return true;
 
-                await gate.WaitAsync(ct).ConfigureAwait(false);
+                await _gate.WaitAsync(ct).ConfigureAwait(false);
                 try
                 {
-                    ObjectDisposedException.ThrowIf(disposed, this);
+                    ObjectDisposedException.ThrowIf(_disposed, this);
                     DrainOutput(); // keep the pty buffer flowing while we wait
                     if (HasExited)
                         return true;
                 }
                 finally
                 {
-                    gate.Release();
+                    _gate.Release();
                 }
 
                 // One wait per loop, bounded by the remaining timeout: the reaper completes
@@ -403,8 +403,8 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// <exception cref="ObjectDisposedException">The process is disposed.</exception>
     public void RequestClose()
     {
-        ObjectDisposedException.ThrowIf(disposed, this);
-        if (HasExited || Volatile.Read(ref killRequested) != 0)
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (HasExited || Volatile.Read(ref _killRequested) != 0)
             return;
         // Platform hook: SIGHUP on Unix; async CTRL_CLOSE_EVENT via ClosePseudoConsole on
         // Windows (which also starts draining the final frame).
@@ -423,16 +423,16 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// </summary>
     public void Kill()
     {
-        if (disposed || HasExited)
+        if (_disposed || HasExited)
             return;
-        if (Interlocked.CompareExchange(ref killRequested, 1, 0) != 0 || HasExited)
+        if (Interlocked.CompareExchange(ref _killRequested, 1, 0) != 0 || HasExited)
             return;
         // Platform hook: SIGKILL on Unix, TerminateProcess on Windows. On failure the
         // reservation is rolled back so a later Kill()/dispose force-kill can retry —
         // otherwise a failed signal would be silently swallowed and every subsequent
         // cleanup would wait on a child that was never actually killed.
         if (!KillPlatform())
-            Volatile.Write(ref killRequested, 0);
+            Volatile.Write(ref _killRequested, 0);
     }
 
     /// <summary>
@@ -476,12 +476,12 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// </summary>
     public void Dispose()
     {
-        gate.Wait();
+        _gate.Wait();
         try
         {
-            if (disposed)
+            if (_disposed)
                 return;
-            disposed = true;
+            _disposed = true;
 
             PtyDiagnostics.Log(
                 $"dispose begin pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"} signal={TerminationSignal?.ToString() ?? "null"}");
@@ -510,7 +510,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         }
         finally
         {
-            gate.Release();
+            _gate.Release();
         }
     }
 
@@ -525,12 +525,12 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// <returns>A task that completes when the process is terminated and its resources are released.</returns>
     public async ValueTask DisposeAsync()
     {
-        await gate.WaitAsync().ConfigureAwait(false);
+        await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (disposed)
+            if (_disposed)
                 return;
-            disposed = true;
+            _disposed = true;
 
             PtyDiagnostics.Log(
                 $"dispose-async begin pid={Pid} exited={HasExited} exitCode={ExitCode?.ToString() ?? "null"} signal={TerminationSignal?.ToString() ?? "null"}");
@@ -548,7 +548,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         }
         finally
         {
-            gate.Release();
+            _gate.Release();
         }
     }
 
@@ -558,11 +558,11 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     /// <see cref="GracefulExitTimeout"/> to exit on its own, then force-kill it. Skipped
     /// entirely for children that have already exited or been killed (e.g. by a manual
     /// <see cref="Kill()"/>), so the dispose path never fights an earlier signal.
-    /// Called with <see cref="gate"/> held; the sync variant may block on the wait.
+    /// Called with <see cref="_gate"/> held; the sync variant may block on the wait.
     /// </summary>
     private void TerminateGracefully()
     {
-        if (HasExited || Volatile.Read(ref killRequested) != 0)
+        if (HasExited || Volatile.Read(ref _killRequested) != 0)
             return;
 
         // Platform hook: SIGHUP the still-alive child on Unix; on Windows initiate the
@@ -584,19 +584,19 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
 
         PtyDiagnostics.Log($"dispose graceful timeout pid={Pid} exited={HasExited}");
 
-        if (!HasExited && Interlocked.CompareExchange(ref killRequested, 1, 0) == 0 && !HasExited)
+        if (!HasExited && Interlocked.CompareExchange(ref _killRequested, 1, 0) == 0 && !HasExited)
         {
             // Roll the reservation back on failure so the reaper's stuck-exit safety
             // net (or a user retry) can attempt the kill again.
             if (!KillPlatform())
-                Volatile.Write(ref killRequested, 0);
+                Volatile.Write(ref _killRequested, 0);
             PtyDiagnostics.Log($"dispose force kill sent pid={Pid}");
         }
     }
 
     private async Task TerminateGracefullyAsync()
     {
-        if (HasExited || Volatile.Read(ref killRequested) != 0)
+        if (HasExited || Volatile.Read(ref _killRequested) != 0)
             return;
 
         SignalChildIfAlive();
@@ -619,10 +619,10 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
 
         PtyDiagnostics.Log($"dispose-async graceful timeout pid={Pid} exited={HasExited}");
 
-        if (!HasExited && Interlocked.CompareExchange(ref killRequested, 1, 0) == 0 && !HasExited)
+        if (!HasExited && Interlocked.CompareExchange(ref _killRequested, 1, 0) == 0 && !HasExited)
         {
             if (!KillPlatform())
-                Volatile.Write(ref killRequested, 0);
+                Volatile.Write(ref _killRequested, 0);
             PtyDiagnostics.Log($"dispose-async force kill sent pid={Pid}");
         }
     }
@@ -643,10 +643,10 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         // Capture subscribers before publishing the terminal state. Once a caller observes
         // HasExited, a later subscription must not join this already-started notification.
         var exited = Exited;
-        if (Interlocked.CompareExchange(ref terminationStatus, status, null) is not null)
+        if (Interlocked.CompareExchange(ref _terminationStatus, status, null) is not null)
         {
             PtyDiagnostics.Log(
-                $"on-reaped duplicate ignored pid={Pid} status={status} published={Volatile.Read(ref terminationStatus)}");
+                $"on-reaped duplicate ignored pid={Pid} status={status} published={Volatile.Read(ref _terminationStatus)}");
             return false;
         }
 
@@ -656,7 +656,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
         OnReapedPlatform();
         // Release every exit wait (WaitForExit / WaitForExitAsync / Dispose / DisposeAsync)
         // before raising the event, so a handler that blocks cannot stall them.
-        exitSignal.Value.TrySetResult(true);
+        _exitSignal.Value.TrySetResult(true);
         // Raise the event handler-by-handler: a multicast invocation runs all handlers
         // as one delegate, so a throw from the first subscriber would prevent every
         // later subscriber from seeing the exit. Each handler is isolated instead —
@@ -684,7 +684,7 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     internal bool TryReap([NotNullWhen(true)] out TerminationStatus? status) => TryReapPlatform(out status);
 
     /// <summary>The task completed by the reaper once this child is collected (see <see cref="OnReaped"/>).</summary>
-    private Task<bool> ExitSignal => exitSignal.Value.Task;
+    private Task<bool> ExitSignal => _exitSignal.Value.Task;
 
     /// <summary>
     /// Awaits <paramref name="signal"/> for up to <paramref name="timeoutMs"/> ms,
