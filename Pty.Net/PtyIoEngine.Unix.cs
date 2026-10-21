@@ -45,8 +45,8 @@ namespace Ghostflyby.Pty;
 /// let a reused fd number be polled for the wrong file).
 /// </para>
 /// <para>
-/// Unix-only: compiled only by the non-Windows target (see csproj); Windows uses BCL
-/// pipe I/O through IOCP instead.
+/// Unix-only at runtime; compiled on every OS (single source set, see csproj) — Windows
+/// uses BCL pipe I/O through IOCP instead and never touches this engine.
 /// </para>
 /// </summary>
 internal static class PtyIoEngine
@@ -56,7 +56,11 @@ internal static class PtyIoEngine
     private const int PollSafetyTimeoutMs = 500;
 
     private const int Eintr = NativeMethods.Eintr;
-    private const int Eagain = NativeMethods.Eagain;
+
+    // Runtime-selected per OS (35 on macOS, 11 on Linux): not a const, so the dispatch
+    // branches below compare with == instead of case labels.
+    private static readonly int Eagain = NativeMethods.Eagain;
+
     private const int Eio = NativeMethods.Eio;
 
     // Lazily started on first use and never stopped: a process-lifetime singleton, so
@@ -516,27 +520,24 @@ internal static class PtyIoEngine
                 }
 
                 var err = Marshal.GetLastPInvokeError();
-                switch (err)
+                if (err == Eintr)
+                    continue;
+                if (err == Eagain)
                 {
-                    case Eintr:
-                        continue;
-                    case Eagain:
-                    {
-                        // Spurious wakeup: the data was consumed before this read ran (e.g.
-                        // by a concurrent read on the same stream), or the readiness state
-                        // changed. Stay registered for the next POLLIN — not an error. If the
-                        // fd also reports hangup/error, the slave is gone: that is EOF.
-                        if ((revents & (NativeMethods.PollEvents.Pollhup | NativeMethods.PollEvents.Pollerr)) != 0)
-                            Complete(op, OpStatus.Succeeded, 0, null);
-                        return;
-                    }
-                    case Eio:
-                        Complete(op, OpStatus.Succeeded, 0, null); // slave closed: EOF on both platforms
-                        return;
-                    default:
-                        Complete(op, OpStatus.Failed, 0, new IOException($"pty read failed: errno={err}"));
-                        return;
+                    // Spurious wakeup: the data was consumed before this read ran (e.g.
+                    // by a concurrent read on the same stream), or the readiness state
+                    // changed. Stay registered for the next POLLIN — not an error. If the
+                    // fd also reports hangup/error, the slave is gone: that is EOF.
+                    if ((revents & (NativeMethods.PollEvents.Pollhup | NativeMethods.PollEvents.Pollerr)) != 0)
+                        Complete(op, OpStatus.Succeeded, 0, null);
+                    return;
                 }
+                if (err == Eio)
+                {
+                    Complete(op, OpStatus.Succeeded, 0, null); // slave closed: EOF on both platforms
+                    return;
+                }
+                Complete(op, OpStatus.Failed, 0, new IOException($"pty read failed: errno={err}"));
             }
         }
 
@@ -558,28 +559,25 @@ internal static class PtyIoEngine
                 }
 
                 var err = Marshal.GetLastPInvokeError();
-                switch (err)
+                if (err == Eintr)
+                    continue;
+                if (err == Eagain)
                 {
-                    case Eintr:
-                        continue;
-                    case Eagain:
-                    {
-                        // The pty buffer is full for now; resume on the next POLLOUT. If the
-                        // slave is gone (HUP/ERR), the remaining bytes can never be written.
-                        if ((revents & (NativeMethods.PollEvents.Pollhup | NativeMethods.PollEvents.Pollerr |
-                                        NativeMethods.PollEvents.Pollnval)) != 0)
-                            Complete(op, OpStatus.Failed, 0,
-                                new IOException("pty write failed: the child closed the terminal"));
-                        return;
-                    }
-                    case Eio:
+                    // The pty buffer is full for now; resume on the next POLLOUT. If the
+                    // slave is gone (HUP/ERR), the remaining bytes can never be written.
+                    if ((revents & (NativeMethods.PollEvents.Pollhup | NativeMethods.PollEvents.Pollerr |
+                                    NativeMethods.PollEvents.Pollnval)) != 0)
                         Complete(op, OpStatus.Failed, 0,
-                            new IOException("pty write failed: the child closed the terminal (EIO)"));
-                        return;
-                    default:
-                        Complete(op, OpStatus.Failed, 0, new IOException($"pty write failed: errno={err}"));
-                        return;
+                            new IOException("pty write failed: the child closed the terminal"));
+                    return;
                 }
+                if (err == Eio)
+                {
+                    Complete(op, OpStatus.Failed, 0,
+                        new IOException("pty write failed: the child closed the terminal (EIO)"));
+                    return;
+                }
+                Complete(op, OpStatus.Failed, 0, new IOException($"pty write failed: errno={err}"));
             }
 
             Complete(op, OpStatus.Succeeded, total, null);

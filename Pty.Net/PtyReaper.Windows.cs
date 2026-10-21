@@ -7,19 +7,19 @@ namespace Ghostflyby.Pty;
 /// bounded poll (WaitForSingleObject(handle, 0)) on a dedicated thread, exactly like the
 /// pre-split implementation — the BCL offers no single synchronous "wait on a handle
 /// without a thread" that the library could call into here, and the Windows test
-/// surface is covered by that bounded poll. Windows-only: compiled only by the Windows
-/// target (see csproj).
+/// surface is covered by that bounded poll. Compiled on every OS (single source set,
+/// see csproj); PtyReaper dispatches to it at runtime on Windows.
 /// </summary>
 internal static partial class PtyReaper
 {
     private const int PollIntervalMs = 10;
 
-    private static readonly Lazy<ReaperThread> Reaper =
-        new(() => new ReaperThread(), LazyThreadSafetyMode.ExecutionAndPublication);
+    private static readonly Lazy<WindowsReaperThread> WindowsReaper =
+        new(() => new WindowsReaperThread(), LazyThreadSafetyMode.ExecutionAndPublication);
 
-    private static partial void WatchPlatform(PtyProcess process) => Reaper.Value.WatchProcess(process);
+    private static void WatchPlatformWindows(PtyProcess process) => WindowsReaper.Value.WatchProcess(process);
 
-    private sealed class ReaperThread
+    private sealed class WindowsReaperThread
     {
         private readonly object _sync = new();
         private readonly List<PtyProcess> _watched = [];
@@ -27,7 +27,7 @@ internal static partial class PtyReaper
         // tick would churn one allocation for the whole lifetime of any watched process.
         private PtyProcess[] _snapshot = [];
 
-        public ReaperThread()
+        public WindowsReaperThread()
         {
             var thread = new Thread(Loop) { IsBackground = true, Name = "Pty.Net-reaper" };
             thread.Start();

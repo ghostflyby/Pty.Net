@@ -24,11 +24,11 @@ defaults:
 
 jobs:
   build:
-    # One build per OS: the compiled dll is platform-specific but architecture-neutral
-    # managed IL (the csproj splits files by OS only, and the CI test matrix runs the
-    # suite natively on all six shipped RIDs — both architectures of each OS). The
-    # publish job below copies each OS build into both of its architecture RID
-    # folders, so no arch matrix is needed here.
+    # One build per OS: the single source set compiles identically on every host, so
+    # each job produces the same architecture-neutral managed IL — the job stays
+    # per-OS so `dotnet test` runs natively on the OS it packages for. The publish
+    # job below copies each OS build into both of its architecture RID folders, so
+    # no arch matrix is needed here.
     name: Build ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30

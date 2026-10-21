@@ -7,14 +7,22 @@ using Ghostflyby.Pty;
 // Bare-name resolution (fork/exec on Unix, CreateProcess on Windows) is exercised
 // on purpose: it is part of the published behavior.
 
-// Platform: one bare name that is reliably on PATH everywhere.
-#if WINDOWS
-const string shell = "cmd.exe";
-string[] shellArgs = ["/c", "echo smoke-ok & echo __DONE__"];
-#else
-const string shell = "bash";
-string[] shellArgs = ["--noprofile", "--norc", "-c", "echo smoke-ok; echo __DONE__"];
-#endif
+// Platform: one bare name that is reliably on PATH everywhere. Runtime-selected — the
+// smoke program compiles identically on every OS (single source set). The Windows
+// branch deliberately names cmd.exe, not bash: a bare "bash" on Windows resolves to
+// C:\Windows\SYSTEM32\bash.exe (WSL), which has no distro on the runners.
+string shell;
+string[] shellArgs;
+if (OperatingSystem.IsWindows())
+{
+    shell = "cmd.exe";
+    shellArgs = ["/c", "echo smoke-ok & echo __DONE__"];
+}
+else
+{
+    shell = "bash";
+    shellArgs = ["--noprofile", "--norc", "-c", "echo smoke-ok; echo __DONE__"];
+}
 
 using var p = PtyProcess.Start(shell, shellArgs);
 

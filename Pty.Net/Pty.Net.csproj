@@ -23,13 +23,8 @@
     <PackageProjectUrl>https://github.com/ghostflyby/Pty.Net</PackageProjectUrl>
     <PackageTags>pty;pseudo-terminal;conpty;csharp;dotnet;dotnet-library</PackageTags>
 
-    <!-- Symbols: dotnet pack emits a snupkg next to the nupkg (the publish
-         workflow pushes it). SourceLink then lets a consumer's debugger step
-         into the library source instead of "Cannot step in — no source".
-         Each OS build job compiles a different #if/#elif file set, so the
-         platform assemblies and PDBs are kept together. The publish job
-         rebuilds one snupkg from all three platform artifacts, placing each
-         PDB beside the matching final package DLL for both architecture RIDs.
+    <!-- Symbols: the single source set compiles on every OS, so each platform build job
+         emits byte-identical IL and PDBs — one snupkg, no per-OS artifact merge.
          ContinuousIntegrationBuild keeps the compilation deterministic
          (normalized paths), which SourceLink requires. -->
     <IncludeSymbols>true</IncludeSymbols>
@@ -53,35 +48,21 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
 
-    <!-- Platform symbol used by #if in NativeMethods.Unix.cs / PtyProcess.Start.Unix.cs.
-         The SDK may define OSX/LINUX automatically from the build host, but be explicit.
-         Windows needs no define: the Windows files are compiled via file globs below. -->
-    <DefineConstants Condition="$([MSBuild]::IsOSPlatform('OSX'))">$(DefineConstants);OSX</DefineConstants>
-    <DefineConstants Condition="$([MSBuild]::IsOSPlatform('Linux'))">$(DefineConstants);LINUX</DefineConstants>
-
-    <!-- CsWin32 build-task mode makes it emit [LibraryImport] externs (the plain
-         source-generator mode emits [DllImport], which would trip the IL20xx
-         diagnostics under IsAotCompatible). Windows-only. -->
-    <CsWin32RunAsBuildTask Condition="$([MSBuild]::IsOSPlatform('Windows'))">true</CsWin32RunAsBuildTask>
+    <!-- Symbols: every OS build job compiles the SAME single source set (all platform
+         halves, no per-OS file globs), so the three platform jobs produce byte-identical
+         IL and one pack suffices. CsWin32 must therefore run on every host: build-task
+         mode is required cross-platform anyway (the plain source-generator mode emits
+         [DllImport] instead of [LibraryImport] and does not parse the # comments in
+         NativeMethods.txt). -->
+    <CsWin32RunAsBuildTask>true</CsWin32RunAsBuildTask>
   </PropertyGroup>
 
-  <!-- Platform split by file globs instead of inline #if: PtyProcess.cs and PtyReaper.cs
-       are platform-free and reach platform code through partial methods; each platform
-       half lives in a .Windows.cs / .Unix.cs file compiled only on its platform.
-       The .Unix.cs set also carries the macOS/Linux (#if OSX/LINUX) differences. -->
-  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
-    <Compile Remove="**/*.Unix.cs"/>
-    <Compile Update="PtyProcess.Start.Windows.cs;PtyReaper.Windows.cs;PtyStream.Windows.cs;WindowsPty.Windows.cs"/>
-  </ItemGroup>
-  <ItemGroup Condition="!$([MSBuild]::IsOSPlatform('Windows'))">
-    <Compile Remove="**/*.Windows.cs"/>
-    <Compile Update="NativeMethods.Unix.cs;PtyIoEngine.Unix.cs;PtyProcess.Start.Unix.cs;PtyReaper.Unix.cs;PtyStream.Unix.cs"/>
-  </ItemGroup>
-
-  <!-- Windows-only: CsWin32 source-generates the ConPTY interop (CreatePseudoConsole +
-       CreateProcessW + attribute list) under Windows.Win32.PInvoke. PrivateAssets
+  <!-- CsWin32 source-generates the ConPTY interop (CreatePseudoConsole + CreateProcessW
+       + attribute list) under Windows.Win32.PInvoke. Runs on every build host; the
+       generated [LibraryImport] stubs are lazily bound, so they compile and AOT-verify
+       fine on any OS and only resolve when actually called on Windows. PrivateAssets
        keeps the generator package out of consumers. -->
-  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+  <ItemGroup>
     <PackageReference Include="Microsoft.Windows.CsWin32" Version="0.3.298" PrivateAssets="all"/>
   </ItemGroup>
 

@@ -12,17 +12,16 @@ namespace Ghostflyby.Pty;
 /// post-fork libc calls run through function pointers rather than the P/Invokes here.
 /// </para>
 /// <para>
-/// Unix-only: this file is compiled only by the non-Windows target (see csproj), so
-/// Windows-specific constants and branches are absent. pty setup returns raw fds
+/// Unix interop: the whole file compiles on every OS (single source set, see csproj).
+/// The macOS/Linux value differences (errnos, open(2) flags, ioctl request numbers) are
+/// runtime-selected <c>static readonly</c> fields — .NET resolves P/Invokes lazily, so
+/// the platform-foreign declarations are harmless until actually called. pty setup
+/// returns raw fds
 /// (posix_openpt/grantpt/unlockpt/ptsname are non-variadic, so they work on Apple arm64
 /// where the variadic fcntl misdelivers its third argument); the caller wraps the master
 /// in a <see cref="SafeFileHandle"/> for <see cref="PtyStream"/>. Byte transfer goes
 /// through raw read(2)/write(2) on the non-blocking master fd, driven by
 /// <see cref="PtyStream"/> / <see cref="PtyIoEngine"/> (see <see cref="PtyProcess"/>).
-/// </para>
-/// <para>
-/// Constants are split per platform: macOS (OSX) and Linux glibc differ in the
-/// O_NOCTTY/O_CLOEXEC values and the fd-closing mechanism.
 /// </para>
 /// </summary>
 // ReSharper disable IdentifierTypo
@@ -66,8 +65,8 @@ internal static partial class NativeMethods
     // on. CLOEXEC_DEFAULT (0x4000) makes the kernel close every fd the file actions
     // did not create — the fd sweep itself, no manual loop, fds above any cap
     // included. SETSID (0x0400) is deliberately not set: the fork child does its own
-    // setsid() before the spawn call (see ChildMain).
-#if OSX
+    // setsid() before the spawn call (see ChildMain). Apple-only: referenced solely
+    // by the macOS branches selected at runtime.
     [Flags]
     internal enum PosixSpawnFlags : short
     {
@@ -75,45 +74,33 @@ internal static partial class NativeMethods
         CloexecDefault = 0x4000,
         Setexec = 0x0040,
     }
-#endif
 
     // errno values used in the poll/read/write retry logic.
-    // EINTR and EIO are identical on macOS and Linux; EAGAIN differs.
-    // ENOENT, ENOTDIR and EACCES feed the launch-error translation in
-    // PtyProcess.Start.Unix.cs and are identical on macOS and Linux.
+    // EINTR and EIO are identical on macOS and Linux; EAGAIN differs (35 vs 11) and is
+    // therefore a runtime-selected readonly field, not a const — switch case labels at
+    // the call sites compare with == instead. ENOENT, ENOTDIR and EACCES feed the
+    // launch-error translation in PtyProcess.Start.Unix.cs and are identical on macOS
+    // and Linux.
     internal const int Eintr = 4;
     internal const int Eio = 5;
     internal const int Esrch = 3;
     internal const int ENoent = 2;
     internal const int Enotdir = 20;
     internal const int Eacces = 13;
-#if OSX
-    internal const int Eagain = 35;
-#elif LINUX
-    internal const int Eagain = 11;
-#else
-#error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
-#endif
+    internal static readonly int Eagain = OperatingSystem.IsMacOS() ? 35 : 11;
 
-    // open(2) / posix_openpt(2) flag bits. O_RDWR is identical; O_NONBLOCK and
-    // O_NOCTTY differ per platform. O_NONBLOCK is applied to the pty master at
+    // open(2) / posix_openpt(2) flag bits. O_RDWR is identical; O_NONBLOCK, O_NOCTTY
+    // and O_CLOEXEC differ per platform, so they are runtime-selected readonly fields.
+    // O_NONBLOCK is applied to the pty master at
     // posix_openpt time (via fcntl it would hit the broken variadic fcntl on Apple
     // arm64 — posix_openpt is non-variadic and portable).
-#if OSX
-    internal const int ONonblock = 0x0004;
+    internal static readonly int ONonblock = OperatingSystem.IsMacOS() ? 0x0004 : 0x0800;
 
-    internal const int ONoctty = 0x20000;
+    internal static readonly int ONoctty = OperatingSystem.IsMacOS() ? 0x20000 : 0x00100;
 
-    // O_CLOEXEC for open(2): macOS uses 0x1000000 (Linux uses 0x80000; the value is
-    // per-platform, so it sits in the per-platform section).
-    internal const int OCloexec = 0x1000000;
-#elif LINUX
-    internal const int ONonblock = 0x0800;
-    internal const int ONoctty = 0x00100;
-    internal const int OCloexec = 0x80000;
-#else
-#error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
-#endif
+    // O_CLOEXEC for open(2): macOS uses 0x1000000, Linux 0x80000.
+    internal static readonly int OCloexec = OperatingSystem.IsMacOS() ? 0x1000000 : 0x80000;
+
     internal const int ORdwr = 0x0002;
 
     // fcntl(2) commands used to set the close-on-exec bit after a raw open/openpty
@@ -126,13 +113,7 @@ internal static partial class NativeMethods
     // TIOCSWINSZ: the ioctl request that sets the terminal window size in characters.
     // macOS 0x80087467 (_IOW('t', 104, winsize), C-verified), Linux 0x5414
     // (asm-generic/ioctls.h).
-#if OSX
-    internal const nuint Tiocswinsz = 0x80087467;
-#elif LINUX
-    internal const nuint Tiocswinsz = 0x5414;
-#else
-#error "The Unix path supports macOS (define OSX) or Linux (define LINUX) only."
-#endif
+    internal static readonly nuint Tiocswinsz = OperatingSystem.IsMacOS() ? 0x80087467 : 0x5414;
 
     // Buffer sizes for the opaque spawn types: both are well under this on macOS.
     internal const int PosixSpawnFileActionsSize = 512;
@@ -182,17 +163,17 @@ internal static partial class NativeMethods
     [LibraryImport("libc", SetLastError = true)]
     internal static partial IntPtr ptsname(int fd);
 
-#if LINUX
     // ptsname_r(3): thread-safe variant that writes into a caller-owned buffer (Linux
-    // only; Darwin has no ptsname_r). Returns 0 on success, or an errno (it does not
-    // set errno itself), so callers check the return value, not GetLastPInvokeError.
+    // only; Darwin has no ptsname_r — macOS callers use ptsname under a lock instead).
+    // Returns 0 on success, or an errno (it does not set errno itself), so callers check
+    // the return value, not GetLastPInvokeError. Lazily bound, so the declaration is
+    // harmless on platforms without the export.
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int ptsname_r(int fd, IntPtr buf, nuint buflen);
 
     // Max length of a ptsname buffer: the longest Linux device path (e.g. /dev/pts/999)
     // plus the NUL terminator.
     internal const int PtsPathMax = 64;
-#endif
 
     // Two-argument open(2) — the pty slave never needs O_CREAT, whose mode argument
     // would exercise the same broken variadic path as fcntl.
@@ -274,8 +255,8 @@ internal static partial class NativeMethods
     // live in the low range in practice.
     internal const int FdIsolationCap = 4096;
 
-#if LINUX
-    // ---- epoll / pidfd / eventfd: the event-driven reaper (PtyReaper.Unix.cs) ----
+    // ---- epoll / pidfd / eventfd: the event-driven reaper, Linux half
+    // (PtyReaper.Unix.cs). Linux-only at runtime; compiled everywhere (lazily bound).
     // epoll(2) event and control constants (identical across Linux architectures).
     internal const int EpollIn = 0x001;
     internal const int EpollCloexec = 0x80000; // EPOLL_CLOEXEC == O_CLOEXEC on Linux
@@ -349,10 +330,9 @@ internal static partial class NativeMethods
     // waking never blocks (unlike a pipe, which can fill).
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int eventfd(uint initval, int flags);
-#endif
 
-#if OSX
-    // ---- kqueue / kevent: the event-driven reaper (PtyReaper.Unix.cs) ----
+    // ---- kqueue / kevent: the event-driven reaper, macOS half (PtyReaper.Unix.cs).
+    // macOS-only at runtime; compiled everywhere (lazily bound).
     // kevent filters and flags from <sys/event.h> (Darwin). EVFILT_PROC reports NOTE_EXIT
     // when the watched process exits; EVFILT_USER is a self-wake channel (macOS 10.9+)
     // triggered from any thread with NOTE_TRIGGER. EVFILT_PROC is -5 (as on FreeBSD);
@@ -398,9 +378,8 @@ internal static partial class NativeMethods
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int kevent(int kq, [In] Kevent[]? changelist, int nchanges, [Out] Kevent[]? eventlist,
         int nevents, IntPtr timeout);
-#endif
 
-#if OSX
+    // posix_spawnattr_* (Apple): consumed by the macOS fork child's SETEXEC exec path.
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int posix_spawnattr_init(IntPtr attr);
 
@@ -409,7 +388,6 @@ internal static partial class NativeMethods
 
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int posix_spawnattr_setflags(IntPtr attr, PosixSpawnFlags flags);
-#endif
 
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int kill(int pid, Signals sig);

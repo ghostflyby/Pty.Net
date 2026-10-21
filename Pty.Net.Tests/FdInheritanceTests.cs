@@ -2,7 +2,6 @@ using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
 namespace Ghostflyby.Pty.Tests;
-#if !WINDOWS
 
 // Demonstrates that posix_spawn, unless told otherwise, inherits ALL parent fds
 // into the child (same hole fork has, minus the lock deadlock). macOS
@@ -13,7 +12,7 @@ public partial class FdInheritanceTests
     private const string Done = "__DONE__";
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(5);
 
-    [Fact]
+    [UnixFact]
     public void ChildDoesNotInheritParentFileDescriptors()
     {
         // Unique probe file in the system temp dir, so parallel runs cannot collide.
@@ -25,7 +24,7 @@ public partial class FdInheritanceTests
         using var probe = new SafeFileHandle(
             Native.open(
                 probeFile,
-                Native.OpenFlags.OCreat | Native.OpenFlags.ORdwr,
+                Native.OpenFlags.ORdwr | Native.OCreatFlag,
                 Native.UnixPermissions.UserRead | Native.UnixPermissions.UserWrite |
                 Native.UnixPermissions.GroupRead | Native.UnixPermissions.OtherRead),
             ownsHandle: true);
@@ -57,12 +56,12 @@ public partial class FdInheritanceTests
         internal enum OpenFlags
         {
             ORdwr = 0x0002,
-#if OSX
-            OCreat = 0x0200,
-#elif LINUX
-            OCreat = 0x0040,
-#endif
         }
+
+        // Runtime-selected O_CREAT (see above): enum members must be compile-time
+        // constants, so the per-OS bit is OR-composed at the call site instead.
+        internal static readonly OpenFlags OCreatFlag =
+            OperatingSystem.IsMacOS() ? (OpenFlags)0x0200 : (OpenFlags)0x0040;
 
         // Permission bits for the probe file (0644).
         [Flags]
@@ -82,5 +81,3 @@ public partial class FdInheritanceTests
         internal static partial int open(string path, OpenFlags flags, UnixPermissions mode);
     }
 }
-
-#endif

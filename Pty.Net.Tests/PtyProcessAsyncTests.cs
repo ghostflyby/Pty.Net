@@ -107,8 +107,7 @@ public class PtyProcessAsyncTests
     /// background. Unix-only: Windows TerminateProcess kills the child regardless of
     /// signal handling, so the graceful branch is unreachable there.
     /// </summary>
-#if !WINDOWS
-    [Fact]
+    [UnixFact]
     public async Task DisposeAsync_InteractiveShell_ClosesTerminalPromptly()
     {
         var p = TestBash.Start();
@@ -123,7 +122,7 @@ public class PtyProcessAsyncTests
         Assert.True(p.HasExited, "interactive shell must be reaped by dispose");
     }
 
-    [Fact]
+    [UnixFact]
     public async Task DisposeAsync_SurvivingChild_CompletesAfterGracefulTimeout()
     {
         // trap '' HUP makes the child ignore the hangup Dispose sends; sleep keeps it
@@ -151,7 +150,6 @@ public class PtyProcessAsyncTests
             p.Kill();
         }
     }
-#endif
 
     // --- Exited event -----------------------------------------------------
 
@@ -335,8 +333,7 @@ public class PtyProcessAsyncTests
         Assert.Equal(0, Volatile.Read(ref calls));
     }
 
-#if !WINDOWS
-    [Fact]
+    [UnixFact]
     public async Task Exited_AfterSignalTermination_PublishesSignal()
     {
         var (file, args) = TestBash.SleepProcess(100);
@@ -352,7 +349,6 @@ public class PtyProcessAsyncTests
         Assert.Null(exited.ExitCode);
         Assert.Equal(9, exited.TerminationSignal);
     }
-#endif
 
     /// <summary>The reaper sets ExitCode on its own — no explicit WaitForExit needed.</summary>
     [Fact]

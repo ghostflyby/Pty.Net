@@ -15,9 +15,8 @@ public class StreamSemanticsTests
 {
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
 
-#if !WINDOWS
     /// <summary>Disposing Output must not kill the process: Input keeps working and the shell still exits on RequestClose.</summary>
-    [Fact]
+    [UnixFact]
     public void DisposeOutput_InputRemainsUsable()
     {
         var probeFile = Path.Combine(Path.GetTempPath(), "pty-output-disposed-" + Guid.NewGuid().ToString("N"));
@@ -33,7 +32,7 @@ public class StreamSemanticsTests
     }
 
     /// <summary>Disposing Input must not kill the process: Output keeps working.</summary>
-    [Fact]
+    [UnixFact]
     public void DisposeInput_OutputRemainsUsable()
     {
         using var p = TestBash.Start();
@@ -47,7 +46,7 @@ public class StreamSemanticsTests
     }
 
     /// <summary>Disposing BaseStream directly is allowed; facade operations then throw.</summary>
-    [Fact]
+    [UnixFact]
     public void DisposeBaseStream_FacadesThrow()
     {
         var p = TestBash.Start();
@@ -57,7 +56,6 @@ public class StreamSemanticsTests
         Assert.ThrowsAny<Exception>(() => _ = p.Output.Peek());
         p.Dispose(); // double dispose is fine
     }
-#endif
 
     /// <summary>
     /// The wait-time output contract: everything the child printed before and during
@@ -68,17 +66,11 @@ public class StreamSemanticsTests
     [Fact]
     public async Task WaitForExit_PreservesOutputProducedBeforeAndDuringWait()
     {
-#if WINDOWS
-        using var p =
- PtyProcess.Start("cmd.exe", ["/c", "echo BEFORE-MARKER & ping -n 2 127.0.0.1 >nul & echo AFTER-MARKER"]);
+        await using var p = OperatingSystem.IsWindows()
+            ? PtyProcess.Start("cmd.exe", ["/c", "echo BEFORE-MARKER & ping -n 2 127.0.0.1 >nul & echo AFTER-MARKER"])
+            : PtyProcess.Start("bash", ["--noprofile", "--norc", "-c", "echo BEFORE-MARKER; sleep 0.4; echo AFTER-MARKER"]);
         const string before = "BEFORE-MARKER";
         const string after = "AFTER-MARKER";
-#else
-        await using var p = PtyProcess.Start("bash",
-            ["--noprofile", "--norc", "-c", "echo BEFORE-MARKER; sleep 0.4; echo AFTER-MARKER"]);
-        const string before = "BEFORE-MARKER";
-        const string after = "AFTER-MARKER";
-#endif
         // Wait for exit WITHOUT reading first: the drain now buffers what it would
         // previously have discarded on Unix.
         Assert.True(await p.WaitForExitAsync(Timeout, TestContext.Current.CancellationToken)
@@ -103,13 +95,10 @@ public class StreamSemanticsTests
     [Fact]
     public void WaitForExit_Sync_PreservesOutputPrintedBeforeExit()
     {
-#if WINDOWS
-        using var p = PtyProcess.Start("cmd.exe", ["/c", "echo FINAL-MARKER"]);
+        using var p = OperatingSystem.IsWindows()
+            ? PtyProcess.Start("cmd.exe", ["/c", "echo FINAL-MARKER"])
+            : PtyProcess.Start("bash", ["--noprofile", "--norc", "-c", "echo FINAL-MARKER"]);
         var marker = "FINAL-MARKER";
-#else
-        using var p = PtyProcess.Start("bash", ["--noprofile", "--norc", "-c", "echo FINAL-MARKER"]);
-        var marker = "FINAL-MARKER";
-#endif
         Assert.True(p.WaitForExit(Timeout));
         var output = TestBash.ReadUntil(p.Output, marker, Timeout);
         Assert.Contains(marker, output);

@@ -79,8 +79,7 @@ public class PtyProcessTests : IDisposable
         Assert.Null(_bash.TerminationSignal);
     }
 
-#if !WINDOWS
-    [Fact]
+    [UnixFact]
     public void NormalNonZeroExit_PublishesExitCodeWithoutSignal()
     {
         using var p = PtyProcess.Start("/bin/sh", ["-c", "exit 42"]);
@@ -90,7 +89,6 @@ public class PtyProcessTests : IDisposable
         Assert.Equal(42, p.ExitCode);
         Assert.Null(p.TerminationSignal);
     }
-#endif
 
     [Fact]
     public void StartsInSpecifiedWorkingDirectory()
@@ -104,13 +102,16 @@ public class PtyProcessTests : IDisposable
             bashInDir.Input.WriteLine("stty -echo");
             TestBash.Drain(bashInDir.Output, TimeSpan.FromMilliseconds(200));
 
-#if WINDOWS
-            // MSYS bash prints POSIX-style paths (/c/...) for pwd; cygpath -w converts
-            // back to the Windows path the test compares against.
-            bashInDir.Input.WriteLine($"cygpath -w \"$(pwd)\"; echo {Done}");
-#else
-            bashInDir.Input.WriteLine($"pwd; echo {Done}");
-#endif
+            if (OperatingSystem.IsWindows())
+            {
+                // MSYS bash prints POSIX-style paths (/c/...) for pwd; cygpath -w converts
+                // back to the Windows path the test compares against.
+                bashInDir.Input.WriteLine($"cygpath -w \"$(pwd)\"; echo {Done}");
+            }
+            else
+            {
+                bashInDir.Input.WriteLine($"pwd; echo {Done}");
+            }
             var output = TestBash.ReadUntil(bashInDir.Output, Done, Timeout);
 
             Assert.Contains(dir, output);
@@ -158,8 +159,7 @@ public class PtyProcessTests : IDisposable
     /// <see cref="Child_IsSessionLeaderWithControllingTerminal"/> adds the
     /// tcgetpgrp precision where python3 is available.
     /// </summary>
-#if !WINDOWS
-    [Fact]
+    [UnixFact]
     public void Shell_ChildOpensDevTty()
     {
         // The fixture bash IS the child under test: it is a session leader whose
@@ -174,7 +174,7 @@ public class PtyProcessTests : IDisposable
         Assert.DoesNotContain("CTTY_MISSING", output);
     }
 
-    [Fact]
+    [UnixFact]
     public void Child_IsSessionLeaderWithControllingTerminal()
     {
         var (file, args) = TryPythonProbe();
@@ -196,7 +196,7 @@ public class PtyProcessTests : IDisposable
     /// semantics (isatty + tcgetpgrp) are asserted by Child_IsSessionLeaderWithControllingTerminal;
     /// this only checks that an interactive shell is wired to a real terminal device.
     /// </summary>
-    [Fact]
+    [UnixFact]
     public void Shell_SeesItsControllingTerminal()
     {
         DisableEcho();
@@ -231,7 +231,6 @@ public class PtyProcessTests : IDisposable
             return (null, []);
         }
     }
-#endif
 
     // --- window size -------------------------------------------------------
 
@@ -252,7 +251,6 @@ public class PtyProcessTests : IDisposable
         Assert.Throws<ArgumentOutOfRangeException>(() => _bash.Resize(80, 32768));
     }
 
-#if !WINDOWS
     /// <summary>
     /// The initial size from <see cref="PtyStartInfo"/> (default 120x30) is applied before
     /// the child starts, and <see cref="PtyProcess.Resize"/> propagates to the child:
@@ -260,7 +258,7 @@ public class PtyProcessTests : IDisposable
     /// covered by PtyWindowsTests.Resize_PropagatesThroughConPty — Git Bash's stty size
     /// is unreliable under ConPTY.
     /// </summary>
-    [Fact]
+    [UnixFact]
     public void Resize_ChildSeesNewWindowSize()
     {
         DisableEcho();
@@ -276,9 +274,7 @@ public class PtyProcessTests : IDisposable
         var resized = TestBash.ReadUntil(_bash.Output, Done, Timeout);
         Assert.Matches(@"\b24\s+80\b", resized);
     }
-#endif
 
-#if OSX
     /// <summary>
     /// Resize on Unix is TIOCSWINSZ, which also delivers SIGWINCH to the child's
     /// foreground process group: a trap fires without the child having to read anything.
@@ -286,7 +282,7 @@ public class PtyProcessTests : IDisposable
     /// but SIGWINCH delivery to the interactive bash session is not reliable enough for a
     /// test gate, so the Linux side asserts the size propagation only.
     /// </summary>
-    [Fact]
+    [MacOsFact]
     public void Resize_SendsSigwinch()
     {
         DisableEcho();
@@ -304,7 +300,6 @@ public class PtyProcessTests : IDisposable
         _bash.Input.WriteLine($"stty size; echo {Done}");
         Assert.Matches(@"\b40\s+100\b", TestBash.ReadUntil(_bash.Output, Done, Timeout));
     }
-#endif
 
     // --- async surface -----------------------------------------------------
 
@@ -342,14 +337,17 @@ public class PtyProcessTests : IDisposable
         p.Kill();
 
         Assert.True(p.WaitForExit(Timeout));
-#if WINDOWS
-        // ConPTY has no signals: Kill is TerminateProcess with exit code 1.
-        Assert.Equal(1, p.ExitCode);
-        Assert.Null(p.TerminationSignal);
-#else
-        Assert.Null(p.ExitCode);
-        Assert.Equal(9, p.TerminationSignal); // SIGKILL, as returned by WTERMSIG
-#endif
+        if (OperatingSystem.IsWindows())
+        {
+            // ConPTY has no signals: Kill is TerminateProcess with exit code 1.
+            Assert.Equal(1, p.ExitCode);
+            Assert.Null(p.TerminationSignal);
+        }
+        else
+        {
+            Assert.Null(p.ExitCode);
+            Assert.Equal(9, p.TerminationSignal); // SIGKILL, as returned by WTERMSIG
+        }
     }
 
     /// <summary>
@@ -358,8 +356,7 @@ public class PtyProcessTests : IDisposable
     /// Unix-only — on Windows it starts the async pseudo-console close (CTRL_CLOSE_EVENT),
     /// which is covered by the ConPTY smoke tests.
     /// </summary>
-#if !WINDOWS
-    [Fact]
+    [UnixFact]
     public void RequestClose_CausesShellToExit()
     {
         using var p = TestBash.Start();
@@ -370,7 +367,6 @@ public class PtyProcessTests : IDisposable
         // SIGHUP lets the shell run its exit path; it must exit on its own.
         Assert.True(p.WaitForExit(Timeout));
     }
-#endif
 
     /// <summary>
     /// Explicit environment overrides are merged into the parent environment at launch:
@@ -392,7 +388,6 @@ public class PtyProcessTests : IDisposable
         Assert.Contains("visible-42", output);
     }
 
-#if WINDOWS
     /// <summary>
     /// Windows environment variables are case-insensitive: overriding "SYSTEMROOT"
     /// (upper-cased) must replace the inherited "SystemRoot" value instead of adding a
@@ -400,7 +395,7 @@ public class PtyProcessTests : IDisposable
     /// CreateProcess is then undefined. Unix-only counterpart is the case-sensitive
     /// <see cref="Environment_OverridesAreVisibleToChild"/>.
     /// </summary>
-    [Fact]
+    [WindowsFact]
     public void Environment_OverrideIsCaseInsensitiveOnWindows()
     {
         // SystemRoot is always present on Windows; override its case-variant and read it
@@ -416,7 +411,6 @@ public class PtyProcessTests : IDisposable
 
         Assert.Contains("CUSTOM-ROOT", output);
     }
-#endif
 
     /// <summary>
     /// <see cref="PtyStartInfo.InheritParentEnvironment"/> = false turns the environment
@@ -483,19 +477,20 @@ public class PtyProcessTests : IDisposable
         // so the assertion has no discriminative power there — and the Windows launch
         // path never had injection logic to begin with (BuildEnvironmentBlock only
         // serializes what the caller passed).
-#if !WINDOWS
-        var emptyInfo = new PtyStartInfo(TestBash.BashPath)
+        if (!OperatingSystem.IsWindows())
         {
-            Arguments = ["--noprofile", "--norc", "-c", "echo TERM=[$TERM]; echo __DONE__"],
-            Environment = ImmutableDictionary<string, string?>.Empty,
-            InheritParentEnvironment = false,
-        };
-        using (var p = PtyProcess.Start(emptyInfo))
-        {
-            var output = TestBash.ReadUntil(p.Output, "__DONE__", Timeout);
-            Assert.DoesNotContain("xterm-256color", output);
+            var emptyInfo = new PtyStartInfo(TestBash.BashPath)
+            {
+                Arguments = ["--noprofile", "--norc", "-c", "echo TERM=[$TERM]; echo __DONE__"],
+                Environment = ImmutableDictionary<string, string?>.Empty,
+                InheritParentEnvironment = false,
+            };
+            using (var p = PtyProcess.Start(emptyInfo))
+            {
+                var output = TestBash.ReadUntil(p.Output, "__DONE__", Timeout);
+                Assert.DoesNotContain("xterm-256color", output);
+            }
         }
-#endif
     }
 
     /// <summary>
@@ -508,11 +503,9 @@ public class PtyProcessTests : IDisposable
     [Fact]
     public void Start_ResolvesBareFileNameViaPath()
     {
-#if WINDOWS
-        using var p = PtyProcess.Start("cmd.exe", ["/c", "echo spawnp-ok && echo __DONE__"]);
-#else
-        using var p = PtyProcess.Start("bash", ["--noprofile", "--norc", "-c", "echo spawnp-ok; echo __DONE__"]);
-#endif
+        using var p = OperatingSystem.IsWindows()
+            ? PtyProcess.Start("cmd.exe", ["/c", "echo spawnp-ok && echo __DONE__"])
+            : PtyProcess.Start("bash", ["--noprofile", "--norc", "-c", "echo spawnp-ok; echo __DONE__"]);
         var output = TestBash.ReadUntil(p.Output, "__DONE__", Timeout);
 
         Assert.Contains("spawnp-ok", output);

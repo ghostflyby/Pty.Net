@@ -50,36 +50,24 @@ jobs:
       - name: Build
         run: dotnet build Pty.Net.slnx -c Release --no-restore --nologo
 
-      - name: Verify platform split in the built DLL (Windows)
-        # Ghostflyby.Pty.dll is a single-TFM artifact whose platform code is chosen at
-        # compile time by the csproj file globs (Pty.Net.csproj). Type names are plain
-        # UTF-8 in the metadata, so checking for their presence/absence proves this
-        # build did not mix — or silently strip — the Windows and Unix halves.
-        if: runner.os == 'Windows'
+      - name: Verify single source set in the built DLL
+        # Ghostflyby.Pty.dll compiles the FULL platform source set on every OS (single
+        # source set, see Pty.Net.csproj); the platform half is chosen at runtime.
+        # Type names are plain UTF-8 in the metadata, so asserting BOTH halves are
+        # present proves this build did not silently regain a per-OS compile split
+        # (or lose a half). pwsh is preinstalled on every runner, so one step covers
+        # the whole matrix.
         shell: pwsh
         run: |
           $text = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes('Pty.Net/bin/Release/net10.0/Ghostflyby.Pty.dll'))
           if (-not $text.Contains('WindowsPty'))
           {
-            throw "Windows build is missing the ConPTY path"
+            throw "build is missing the Windows ConPTY path"
           }
-          if ( $text.Contains('PtyIoEngine'))
+          if (-not $text.Contains('PtyIoEngine'))
           {
-            throw "Windows build contains the Unix I/O engine"
+            throw "build is missing the Unix poll-driven I/O engine"
           }
-
-      - name: Verify platform split in the built DLL (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          dll=Pty.Net/bin/Release/net10.0/Ghostflyby.Pty.dll
-          if grep -a -q 'WindowsPty' "$dll"; then
-            echo "error: Unix build contains the Windows ConPTY path"
-            exit 1
-          fi
-          if ! grep -a -q 'PtyIoEngine' "$dll"; then
-            echo "error: Unix build is missing the poll-driven I/O engine"
-            exit 1
-          fi
 
       - name: Test
         # xunit.v3 runs on Microsoft.Testing.Platform, which the .NET 10 SDK's
@@ -88,7 +76,7 @@ jobs:
         # producing a hang report).
         run: dotnet test --solution Pty.Net.slnx -c Release --no-build --no-restore
 
-  # Linux 上的 libc 差异由容器矩阵覆盖：同一套 #if LINUX 代码路径要分别在 glibc
+  # Linux 上的 libc 差异由容器矩阵覆盖：同一套 Linux 运行时路径要分别在 glibc
   # (sdk:10.0，基于 Ubuntu) 与 musl (sdk:10.0-alpine，基于 Alpine) 上验证。
   # POSIX_SPAWN_SETSID 在两种 libc 上都是 0x80，但 musl 不导出 glibc 的
   # posix_spawn_file_actions_addclosefrom_np，所以 fd 隔离统一用标准 addclose

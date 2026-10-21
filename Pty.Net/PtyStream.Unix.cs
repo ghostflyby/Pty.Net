@@ -13,10 +13,13 @@ namespace Ghostflyby.Pty;
 //     a timeout; bytes already copied win over cancellation.
 //   * Prompt EOF: when the child's slave side goes away, poll reports HUP and the next
 //     read returns 0 instead of blocking forever.
-// Unix-only: compiled only by the non-Windows target (see csproj).
+// Compiled on every OS (single source set, see csproj); PtyStream.cs dispatches the
+// shared Stream surface to the *Unix members here at runtime.
 public sealed partial class PtyStream
 {
-    private readonly SafeFileHandle _handle;
+    // Only the Unix constructor initializes this (see the Windows half's fields for
+    // the mirror case); the Windows constructor leaves it null — unreachable there.
+    private readonly SafeFileHandle _handle = null!;
 
     // Exit-wait replay buffer: while a WaitForExit/Dispose wait drains the master (so
     // the child never blocks on a full pty buffer), the drained bytes land here instead
@@ -33,10 +36,10 @@ public sealed partial class PtyStream
         this._handle = handle;
     }
 
-    internal bool IsClosed => _handle.IsClosed;
+    internal bool IsClosedUnix => _handle.IsClosed;
 
     /// <summary>There is no user-space buffering, so this does nothing beyond checking the stream is open.</summary>
-    public override void Flush()
+    private void FlushUnix()
     {
         ObjectDisposedException.ThrowIf(_handle.IsClosed, this);
         // No userspace buffering, so there is nothing to flush.
@@ -55,9 +58,9 @@ public sealed partial class PtyStream
     /// <returns>The number of bytes read, or 0 at end of stream.</returns>
     /// <exception cref="InvalidOperationException">A pending async read is in progress on this stream; sync and async reads cannot be mixed.</exception>
     /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
-    public override int Read(Span<byte> buffer)
+    private int ReadUnix(Span<byte> buffer)
     {
-        return buffer.IsEmpty ? 0 : Read(buffer, Timeout.Infinite);
+        return buffer.IsEmpty ? 0 : ReadUnixCore(buffer, Timeout.Infinite);
     }
 
     /// <summary>
@@ -67,7 +70,7 @@ public sealed partial class PtyStream
     /// <see cref="PtyProcess"/> to keep its existing bounded-wait read semantics without
     /// a second syscall layer.
     /// </summary>
-    private int Read(Span<byte> buffer, int timeoutMs)
+    private int ReadUnixCore(Span<byte> buffer, int timeoutMs)
     {
         ObjectDisposedException.ThrowIf(_handle.IsClosed, this);
         if (Volatile.Read(ref _pendingAsyncReads) > 0)
@@ -102,23 +105,22 @@ public sealed partial class PtyStream
                             return 0;
                     }
 
+                    // Eagain is a runtime-selected readonly field (the errno number
+                    // differs per OS), so the branches compare with == instead of case
+                    // labels, which require compile-time constants.
                     var err = Marshal.GetLastPInvokeError();
-                    switch (err)
+                    if (err == NativeMethods.Eintr)
+                        continue;
+                    if (err == NativeMethods.Eagain)
                     {
-                        case NativeMethods.Eintr:
-                            continue;
-                        case NativeMethods.Eagain:
-                        {
-                            // Spurious poll wakeup: nothing actually available. A hangup
-                            // reported by the poll above still ends here — read(2) on the
-                            // master returns 0 (EOF) once the slave is gone.
-                            return 0;
-                        }
-                        case NativeMethods.Eio:
-                            return 0;
-                        default:
-                            throw new IOException($"pty read failed: errno={err}");
+                        // Spurious poll wakeup: nothing actually available. A hangup
+                        // reported by the poll above still ends here — read(2) on the
+                        // master returns 0 (EOF) once the slave is gone.
+                        return 0;
                     }
+                    if (err == NativeMethods.Eio)
+                        return 0;
+                    throw new IOException($"pty read failed: errno={err}");
                 }
             }
         }
@@ -135,7 +137,7 @@ public sealed partial class PtyStream
     /// <returns>The number of bytes read, or 0 at end of stream.</returns>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> is canceled before any data was read.</exception>
     /// <exception cref="ObjectDisposedException">The stream is disposed while the read is pending.</exception>
-    public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+    private async ValueTask<int> ReadAsyncUnix(Memory<byte> buffer, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_handle.IsClosed, this);
         if (buffer.IsEmpty)
@@ -196,17 +198,13 @@ public sealed partial class PtyStream
                     }
 
                     var err = Marshal.GetLastPInvokeError();
-                    switch (err)
-                    {
-                        case NativeMethods.Eintr:
-                            continue;
-                        case NativeMethods.Eagain:
-                            return false; // spurious wakeup
-                        case NativeMethods.Eio:
-                            return false; // slave gone: EOF
-                        default:
-                            throw new IOException($"pty read failed: errno={err}");
-                    }
+                    if (err == NativeMethods.Eintr)
+                        continue;
+                    if (err == NativeMethods.Eagain)
+                        return false; // spurious wakeup
+                    if (err == NativeMethods.Eio)
+                        return false; // slave gone: EOF
+                    throw new IOException($"pty read failed: errno={err}");
                 }
             }
         }
@@ -261,7 +259,7 @@ public sealed partial class PtyStream
     /// <param name="buffer">The bytes to write.</param>
     /// <exception cref="IOException">The child's terminal is closed.</exception>
     /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
-    public override void Write(ReadOnlySpan<byte> buffer)
+    private void WriteUnix(ReadOnlySpan<byte> buffer)
     {
         ObjectDisposedException.ThrowIf(_handle.IsClosed, this);
         if (buffer.IsEmpty)
@@ -283,19 +281,17 @@ public sealed partial class PtyStream
                     }
 
                     var err = Marshal.GetLastPInvokeError();
-                    switch (err)
+                    if (err == NativeMethods.Eintr)
+                        continue;
+                    if (err == NativeMethods.Eagain)
                     {
-                        case NativeMethods.Eintr:
-                            continue;
-                        case NativeMethods.Eagain:
-                            // pty buffer full: wait until the child drains it (or the slave is gone).
-                            WaitForPoll(fd, NativeMethods.PollEvents.Pollout, Timeout.Infinite, out _);
-                            continue;
-                        case NativeMethods.Eio:
-                            throw new IOException("pty write failed: the child closed the terminal (EIO)");
-                        default:
-                            throw new IOException($"pty write failed: errno={err}");
+                        // pty buffer full: wait until the child drains it (or the slave is gone).
+                        WaitForPoll(fd, NativeMethods.PollEvents.Pollout, Timeout.Infinite, out _);
+                        continue;
                     }
+                    if (err == NativeMethods.Eio)
+                        throw new IOException("pty write failed: the child closed the terminal (EIO)");
+                    throw new IOException($"pty write failed: errno={err}");
                 }
             }
         }
@@ -313,7 +309,7 @@ public sealed partial class PtyStream
     /// <exception cref="OperationCanceledException">The write action was canceled before it completed.</exception>
     /// <exception cref="IOException">The child's terminal is closed.</exception>
     /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
-    public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+    private ValueTask WriteAsyncUnix(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_handle.IsClosed, this);
         if (buffer.IsEmpty)
@@ -332,7 +328,7 @@ public sealed partial class PtyStream
     /// <param name="rows">Number of character rows.</param>
     /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
     /// <exception cref="IOException">The ioctl failed.</exception>
-    internal void SetWindowSize(int columns, int rows)
+    internal void SetWindowSizeUnix(int columns, int rows)
     {
         ObjectDisposedException.ThrowIf(_handle.IsClosed, this);
         var fd = (int)_handle.DangerousGetHandle();
@@ -358,7 +354,7 @@ public sealed partial class PtyStream
 
     /// <summary>Releases the stream's pty handle, aborting any in-flight operations first.</summary>
     /// <param name="disposing">True when called from user code (not the finalizer).</param>
-    protected override void Dispose(bool disposing)
+    private void DisposeUnix(bool disposing)
     {
         // Unregister everything engine-side first, so no poll is still watching this
         // fd when it is closed below (a closed-then-reused fd must never be polled).

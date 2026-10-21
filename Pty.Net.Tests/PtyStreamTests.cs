@@ -178,8 +178,7 @@ public class PtyStreamTests : IDisposable
     /// Unix-only: it relies on stty termios (non-canonical mode). ConPTY's input queue is
     /// not termios-controlled, so this particular backpressure setup does not hold there.
     /// </summary>
-#if !WINDOWS
-    [Fact]
+    [UnixFact]
     public async Task WriteAsync_BlockedOnFullPtyBuffer_CancelsImmediately()
     {
         WaitForIdlePrompt();
@@ -205,7 +204,6 @@ public class PtyStreamTests : IDisposable
 
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(1), $"cancel took {sw.Elapsed}");
     }
-#endif
 
     /// <summary>Overlapping async reads on the same stream serialize instead of corrupting each other.</summary>
     [Fact]

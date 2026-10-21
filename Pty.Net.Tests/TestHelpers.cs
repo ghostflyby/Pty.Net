@@ -17,11 +17,7 @@ internal static class TestBash
 
     private static string ResolveBashPath()
     {
-#if WINDOWS
-        return ResolveBash();
-#else
-        return "/bin/bash";
-#endif
+        return OperatingSystem.IsWindows() ? ResolveBash() : "/bin/bash";
     }
 
     /// <summary>
@@ -39,8 +35,7 @@ internal static class TestBash
         return PtyProcess.Start(BashPath, args, workingDirectory);
     }
 
-#if WINDOWS
-    /// <summary>Locates Git Bash's bash.exe (standard install paths first, then PATH).</summary>
+    /// <summary>Locates Git Bash's bash.exe (standard install paths first, then PATH). Windows only.</summary>
     private static string ResolveBash()
     {
         var candidates = new List<string>
@@ -61,29 +56,27 @@ internal static class TestBash
         throw new FileNotFoundException(
             "Git Bash (bash.exe) was not found; the Windows test suite drives interactive bash sessions.");
     }
-#endif
 
     /// <summary>File + args for a process that sleeps for <paramref name="seconds"/> without exiting on its own.</summary>
     public static (string File, string[] Args) SleepProcess(double seconds)
     {
-#if WINDOWS
-        // A fresh powershell per session is heavy (and its startup churn perturbs the
-        // thread-pool accounting in the no-starvation tests); cmd + ping is much lighter.
-        // ping 127.0.0.1 replies roughly once a second, so n pings ≈ n seconds.
-        return ("cmd.exe", ["/c", $"ping -n {Math.Max(2, (int)seconds + 1)} 127.0.0.1 >nul"]);
-#else
+        if (OperatingSystem.IsWindows())
+        {
+            // A fresh powershell per session is heavy (and its startup churn perturbs the
+            // thread-pool accounting in the no-starvation tests); cmd + ping is much lighter.
+            // ping 127.0.0.1 replies roughly once a second, so n pings ≈ n seconds.
+            return ("cmd.exe", ["/c", $"ping -n {Math.Max(2, (int)seconds + 1)} 127.0.0.1 >nul"]);
+        }
+
         return ("/bin/sleep", [seconds.ToString(CultureInfo.InvariantCulture)]);
-#endif
     }
 
     /// <summary>File + args for a process that runs forever (busy child, used by dispose/exit tests).</summary>
     public static (string File, string[] Args) BusyProcess()
     {
-#if WINDOWS
-        return ("powershell.exe", ["-Command", "while($true){Start-Sleep -Milliseconds 100}"]);
-#else
-        return ("/bin/sh", ["-c", "cat < /dev/zero"]);
-#endif
+        return OperatingSystem.IsWindows()
+            ? ("powershell.exe", ["-Command", "while($true){Start-Sleep -Milliseconds 100}"])
+            : ("/bin/sh", ["-c", "cat < /dev/zero"]);
     }
 
     /// <summary>
@@ -94,11 +87,9 @@ internal static class TestBash
     /// </summary>
     public static (string File, string[] Args) ShortLivedProcess()
     {
-#if WINDOWS
-        return ("cmd.exe", ["/c", "ping -n 2 127.0.0.1 >nul"]);
-#else
-        return ("/bin/sh", ["-c", "sleep 0.3"]);
-#endif
+        return OperatingSystem.IsWindows()
+            ? ("cmd.exe", ["/c", "ping -n 2 127.0.0.1 >nul"])
+            : ("/bin/sh", ["-c", "sleep 0.3"]);
     }
 
     /// <summary>
