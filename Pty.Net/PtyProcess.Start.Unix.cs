@@ -15,11 +15,21 @@ namespace Ghostflyby.Pty;
 /// </summary>
 public sealed partial class PtyProcess
 {
-    // Cached platform verdict: read by the fork child (ChildMain), which must stay
-    // allocation- and lock-free — a static bool read is exactly that.
+    // Cached platform verdict, read by the fork child (ChildMain): the child path must
+    // stay allocation- and lock-free, and a static bool read is exactly that. Safe for
+    // the child to read because type initialization always completes before any fork.
+    // NOT read by static field initializers (ResolveChildNativeApi asks the OS
+    // directly): initializer order across a partial class's files is not guaranteed.
     private static readonly bool IsMacOSRuntime = OperatingSystem.IsMacOS();
 
-    private static readonly ChildNativeApi ChildApi = ResolveChildNativeApi();
+    // Resolved only on Unix: on Windows the main-program module exports no libc
+    // symbols, so resolving here would throw at type initialization and take down
+    // every PtyProcess API with a TypeInitializationException. The field stays
+    // default on Windows; its sole consumer (StartPlatformUnix) is unreachable there
+    // by dispatch construction.
+    private static readonly ChildNativeApi ChildApi =
+        OperatingSystem.IsWindows() ? default : ResolveChildNativeApi();
+
     private static readonly bool ForkChildPathPrepared = PrepareForkChildPath();
 
     private static PtyProcess StartPlatformUnix(
@@ -394,8 +404,10 @@ public sealed partial class PtyProcess
 
         // Platform-specific exports: GetExport throws when the symbol is absent, and
         // the platform-foreign half must never be resolved — leaving those pointers
-        // null is fine, the runtime branches in ChildMain never reach them.
-        if (IsMacOSRuntime)
+        // null is fine, the runtime branches in ChildMain never reach them. Asks the
+        // OS directly (not IsMacOSRuntime) to stay independent of static-initializer
+        // ordering across the partial class's files.
+        if (OperatingSystem.IsMacOS())
         {
             api.PosixSpawn =
                 (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, IntPtr, IntPtr, IntPtr, int>)
@@ -446,7 +458,7 @@ public sealed partial class PtyProcess
         _ = api.Write(-1, IntPtr.Zero, 0);
         _ = api.Error();
         _ = api.Signal(23 /* SIGURG, default action: ignore */, IntPtr.Zero);
-        if (IsMacOSRuntime)
+        if (OperatingSystem.IsMacOS())
         {
             // posix_spawn validates its arguments before doing anything: all-null inputs
             // return EINVAL without touching processes. The SETEXEC attribute is not needed

@@ -75,7 +75,14 @@ public sealed partial class PtyStream : Stream
     public override int Read(byte[] buffer, int offset, int count)
     {
         ValidateArgs(buffer, offset, count);
-        return Read(buffer.AsSpan(offset, count));
+        // Straight into the platform core, not the public span override: the core's
+        // disposed-state and sync/async-mixing checks run BEFORE its empty-buffer
+        // short-circuit, so a zero-length read on a disposed (or mixing) stream throws
+        // exactly like the byte[] path always did.
+        var span = buffer.AsSpan(offset, count);
+        return IsWindowsPlatform
+            ? ReadWindowsCore(span, Timeout.Infinite)
+            : ReadUnixCore(span, Timeout.Infinite);
     }
 
     /// <summary>
