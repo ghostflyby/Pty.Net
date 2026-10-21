@@ -1,4 +1,3 @@
-#if WINDOWS
 using Ghostflyby.Pty;
 using System.Diagnostics;
 using System.Text;
@@ -16,7 +15,7 @@ public class PtyWindowsTests
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
 
     /// <summary>cmd.exe echoes a command through the ConPTY channel.</summary>
-    [Fact]
+    [WindowsFact]
     public void Cmd_EchoesThroughConPty()
     {
         using var p = PtyProcess.Start("cmd.exe", ["/c", "echo hello-windows-pty & echo DONE_CMD"]);
@@ -28,7 +27,7 @@ public class PtyWindowsTests
     }
 
     /// <summary>PowerShell output and a non-zero exit code round-trip through ConPTY.</summary>
-    [Fact]
+    [WindowsFact]
     public void PowerShell_OutputAndExitCodeRoundTrip()
     {
         using var p =
@@ -46,7 +45,7 @@ public class PtyWindowsTests
     /// with that encoding HasExited stayed false forever. ExitCode must surface the code
     /// and HasExited must be true.
     /// </summary>
-    [Fact]
+    [WindowsFact]
     public void ExitCode_Full32BitValue_IsPublished()
     {
         // PowerShell's exit binding is 32-bit; [int]::MinValue reaches the process exit
@@ -60,7 +59,7 @@ public class PtyWindowsTests
     }
 
     /// <summary>Empty-string arguments must survive command-line marshaling (as `""`).</summary>
-    [Fact]
+    [WindowsFact]
     public void Start_EmptyArgument_IsPreserved()
     {
         // cmd.exe: `echo` receives three arguments; the middle one is empty. If the
@@ -73,7 +72,7 @@ public class PtyWindowsTests
     }
 
     /// <summary>Sizes above short.MaxValue are rejected instead of wrapping the COORD fields negative.</summary>
-    [Fact]
+    [WindowsFact]
     public void Resize_RejectsDimensionsAboveShortMaxValue()
     {
         using var p = PtyProcess.Start("cmd.exe", ["/c", "echo OVERSIZE_DONE"]);
@@ -84,7 +83,7 @@ public class PtyWindowsTests
     }
 
     /// <summary>StartInfo sizes above short.MaxValue are rejected at launch time.</summary>
-    [Fact]
+    [WindowsFact]
     public void Start_RejectsInitialSizeAboveShortMaxValue()
     {
         var info = new PtyStartInfo("cmd.exe") { Arguments = ["/c", "echo x"], Column = 32768 };
@@ -92,7 +91,7 @@ public class PtyWindowsTests
     }
 
     /// <summary>Root exit closes ConPTY, preserves its final output, and publishes EOF.</summary>
-    [Fact]
+    [WindowsFact]
     public async Task RootExit_PreservesFinalOutputAndCompletesWithEof()
     {
         const int payloadLength = 1_250_000;
@@ -131,7 +130,7 @@ public class PtyWindowsTests
     /// the pseudo console is created, and <see cref="PtyProcess.Resize"/> propagates
     /// through ResizePseudoConsole: the child's console API sees both sizes.
     /// </summary>
-    [Fact]
+    [WindowsFact]
     public void Resize_PropagatesThroughConPty()
     {
         using var p = PtyProcess.Start(
@@ -153,7 +152,7 @@ public class PtyWindowsTests
     }
 
     /// <summary>Configured Latin-1 facades transcode to/from ConPTY's UTF-8 transport.</summary>
-    [Fact]
+    [WindowsFact]
     public void ConfiguredLatin1_TranscodesBothDirections()
     {
         using var p = PtyProcess.Start(new PtyStartInfo
@@ -182,7 +181,7 @@ public class PtyWindowsTests
     /// and the force-kill unblocks that close. This smoke test pins the timing so the
     /// shared dispose path stays correct on both platforms.
     /// </summary>
-    [Fact]
+    [WindowsFact]
     public void Dispose_LiveChild_CompletesWithoutHang()
     {
         var p = PtyProcess.Start("powershell.exe", ["-NoProfile", "-Command", "Start-Sleep -Seconds 30"]);
@@ -204,4 +203,3 @@ public class PtyWindowsTests
         }
     }
 }
-#endif

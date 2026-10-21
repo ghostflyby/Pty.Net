@@ -1,4 +1,3 @@
-#if WINDOWS
 using Ghostflyby.Pty;
 
 namespace Ghostflyby.Pty.Tests;
@@ -8,7 +7,7 @@ public class PtyWindowsDiagnostics
 {
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
 
-    [Fact]
+    [WindowsFact]
     public void SequentialSessions_AllProduceOutputAndExit()
     {
         for (var session = 1; session <= 4; session++)
@@ -24,4 +23,3 @@ public class PtyWindowsDiagnostics
         }
     }
 }
-#endif

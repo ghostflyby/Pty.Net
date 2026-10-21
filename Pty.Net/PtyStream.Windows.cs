@@ -8,8 +8,9 @@ namespace Ghostflyby.Pty;
 
 // Windows half of PtyStream: a single overlapped BCL read pump owns the ConPTY output
 // pipe and publishes bytes into a bounded managed buffer. User reads consume only that
-// buffer, so final-frame draining never races or steals bytes from callers. Windows-only:
-// compiled only by the Windows target (see csproj).
+// buffer, so final-frame draining never races or steals bytes from callers. Compiled on
+// every OS (single source set, see csproj); PtyStream.cs dispatches the shared Stream
+// surface to the *Windows members here at runtime.
 public sealed partial class PtyStream
 {
     private const int ReadChunkSize = 16 * 1024;
@@ -18,19 +19,22 @@ public sealed partial class PtyStream
     // returns (see CloseConsoleAndDrain).
     private const int CloseDrainGraceMs = 1000;
 
-    private readonly NamedPipeClientStream _inputWrite;
-    private readonly NamedPipeClientStream _outputRead;
-    private readonly ClosePseudoConsoleSafeHandle _pseudoConsole;
+    // Single source set: the Unix half's _handle is only initialized by the Unix
+    // constructor, and these by the Windows one; the platform-foreign constructor
+    // leaves them null — unreachable on this platform by dispatch construction.
+    private readonly NamedPipeClientStream _inputWrite = null!;
+    private readonly NamedPipeClientStream _outputRead = null!;
+    private readonly ClosePseudoConsoleSafeHandle _pseudoConsole = null!;
     private readonly CancellationTokenSource _pumpCancellation = new();
     private readonly System.Threading.Lock _readGate = new();
     private readonly Queue<BufferChunk> _chunks = [];
     // One-shot wakeup gates (AsyncManualResetEvent-like) for waiters of the buffered
-    // data and the buffer space respectively. Per-cycle TCS instead of per-waiter:
+    // data and buffer space respectively. Per-cycle TCS instead of per-waiter:
     // a burst of N blocked readers shares a single task, and timed-out/canceled
     // waiters need no bookkeeping.
     private readonly SignalGate _dataGate = new();
     private readonly SignalGate _spaceGate = new();
-    private readonly Task _pumpTask;
+    private readonly Task _pumpTask = null!;
     private readonly TaskCompletionSource<bool> _consoleCloseCompletion = NewSignal();
     private int _bufferedBytes;
     private int _exitWaiters;
@@ -52,10 +56,10 @@ public sealed partial class PtyStream
         _pumpTask = PumpOutputAsync();
     }
 
-    internal bool IsClosed => Volatile.Read(ref _disposed) != 0;
+    internal bool IsClosedWindows => Volatile.Read(ref _disposed) != 0;
 
     /// <summary>There is no user-space buffering, so this does nothing beyond checking the stream is open.</summary>
-    public override void Flush()
+    private void FlushWindows()
     {
         ThrowIfDisposed();
         _inputWrite.Flush();
@@ -72,9 +76,9 @@ public sealed partial class PtyStream
     /// <returns>The number of bytes read, or 0 at end of stream.</returns>
     /// <exception cref="InvalidOperationException">A pending async read is in progress on this stream; sync and async reads cannot be mixed.</exception>
     /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
-    public override int Read(Span<byte> buffer)
+    private int ReadWindows(Span<byte> buffer)
     {
-        return buffer.IsEmpty ? 0 : Read(buffer, Timeout.Infinite);
+        return buffer.IsEmpty ? 0 : ReadWindowsCore(buffer, Timeout.Infinite);
     }
 
     /// <summary>
@@ -82,7 +86,7 @@ public sealed partial class PtyStream
     /// <see cref="PtyProcess"/>. Zero is a non-blocking probe; negative waits indefinitely.
     /// Returns 0 at end of stream (output EOF) and when the timeout elapses with no data.
     /// </summary>
-    private int Read(Span<byte> target, int timeoutMs)
+    private int ReadWindowsCore(Span<byte> target, int timeoutMs)
     {
         ThrowIfDisposed();
         if (Volatile.Read(ref _pendingAsyncReads) > 0)
@@ -139,9 +143,9 @@ public sealed partial class PtyStream
     /// <returns>The number of bytes read, or 0 at end of stream.</returns>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> is canceled before any data was read.</exception>
     /// <exception cref="ObjectDisposedException">The stream is disposed while the read is pending.</exception>
-    public override async ValueTask<int> ReadAsync(
+    private async ValueTask<int> ReadAsyncWindows(
         Memory<byte> buffer,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
         if (buffer.IsEmpty)
@@ -188,7 +192,7 @@ public sealed partial class PtyStream
     /// <param name="buffer">The bytes to write.</param>
     /// <exception cref="IOException">The child's terminal is closed.</exception>
     /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
-    public override void Write(ReadOnlySpan<byte> buffer)
+    private void WriteWindows(ReadOnlySpan<byte> buffer)
     {
         ThrowIfDisposed();
         if (!buffer.IsEmpty)
@@ -204,9 +208,9 @@ public sealed partial class PtyStream
     /// <exception cref="OperationCanceledException">The write was canceled before it completed.</exception>
     /// <exception cref="IOException">The child's terminal is closed.</exception>
     /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
-    public override ValueTask WriteAsync(
+    private ValueTask WriteAsyncWindows(
         ReadOnlyMemory<byte> buffer,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
         return buffer.IsEmpty
@@ -224,7 +228,7 @@ public sealed partial class PtyStream
     /// <param name="rows">Number of character rows.</param>
     /// <exception cref="ObjectDisposedException">The stream is disposed.</exception>
     /// <exception cref="Win32Exception">ResizePseudoConsole failed.</exception>
-    internal void SetWindowSize(int columns, int rows)
+    internal void SetWindowSizeWindows(int columns, int rows)
     {
         ThrowIfDisposed();
         // The CsWin32 friendly overload keeps the SafeHandle add-ref'd for the call;
@@ -284,7 +288,7 @@ public sealed partial class PtyStream
 
     /// <summary>Releases the stream's ConPTY channels, aborting any in-flight operations first.</summary>
     /// <param name="disposing">True when called from user code (not the finalizer).</param>
-    protected override void Dispose(bool disposing)
+    private void DisposeWindows(bool disposing)
     {
         if (!disposing || Interlocked.Exchange(ref _disposed, 1) != 0)
         {
@@ -363,11 +367,11 @@ public sealed partial class PtyStream
         {
             PublishEof();
         }
-        catch (ObjectDisposedException) when (IsClosed)
+        catch (ObjectDisposedException) when (IsClosedWindows)
         {
             PublishEof();
         }
-        catch (IOException) when (_pseudoConsole.IsClosed || IsClosed)
+        catch (IOException) when (_pseudoConsole.IsClosed || IsClosedWindows)
         {
             PublishEof();
         }
@@ -530,7 +534,7 @@ public sealed partial class PtyStream
 
     private void ThrowIfDisposed()
     {
-        ObjectDisposedException.ThrowIf(IsClosed, this);
+        ObjectDisposedException.ThrowIf(IsClosedWindows, this);
     }
 
     /// <summary>

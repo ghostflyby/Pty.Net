@@ -5,12 +5,12 @@ namespace Ghostflyby.Pty;
 
 /// <summary>
 /// Windows half of <see cref="PtyProcess"/>: ConPTY launch, terminate-before-close
-/// teardown and process-handle reaping. Compiled only on the Windows target (see csproj),
-/// so the shared <c>PtyProcess.cs</c> carries no platform conditionals.
+/// teardown and process-handle reaping. Compiled on every OS (single source set, see
+/// csproj); <c>PtyProcess.cs</c> dispatches to it at runtime on Windows.
 /// </summary>
 public sealed partial class PtyProcess
 {
-    private static partial PtyProcess StartPlatform(
+    private static PtyProcess StartPlatformWindows(
         string file, IReadOnlyList<string> arguments, string? workingDirectory,
         IDictionary<string, string?> environment, Encoding? inputEncoding, Encoding? outputEncoding,
         int initialCols, int initialRows)
@@ -33,7 +33,7 @@ public sealed partial class PtyProcess
     /// and never crosses the bridge, so <see cref="Encoding.Equals"/> would wrongly
     /// split equivalents).
     /// </summary>
-    private partial void CreateFacades(
+    private void CreateFacadesWindows(
         Encoding inputEncoding, Encoding outputEncoding,
         out Stream inputFacadeStream, out Stream outputFacadeStream)
     {
@@ -54,7 +54,7 @@ public sealed partial class PtyProcess
     /// later attempt can retry. An invalid or missing handle means there is nothing to
     /// terminate and no retry makes sense.
     /// </summary>
-    private partial bool KillPlatform()
+    private bool KillPlatformWindows()
     {
         if (ProcessHandle is null || ProcessHandle.IsInvalid)
             return true; // nothing to terminate; do not retry
@@ -67,7 +67,7 @@ public sealed partial class PtyProcess
     }
 
     /// <summary>Windows: starts the async pseudo-console close, which sends CTRL_CLOSE_EVENT (see <see cref="PtyProcess.RequestClose"/>).</summary>
-    private partial void RequestClosePlatform() => BaseStream.BeginAsyncClose();
+    private void RequestClosePlatformWindows() => BaseStream.BeginAsyncClose();
 
     /// <summary>
     /// Gives a still-alive child the chance to exit cleanly before the terminal closes:
@@ -77,7 +77,7 @@ public sealed partial class PtyProcess
     /// not exit, the dispose grace window force-kills it, which unblocks that close.
     /// Exited children are left alone so their final output is preserved.
     /// </summary>
-    private void SignalChildIfAlive()
+    private void SignalChildIfAliveWindows()
     {
         if (!HasExited)
             BaseStream.BeginAsyncClose();
@@ -88,7 +88,7 @@ public sealed partial class PtyProcess
     /// pipe into its managed queue, so there is nothing to do here. Do not consume that
     /// queue: all bytes remain visible to the caller through BaseStream / Output.
     /// </summary>
-    private partial void DrainOutput()
+    private void DrainOutputWindows()
     {
     }
 
@@ -98,17 +98,17 @@ public sealed partial class PtyProcess
     /// waits for space). Lift the bound for an explicit wait, preserving all bytes for
     /// later user reads.
     /// </summary>
-    private partial void BeginExitWait() => BaseStream.EnterExitWait();
+    private void BeginExitWaitWindows() => BaseStream.EnterExitWait();
 
     /// <summary>Balances <see cref="BeginExitWait"/> when the wait returns, times out, or is canceled.</summary>
-    private partial void EndExitWait() => BaseStream.ExitExitWait();
+    private void EndExitWaitWindows() => BaseStream.ExitExitWait();
 
     /// <summary>
     /// Called by the reaper after the root process exits. ClosePseudoConsole can wait for
     /// a final output frame to drain; PtyStream queues that work away from this shared
     /// reaper thread and publishes EOF when done.
     /// </summary>
-    private partial void OnReapedPlatform()
+    private void OnReapedPlatformWindows()
     {
         BaseStream.NotifyProcessExited();
     }
@@ -118,7 +118,7 @@ public sealed partial class PtyProcess
     /// process handle, then the real Windows exit code (no wait-status/signal encoding).
     /// Returns true once the terminal result is available.
     /// </summary>
-    private partial bool TryReapPlatform(out TerminationStatus? terminationStatus)
+    private bool TryReapPlatformWindows(out TerminationStatus? terminationStatus)
     {
         if (ProcessHandle is null || ProcessHandle.IsInvalid)
         {

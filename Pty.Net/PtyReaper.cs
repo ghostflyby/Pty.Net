@@ -27,15 +27,22 @@ namespace Ghostflyby.Pty;
 /// alive, this reaper keeps watching, so a child can never be left as a zombie.
 /// </para>
 /// <para>
-/// The per-process reap is a partial method implemented in PtyProcess.Start.Windows.cs
-/// / PtyProcess.Start.Unix.cs, so this file carries no platform conditionals.
+/// The per-process reap is dispatched at the top of this class to the Windows/Unix
+/// halves (PtyReaper.Windows.cs / PtyReaper.Unix.cs), both compiled on every OS
+/// (single source set, see csproj).
 /// </para>
 /// </summary>
 internal static partial class PtyReaper
 {
-    /// <summary>Registers a <see cref="PtyProcess"/> for reaping; removed once it is reaped.</summary>
-    public static void Watch(PtyProcess process) => WatchPlatform(process);
+    /// <summary>Cached platform verdict for the dispatch below (never changes per process).</summary>
+    private static readonly bool IsWindowsPlatform = OperatingSystem.IsWindows();
 
-    /// <summary>Platform hook: the platform half starts its reaper thread and registers the process.</summary>
-    private static partial void WatchPlatform(PtyProcess process);
+    /// <summary>Registers a <see cref="PtyProcess"/> for reaping; removed once it is reaped.</summary>
+    public static void Watch(PtyProcess process)
+    {
+        if (IsWindowsPlatform)
+            WatchPlatformWindows(process);
+        else
+            WatchPlatformUnix(process);
+    }
 }

@@ -9,13 +9,14 @@ using Windows.Win32.System.Console;
 using Windows.Win32.System.Threading;
 using static Windows.Win32.PInvoke;
 
-// CA1416 (platform compatibility) is a structural false positive here: the analyzer only
-// understands platform expressed via TFM/RID or [SupportedOSPlatform], not this repo's
-// single-TFM + file-glob splitting, so it flags these Windows-only P/Invoke calls as
-// "reachable on all platforms". The class below is compiled only on Windows (csproj
-// glob), and the [SupportedOSPlatform] route is unusable because partial classes share
-// annotations across files (public PtyProcess/PtyStream would become Windows-only).
-// Scoped to this one file; every other file keeps warnings-as-errors.
+// CA1416 (platform compatibility): the CsWin32-generated P/Invokes carry versioned
+// [SupportedOSPlatform] stamps (windows5.0/5.1.2600/…), and neither a plain
+// OperatingSystem.IsWindows() guard nor an unversioned [SupportedOSPlatform] context
+// clears a version-qualified requirement — only version-matching guards do, which is
+// untenable across a whole interop surface. This class is reachable only behind the
+// ConPTY seam (WindowsPty.IsSupported / PtyProcess's runtime dispatch), so the
+// diagnostic is a structural false positive here. Scoped to this one file; every other
+// file keeps warnings-as-errors.
 #pragma warning disable CA1416
 
 namespace Ghostflyby.Pty;
@@ -31,7 +32,7 @@ internal sealed record WindowsPtyResult(
 /// <summary>
 /// Windows/ConPTY launch path. CsWin32 supplies only the ConPTY and process-control APIs;
 /// <see cref="System.IO.Pipes"/> creates and owns the byte channels used for parent-side I/O.
-/// Windows-only: compiled only by the Windows target (see csproj).
+/// Windows-only at runtime; compiled on every OS (single source set, see csproj).
 /// </summary>
 internal static partial class WindowsPty
 {

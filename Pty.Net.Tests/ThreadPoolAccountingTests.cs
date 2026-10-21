@@ -42,11 +42,7 @@ public class ThreadPoolAccountingTests
         // pool state (this test runs in a serialized collection, so the only churn is
         // its own spawns). A real leak (one thread pinned per parked wait) still
         // suppresses every sample in the max window.
-#if WINDOWS
-        await Task.Delay(1500, TestContext.Current.CancellationToken);
-#else
-        await Task.Delay(300, TestContext.Current.CancellationToken);
-#endif
+        await Task.Delay(OperatingSystem.IsWindows() ? 1500 : 300, TestContext.Current.CancellationToken);
         ThreadPool.GetAvailableThreads(out var workersBefore, out _);
         var workersDuring = TestBash.MaxAvailableWorkers(TimeSpan.FromSeconds(1));
 

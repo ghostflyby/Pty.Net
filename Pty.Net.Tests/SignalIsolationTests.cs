@@ -2,7 +2,6 @@ using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 
 namespace Ghostflyby.Pty.Tests;
-#if !WINDOWS
 
 // The .NET runtime (or host app) may install custom signal handlers (e.g. ignore
 // SIGPIPE). If posix_spawn inherited those dispositions into the shell, pipe behavior
@@ -14,7 +13,7 @@ public partial class SignalIsolationTests
     private const string Done = "__DONE__";
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(5);
 
-    [Fact]
+    [UnixFact]
     public void ChildResetsSignalsToDefaults()
     {
         // Parent ignores SIGINT and SIGPIPE.
@@ -52,5 +51,3 @@ public partial class SignalIsolationTests
         internal static partial IntPtr signal(Signals signum, IntPtr handler);
     }
 }
-
-#endif

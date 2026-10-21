@@ -753,47 +753,109 @@ public sealed partial class PtyProcess : IDisposable, IAsyncDisposable
     private static StringComparer EnvironmentKeyComparer =>
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
-    // --- platform partial hooks ---------------------------------------------
-    // Each has exactly one implementing part: PtyProcess.Start.Windows.cs or
-    // PtyProcess.Start.Unix.cs (only the matching file is compiled per platform).
+    // --- platform dispatch ----------------------------------------------------
+    // Every platform half (the *Windows / *Unix methods in PtyProcess.Start.Windows.cs
+    // and PtyProcess.Start.Unix.cs) is compiled on every OS — the single source set is
+    // the point (see csproj) — and these dispatchers pick one at runtime. The IL
+    // resolve-on-call behavior of P/Invokes makes the platform-foreign half inert.
+
+    /// <summary>Cached platform verdict for the dispatchers below (never changes per process).</summary>
+    private static readonly bool IsWindowsPlatform = OperatingSystem.IsWindows();
 
     /// <summary>Creates the facade streams the text facades wrap; Windows transcodes to/from UTF-8.</summary>
-    private partial void CreateFacades(
+    private void CreateFacades(
         Encoding inputEncoding, Encoding outputEncoding,
-        out Stream inputFacadeStream, out Stream outputFacadeStream);
+        out Stream inputFacadeStream, out Stream outputFacadeStream)
+    {
+        if (IsWindowsPlatform)
+            CreateFacadesWindows(inputEncoding, outputEncoding, out inputFacadeStream, out outputFacadeStream);
+        else
+            CreateFacadesUnix(inputEncoding, outputEncoding, out inputFacadeStream, out outputFacadeStream);
+    }
 
     /// <summary>Launches the child attached to a pty and returns the new <see cref="PtyProcess"/>.</summary>
-    private static partial PtyProcess StartPlatform(
+    private static PtyProcess StartPlatform(
         string file, IReadOnlyList<string> arguments, string? workingDirectory,
         IDictionary<string, string?> environment, Encoding? inputEncoding, Encoding? outputEncoding,
-        int initialCols, int initialRows);
+        int initialCols, int initialRows)
+    {
+        return IsWindowsPlatform
+            ? StartPlatformWindows(file, arguments, workingDirectory, environment, inputEncoding, outputEncoding,
+                initialCols, initialRows)
+            : StartPlatformUnix(file, arguments, workingDirectory, environment, inputEncoding, outputEncoding,
+                initialCols, initialRows);
+    }
 
     /// <summary>
     /// Terminates the child: SIGKILL on Unix, TerminateProcess on Windows. Returns
     /// false when the child still exists but the termination could not be issued —
     /// the caller rolls back its kill bookkeeping so the attempt can be retried.
     /// </summary>
-    private partial bool KillPlatform();
+    private bool KillPlatform() => IsWindowsPlatform ? KillPlatformWindows() : KillPlatformUnix();
 
     /// <summary>Sends the terminal-close signal to the child: SIGHUP on Unix, async CTRL_CLOSE_EVENT on Windows.</summary>
-    private partial void RequestClosePlatform();
+    private void RequestClosePlatform()
+    {
+        if (IsWindowsPlatform)
+            RequestClosePlatformWindows();
+        else
+            RequestClosePlatformUnix();
+    }
+
+    /// <summary>Signals a still-alive child to exit cleanly before teardown: SIGHUP on Unix, async CTRL_CLOSE_EVENT on Windows.</summary>
+    private void SignalChildIfAlive()
+    {
+        if (IsWindowsPlatform)
+            SignalChildIfAliveWindows();
+        else
+            SignalChildIfAliveUnix();
+    }
 
     /// <summary>Non-blocking reap attempt for the child; true when collected, with its terminal result.</summary>
-    private partial bool TryReapPlatform(out TerminationStatus? terminationStatus);
+    private bool TryReapPlatform(out TerminationStatus? terminationStatus)
+    {
+        return IsWindowsPlatform
+            ? TryReapPlatformWindows(out terminationStatus)
+            : TryReapPlatformUnix(out terminationStatus);
+    }
 
     /// <summary>Platform teardown that must run off the shared reaper thread (Windows only).</summary>
-    private partial void OnReapedPlatform();
+    private void OnReapedPlatform()
+    {
+        if (IsWindowsPlatform)
+            OnReapedPlatformWindows();
+        else
+            OnReapedPlatformUnix();
+    }
 
     /// <summary>Drains available output without consuming it for the caller (Unix discards it).</summary>
-    private partial void DrainOutput();
+    private void DrainOutput()
+    {
+        if (IsWindowsPlatform)
+            DrainOutputWindows();
+        else
+            DrainOutputUnix();
+    }
 
     /// <summary>
     /// Called around an exit wait. Windows lifts the output pump's buffer bound for the
     /// duration of the wait, so a child blocked writing more output than the bound cannot
     /// deadlock the wait; Unix has no equivalent bound.
     /// </summary>
-    private partial void BeginExitWait();
+    private void BeginExitWait()
+    {
+        if (IsWindowsPlatform)
+            BeginExitWaitWindows();
+        else
+            BeginExitWaitUnix();
+    }
 
     /// <summary>Balances <see cref="BeginExitWait"/> when the wait returns, times out, or is canceled.</summary>
-    private partial void EndExitWait();
+    private void EndExitWait()
+    {
+        if (IsWindowsPlatform)
+            EndExitWaitWindows();
+        else
+            EndExitWaitUnix();
+    }
 }

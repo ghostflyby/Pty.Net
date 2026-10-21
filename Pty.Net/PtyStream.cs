@@ -75,7 +75,7 @@ public sealed partial class PtyStream : Stream
     public override int Read(byte[] buffer, int offset, int count)
     {
         ValidateArgs(buffer, offset, count);
-        return Read(buffer.AsSpan(offset, count), Timeout.Infinite);
+        return Read(buffer.AsSpan(offset, count));
     }
 
     /// <summary>
@@ -100,5 +100,78 @@ public sealed partial class PtyStream : Stream
         ArgumentNullException.ThrowIfNull(buffer);
         if (offset < 0 || count < 0 || offset + count > buffer.Length)
             throw new ArgumentOutOfRangeException(nameof(offset), "Offset and count are out of bounds for the buffer.");
+    }
+
+    // --- platform dispatch -----------------------------------------------------
+    // The Unix/Windows halves (PtyStream.Unix.cs / PtyStream.Windows.cs) are both
+    // compiled on every OS (single source set, see csproj); the Stream surface
+    // dispatches to the platform half at runtime.
+
+    /// <summary>Cached platform verdict for the dispatchers below (never changes per process).</summary>
+    private static readonly bool IsWindowsPlatform = OperatingSystem.IsWindows();
+
+    /// <summary>True once the stream has been disposed.</summary>
+    internal bool IsClosed => IsWindowsPlatform ? IsClosedWindows : IsClosedUnix;
+
+    /// <inheritdoc cref="Read(byte[], int, int)"/>
+    public override void Flush()
+    {
+        if (IsWindowsPlatform)
+            FlushWindows();
+        else
+            FlushUnix();
+    }
+
+    /// <inheritdoc cref="Read(byte[], int, int)"/>
+    public override int Read(Span<byte> buffer)
+    {
+        return IsWindowsPlatform ? ReadWindows(buffer) : ReadUnix(buffer);
+    }
+
+    /// <inheritdoc cref="Read(byte[], int, int)"/>
+    public override ValueTask<int> ReadAsync(
+        Memory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        return IsWindowsPlatform
+            ? ReadAsyncWindows(buffer, cancellationToken)
+            : ReadAsyncUnix(buffer, cancellationToken);
+    }
+
+    /// <inheritdoc cref="Write(byte[], int, int)"/>
+    public override void Write(ReadOnlySpan<byte> buffer)
+    {
+        if (IsWindowsPlatform)
+            WriteWindows(buffer);
+        else
+            WriteUnix(buffer);
+    }
+
+    /// <inheritdoc cref="Write(byte[], int, int)"/>
+    public override ValueTask WriteAsync(
+        ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        return IsWindowsPlatform
+            ? WriteAsyncWindows(buffer, cancellationToken)
+            : WriteAsyncUnix(buffer, cancellationToken);
+    }
+
+    /// <summary>Sets the terminal window size in character cells (TIOCSWINSZ on Unix, ResizePseudoConsole on Windows).</summary>
+    /// <param name="columns">Number of character columns.</param>
+    /// <param name="rows">Number of character rows.</param>
+    internal void SetWindowSize(int columns, int rows)
+    {
+        if (IsWindowsPlatform)
+            SetWindowSizeWindows(columns, rows);
+        else
+            SetWindowSizeUnix(columns, rows);
+    }
+
+    /// <inheritdoc/>
+    protected override void Dispose(bool disposing)
+    {
+        if (IsWindowsPlatform)
+            DisposeWindows(disposing);
+        else
+            DisposeUnix(disposing);
     }
 }
