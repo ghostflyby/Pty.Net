@@ -6,14 +6,34 @@ any exist, live on the GitHub Releases page. Each released version also has a
 GitHub Release (https://github.com/ghostflyby/Pty.Net/releases) and a tag;
 add a section here as part of the release.
 
-## Unreleased
+## 1.0.1 — 2026-10-22
 
-- CI: a `stress` workflow (nightly schedule, manual dispatch, and opt-in per-PR
-  via the `stress` label) repeats the full suite on Ubuntu and Windows with an
-  aggressive xunit profile — `-p:StressMode=true` swaps `xunit.runner.stress.json`
-  in as `xunit.runner.json`, giving unlimited runner threads and test-case-level
-  parallelism. Deliberate oversubscription maximizes concurrent PTY sessions to
-  surface contention races; red there is an investigation signal, not a merge gate.
+Internal modernization and CI work; the public API and package layout are
+unchanged.
+
+- Build: the library is now a single platform-independent source set. Every OS
+  build compiles the full Windows + Unix code — CsWin32's ConPTY interop included,
+  generated through its build-task mode on every host — and selects the platform
+  half at runtime instead of via per-OS file globs and `#if`. Editing shared code
+  on any one machine now type-checks all three platforms, and the three CI build
+  jobs emit byte-identical IL. A dedicated fork-child bug the old split made
+  unrepresentable locally surfaced in review and is fixed: the merged
+  `PtyProcess` type no longer resolves Unix libc symbols at type initialization,
+  which would have failed on Windows with `TypeInitializationException`.
+- Tests: platform gates moved from `#if` to discovery-time-skipped facts
+  (`[WindowsFact]`/`[UnixFact]`/`[MacOsFact]`), so platform-foreign tests now
+  compile — and surface as skipped — on every OS.
+- CI: the built-DLL guard now asserts the single source set (both platform halves
+  present in every build) instead of the old per-OS split; a `stress` workflow
+  (nightly schedule, manual dispatch, and opt-in per-PR via the `stress` label)
+  repeats the full suite on Ubuntu and Windows with an aggressive xunit profile —
+  `-p:StressMode=true` swaps `xunit.runner.stress.json` in as `xunit.runner.json`,
+  giving unlimited runner threads and test-case-level parallelism. Deliberate
+  oversubscription maximizes concurrent PTY sessions to surface contention races;
+  red there is an investigation signal, not a merge gate.
+- Hygiene: repo-wide `.editorconfig` adoption with IDE/dotnet format agreement,
+  and the underscore-prefix rename for private fields.
+- Dependencies: xunit.v3 4.0.1, actions/attest-build-provenance v4.
 
 ## 1.0.0 — 2026-09-05
 
