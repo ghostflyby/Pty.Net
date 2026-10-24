@@ -65,6 +65,9 @@ csharp_style_namespace_declarations = file_scoped:suggestion
 dotnet_diagnostic.ide0005.severity = suggestion
 # Rider-only inspection turned off by preference.
 resharper_loop_can_be_converted_to_query_highlighting = none
+# A multiline list ends with a trailing comma. Rider adds it during code cleanup;
+# Roslyn has no rule for it and leaves the comma in place.
+resharper_trailing_comma_in_multiline_lists = true
 
 # Roslyn ships no naming rules, so the shared conventions must be stated here;
 # Rider reads the same standard dotnet_naming_* properties.
