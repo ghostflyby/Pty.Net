@@ -46,13 +46,13 @@ public sealed partial class PtyStream
 
     /// <summary>Takes ownership of both parent pipe ends and the pseudo console.</summary>
     internal PtyStream(
-        NamedPipeClientStream _inputWrite,
-        NamedPipeClientStream _outputRead,
-        ClosePseudoConsoleSafeHandle _pseudoConsole)
+        NamedPipeClientStream inputWrite,
+        NamedPipeClientStream outputRead,
+        ClosePseudoConsoleSafeHandle pseudoConsole)
     {
-        this._inputWrite = _inputWrite;
-        this._outputRead = _outputRead;
-        this._pseudoConsole = _pseudoConsole;
+        _inputWrite = inputWrite;
+        _outputRead = outputRead;
+        _pseudoConsole = pseudoConsole;
         _pumpTask = PumpOutputAsync();
     }
 
