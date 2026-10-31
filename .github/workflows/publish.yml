@@ -35,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ windows-latest, ubuntu-latest, macos-latest ]
+        os: [ windows-2025, ubuntu-24.04, macos-26 ]
     steps:
       - uses: actions/checkout@v7
 
@@ -43,7 +43,8 @@ jobs:
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
-
+          cache: true
+          cache-dependency-path: '**/*.csproj'
       - name: Set version from tag
         run: |
           "VERSION=$( $env:GITHUB_REF_NAME -replace '^v', '' )" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
@@ -68,7 +69,7 @@ jobs:
   publish:
     name: Publish to nuget.org + GitHub release
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # id-token: write lets NuGet/login exchange the OIDC token for a short-lived NuGet
     # API key (Trusted Publishing) and signs the build attestation; attestations: write
@@ -103,11 +104,12 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           $version = $env:GITHUB_REF_NAME -replace '^v', ''
-          "VERSION=$version" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
           if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$')
           {
             throw "tag '$env:GITHUB_REF_NAME' is not a valid vX.Y.Z[(-suffix)] version"
           }
+          $candidateV = [semver]::new($version)
+          "VERSION=$version" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
           # Refuse versions nuget.org already has, before anything builds. With
           # --skip-duplicate gone from the push this is the belt to its suspenders,
           # and it gives traceability-only tag pushes (a re-tag of a historical
@@ -174,46 +176,9 @@ jobs:
           }
           if ($latest)
           {
-            function Test-Newer([string]$candidate, [string]$previous)
-            {
-              $c = $candidate -split '-'; $p = $previous -split '-'
-              $cNum = [version]$c[0]; $pNum = [version]$p[0]
-              if ($cNum -gt $pNum)
-              {
-                return $true
-              }
-              if ($cNum -lt $pNum)
-              {
-                return $false
-              }
-              $cPre = if ($c.Count -gt 1)
-              {
-                $c[1]
-              }
-              else
-              {
-                ''
-              }
-              $pPre = if ($p.Count -gt 1)
-              {
-                $p[1]
-              }
-              else
-              {
-                ''
-              }
-              if ($pPre -eq '' -and $cPre -ne '')
-              {
-                return $false
-              }   # 1.0.0-beta < 1.0.0
-              if ($cPre -eq '' -and $pPre -ne '')
-              {
-                return $true
-              }
-              return $cPre -gt $pPre
-            }
             $latestV = $latest -replace '^v', ''
-            if (-not (Test-Newer $version $latestV))
+            $previousV = [semver]::new($latestV)
+            if ($candidateV -le $previousV)
             {
               throw "version '$version' is not newer than the latest release '$latestV'"
             }
@@ -240,9 +205,9 @@ jobs:
           # corresponding PDB with the DLL that produced it: the final snupkg must
           # mirror the final nupkg's DLL hierarchy exactly.
           $platforms = [ordered]@{
-            'pkg-ubuntu-latest' = @{ Rids = @('linux-x64', 'linux-arm64') }
-            'pkg-macos-latest' = @{ Rids = @('osx-x64', 'osx-arm64') }
-            'pkg-windows-latest' = @{ Rids = @('win-x64', 'win-arm64') }
+            'pkg-ubuntu-24.04' = @{ Rids = @('linux-x64', 'linux-arm64') }
+            'pkg-macos-26' = @{ Rids = @('osx-x64', 'osx-arm64') }
+            'pkg-windows-2025' = @{ Rids = @('win-x64', 'win-arm64') }
           }
           $sources = @{ }
           foreach ($art in $platforms.Keys)
@@ -265,7 +230,7 @@ jobs:
           #   * ref/net10.0/ carries the compile-time reference.
           #   * A flat lib/net10.0/Ghostflyby.Pty.dll is NOT shipped: it would be a
           #     runtime fallback for unsupported RIDs and could execute a wrong-OS dll.
-          $refSource = $sources['pkg-ubuntu-latest']
+          $refSource = $sources['pkg-ubuntu-24.04']
           $refNupkg = [System.IO.Compression.ZipFile]::OpenRead($refSource.Nupkg.FullName)
           $refSnupkg = [System.IO.Compression.ZipFile]::OpenRead($refSource.Snupkg.FullName)
           try
@@ -329,7 +294,7 @@ jobs:
 
           # Root package structure comes from the Ubuntu package. Exclude lib/ref;
           # those trees were rebuilt above and the symbols tree is rebuilt separately.
-          $base = $sources['pkg-ubuntu-latest'].Nupkg
+          $base = $sources['pkg-ubuntu-24.04'].Nupkg
           $zip = [System.IO.Compression.ZipFile]::OpenRead($base.FullName)
           try
           {
@@ -352,7 +317,7 @@ jobs:
 
           # Build the snupkg from one platform symbol package's metadata, replacing
           # its original lib PDB with the PDB tree that mirrors the final nupkg.
-          $symbolBase = $sources['pkg-ubuntu-latest'].Snupkg
+          $symbolBase = $sources['pkg-ubuntu-24.04'].Snupkg
           $zip = [System.IO.Compression.ZipFile]::OpenRead($symbolBase.FullName)
           try
           {
@@ -590,13 +555,15 @@ jobs:
       # the fresh upload's validation lag — 409 "another copy pending validation" —
       # and failed the step after both files were already up.
       - name: Publish to nuget.org
-        run: dotnet nuget push "Ghostflyby.Pty.$env:VERSION.nupkg" --source https://api.nuget.org/v3/index.json --api-key "${{ steps.login.outputs.NUGET_API_KEY }}"
+        run: dotnet nuget push "Ghostflyby.Pty.$env:VERSION.nupkg" --source https://api.nuget.org/v3/index.json --api-key "$env:NUGET_API_KEY"
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
 
       - name: Create GitHub release
         run: |
           gh release create "$env:GITHUB_REF_NAME" --title "$env:GITHUB_REF_NAME" `
-            --notes "Cross-platform pty library — see https://www.nuget.org/packages/Ghostflyby.Pty/$env:VERSION for package details." `
-            "Ghostflyby.Pty.$env:VERSION.nupkg"
+            --notes "Cross-platform pty library — see https://www.nuget.org/packages/Ghostflyby.Pty/$env:VERSION for package details. Symbol packages (.snupkg) are on nuget.org; debuggers fetch them automatically." `
+            "Ghostflyby.Pty.$env:VERSION.nupkg" "Ghostflyby.Pty.$env:VERSION.snupkg"
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -643,6 +610,6 @@ jobs:
           gh pr create --base main --head "housekeeping/shipped-v$env:VERSION" `
             --title "chore: move shipped API to Shipped for $env:GITHUB_REF_NAME" `
             --body "Publish-time housekeeping: the API shipped in $env:GITHUB_REF_NAME moves from Unshipped to Shipped (the entries present on the tag commit)."
-          gh pr merge --auto --merge
+          gh pr merge --merge
         env:
           GH_TOKEN: ${{ github.token }}

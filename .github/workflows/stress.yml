@@ -39,7 +39,7 @@ jobs:
         # billing. macOS runners bill at 10x on private repos, so kqueue stress
         # is currently covered only by local runs; add macos-latest here only if
         # a kqueue-specific signal shows up that the other halves cannot catch.
-        os: [ ubuntu-latest, windows-latest ]
+        os: [ ubuntu-24.04, windows-2025 ]
     steps:
       - uses: actions/checkout@v7
 
@@ -47,7 +47,8 @@ jobs:
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
-
+          cache: true
+          cache-dependency-path: '**/*.csproj'
       - name: Restore
         run: dotnet restore Pty.Net.slnx
 

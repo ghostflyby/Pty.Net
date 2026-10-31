@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ ubuntu-latest, windows-latest ]
+        os: [ ubuntu-24.04, windows-2025 ]
     steps:
       - uses: actions/checkout@v7
 
@@ -34,7 +34,8 @@ jobs:
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
-
+          cache: true
+          cache-dependency-path: '**/*.csproj'
       - uses: github/codeql-action/init@v4
         with:
           languages: csharp
@@ -61,7 +62,7 @@ jobs:
   dependency-review:
     name: Dependency review
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:

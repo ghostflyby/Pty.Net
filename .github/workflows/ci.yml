@@ -35,7 +35,7 @@ jobs:
         # - macos-latest / macos-15-intel: the kqueue + fork/exec paths on arm64 and
         #   x64. macos-15-intel is GitHub's final Intel image (retires August 2027);
         #   its /bin/bash is 3.2, which the suite's invocation order already accommodates.
-        os: [ windows-latest, windows-11-arm, ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel ]
+        os: [ windows-2025, windows-11-arm, ubuntu-24.04, ubuntu-24.04-arm, macos-26, macos-15-intel ]
     steps:
       - uses: actions/checkout@v7
 
@@ -43,12 +43,16 @@ jobs:
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
-
+          cache: true
+          cache-dependency-path: '**/*.csproj'
       - name: Restore
         run: dotnet restore Pty.Net.slnx
 
       - name: Build
         run: dotnet build Pty.Net.slnx -c Release --no-restore --nologo
+
+      - name: Format
+        run: dotnet format Pty.Net.slnx --verify-no-changes --no-restore
 
       - name: Verify single source set in the built DLL
         # Ghostflyby.Pty.dll compiles the FULL platform source set on every OS (single
@@ -89,7 +93,7 @@ jobs:
   # '#'），所以建 testuser 并以该用户跑。
   test-container:
     name: Test (${{ matrix.image }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
