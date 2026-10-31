@@ -75,8 +75,8 @@ jobs:
     # API key (Trusted Publishing) and signs the build attestation; attestations: write
     # persists that attestation in the repository's attestation store (missing it fails
     # the step with "Resource not accessible by integration"); contents: write is for
-    # gh release create; pull-requests: write lets the housekeeping step create +
-    # auto-merge its PR. Requires the repo setting "Allow GitHub Actions to create and
+    # gh release create; pull-requests: write lets the housekeeping step create and
+    # merge its PR. Requires the repo setting "Allow GitHub Actions to create and
     # approve pull requests" to be enabled, or the PR creation fails with "Resource
     # not accessible by integration (createPullRequest)".
     permissions:
@@ -571,8 +571,8 @@ jobs:
       # Unshipped to Shipped, so Shipped stays an accurate record of what is published.
       # The exact set is the Unshipped entries present on the tag commit (this checkout),
       # merged into main's Shipped and removed from main's Unshipped — later additions on
-      # main stay unshipped. main is protected (pull_request ruleset), so this opens an
-      # auto-merged PR instead of pushing directly. The release itself is already done,
+      # main stay unshipped. main is protected (pull_request ruleset), so this opens a
+      # PR instead of pushing directly. The release itself is already done,
       # so a failure here just marks the run red for manual follow-up.
       - name: Move published API into Shipped (housekeeping PR)
         run: |

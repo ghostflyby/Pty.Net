@@ -37,7 +37,7 @@ jobs:
       matrix:
         # ubuntu + windows cover the poll/epoll and ConPTY halves at 1x/2x
         # billing. macOS runners bill at 10x on private repos, so kqueue stress
-        # is currently covered only by local runs; add macos-latest here only if
+        # is currently covered only by local runs; add macos-26 here only if
         # a kqueue-specific signal shows up that the other halves cannot catch.
         os: [ ubuntu-24.04, windows-2025 ]
     steps:
