@@ -9,6 +9,7 @@ on:
   push:
     branches: [ main ]
   pull_request:
+  workflow_dispatch:
   schedule:
     # Weekly sweep even without code motion: newly published queries and
     # security-extended findings surface without waiting for the next commit.
