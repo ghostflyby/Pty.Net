@@ -23,19 +23,7 @@ jobs:
       # Report failures on every OS instead of letting one cancel the rest.
       fail-fast: false
       matrix:
-        # One native runner per shipped RID (win-x64, win-arm64, linux-x64, linux-arm64,
-        # osx-x64, osx-arm64), so every packaged runtime is actually exercised:
-        # - windows-latest / windows-11-arm: ConPTY paths. Git Bash ships with Git for
-        #   Windows on both images (arm64 image: Git 2.55+ with bash 5.x); TestHelpers
-        #   resolves bash.exe on both.
-        # - ubuntu-latest / ubuntu-24.04-arm: the Unix I/O path calls the variadic libc
-        #   ioctl via the pad-register workaround for the AAPCS64 variadic ABI (see
-        #   NativeMethods.Unix.cs); the two arm64 runners gate that ABI, and the glibc
-        #   arm64 build specifically.
-        # - macos-latest / macos-15-intel: the kqueue + fork/exec paths on arm64 and
-        #   x64. macos-15-intel is GitHub's final Intel image (retires August 2027);
-        #   its /bin/bash is 3.2, which the suite's invocation order already accommodates.
-        os: [ windows-latest, windows-11-arm, ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel ]
+        os: [ windows-2025, windows-11-arm, ubuntu-24.04, ubuntu-24.04-arm, macos-26, macos-15-intel ]
     steps:
       - uses: actions/checkout@v7
 
@@ -43,12 +31,16 @@ jobs:
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
-
+          cache: true
+          cache-dependency-path: '**/*.csproj'
       - name: Restore
         run: dotnet restore Pty.Net.slnx
 
       - name: Build
         run: dotnet build Pty.Net.slnx -c Release --no-restore --nologo
+
+      - name: Format
+        run: dotnet format Pty.Net.slnx --verify-no-changes --no-restore
 
       - name: Verify single source set in the built DLL
         # Ghostflyby.Pty.dll compiles the FULL platform source set on every OS (single
@@ -89,7 +81,7 @@ jobs:
   # '#'），所以建 testuser 并以该用户跑。
   test-container:
     name: Test (${{ matrix.image }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false

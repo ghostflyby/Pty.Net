@@ -57,6 +57,10 @@
     <CsWin32RunAsBuildTask>true</CsWin32RunAsBuildTask>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.403" PrivateAssets="all"/>
+  </ItemGroup>
+
   <!-- CsWin32 source-generates the ConPTY interop (CreatePseudoConsole + CreateProcessW
        + attribute list) under Windows.Win32.PInvoke. Runs on every build host; the
        generated [LibraryImport] stubs are lazily bound, so they compile and AOT-verify
