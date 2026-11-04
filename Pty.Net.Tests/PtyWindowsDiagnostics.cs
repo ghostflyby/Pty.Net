@@ -1,5 +1,3 @@
-using Ghostflyby.Pty;
-
 namespace Ghostflyby.Pty.Tests;
 
 /// <summary>Regression coverage for repeated ConPTY creation and teardown in one process.</summary>

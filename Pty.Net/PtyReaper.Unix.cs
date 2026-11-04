@@ -317,7 +317,7 @@ internal static partial class PtyReaper
             {
                 _pidToFd[pid] = pidfd;
             }
-            var registered = false;
+            bool registered;
             if (NativeMethods.EpollIsPacked)
             {
                 var evP = new NativeMethods.EpollEventPacked { Events = NativeMethods.EpollIn, Data = (ulong)pid };
@@ -373,8 +373,6 @@ internal static partial class PtyReaper
                 {
                     _byPid.Remove(process.Pid);
                 }
-
-                return true;
             }
 
             return true;
@@ -603,7 +601,7 @@ internal static partial class PtyReaper
                 ulong val = 1;
                 unsafe
                 {
-                    _ = NativeMethods.write(_wakeFd, (IntPtr)Unsafe.AsPointer(ref val), (nuint)sizeof(ulong));
+                    _ = NativeMethods.write(_wakeFd, (IntPtr)Unsafe.AsPointer(ref val), sizeof(ulong));
                 }
                 return;
             }
@@ -650,7 +648,7 @@ internal static partial class PtyReaper
             ulong val = 0;
             unsafe
             {
-                _ = NativeMethods.read(_wakeFd, (IntPtr)Unsafe.AsPointer(ref val), (nuint)sizeof(ulong));
+                _ = NativeMethods.read(_wakeFd, (IntPtr)Unsafe.AsPointer(ref val), sizeof(ulong));
             }
         }
     }

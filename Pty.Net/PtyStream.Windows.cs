@@ -26,7 +26,7 @@ public sealed partial class PtyStream
     private readonly NamedPipeClientStream _outputRead = null!;
     private readonly ClosePseudoConsoleSafeHandle _pseudoConsole = null!;
     private readonly CancellationTokenSource _pumpCancellation = new();
-    private readonly System.Threading.Lock _readGate = new();
+    private readonly Lock _readGate = new();
     private readonly Queue<BufferChunk> _chunks = [];
     // One-shot wakeup gates (AsyncManualResetEvent-like) for waiters of the buffered
     // data and buffer space respectively. Per-cycle TCS instead of per-waiter:

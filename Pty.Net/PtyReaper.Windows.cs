@@ -79,6 +79,7 @@ internal static partial class PtyReaper
 
                 Thread.Sleep(PollIntervalMs);
             }
+            // ReSharper disable once FunctionNeverReturns
         }
     }
 }

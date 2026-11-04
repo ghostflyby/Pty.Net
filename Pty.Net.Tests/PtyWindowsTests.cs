@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Text;
-using Ghostflyby.Pty;
 
 namespace Ghostflyby.Pty.Tests;
 
