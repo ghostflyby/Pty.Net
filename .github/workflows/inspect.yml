@@ -1,0 +1,84 @@
+name: Inspect
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+# Only the latest commit matters for the gate.
+concurrency:
+  group: inspect-${{ github.ref }}
+  cancel-in-progress: true
+
+# security-events: write is only for the SARIF upload.
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    # Not "InspectCode": the SARIF upload creates a check run of that name too.
+    name: InspectCode gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+
+      - name: Restore
+        run: dotnet restore Pty.Net.slnx
+
+      # Pinned: the rule set changes between releases and would flip the gate.
+      # Warnings and errors only: code scanning turns every result into an alert.
+      - name: Run InspectCode
+        run: dotnet tool exec JetBrains.ReSharper.GlobalTools@2026.2.3.1 -- inspectcode Pty.Net.slnx --output=inspect.sarif --format=Sarif --severity=WARNING --swea --verbosity=WARN
+
+      # InspectCode exits 0 regardless of findings; only error level fails.
+      - name: Enforce the failure gate
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath inspect.sarif)) {
+              throw 'InspectCode produced no SARIF report.'
+          }
+          $sarif = Get-Content inspect.sarif -Raw | ConvertFrom-Json
+          $results = @($sarif.runs | ForEach-Object { $_.results })
+          $errors = @($results | Where-Object { $_.level -eq 'error' })
+          $warnings = @($results | Where-Object { $_.level -eq 'warning' })
+          if ($errors.Count -eq 0) {
+              "InspectCode: no error-level findings ($($warnings.Count) warning(s))." |
+                  Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+              exit 0
+          }
+          $lines = $errors | Group-Object ruleId | Sort-Object Count -Descending |
+              ForEach-Object { "- $($_.Name): $($_.Count)" }
+          @(
+              "InspectCode blocked this run with $($errors.Count) error-level finding(s)."
+              ''
+              $lines
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          throw "InspectCode reported $($errors.Count) error-level finding(s); download the inspectcode-sarif artifact for the full report."
+
+      - name: Upload SARIF to code scanning
+        if: always() && !cancelled() && hashFiles('inspect.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: inspect.sarif
+          category: inspectcode
+
+      - name: Upload the report
+        if: always() && !cancelled()
+        uses: actions/upload-artifact@v7
+        with:
+          name: inspectcode-sarif
+          path: inspect.sarif
+          if-no-files-found: warn
+          retention-days: 7
