@@ -20,7 +20,7 @@ public sealed partial class PtyProcess
     // the child to read because type initialization always completes before any fork.
     // NOT read by static field initializers (ResolveChildNativeApi asks the OS
     // directly): initializer order across a partial class's files is not guaranteed.
-    private static readonly bool IsMacOSRuntime = OperatingSystem.IsMacOS();
+    private static readonly bool IsMacOsRuntime = OperatingSystem.IsMacOS();
 
     // Resolved only on Unix: on Windows the main-program module exports no libc
     // symbols, so resolving here would throw at type initialization and take down
@@ -104,7 +104,7 @@ public sealed partial class PtyProcess
         // must never acquire the terminal. Linux adds O_CLOEXEC (no CLOEXEC_DEFAULT
         // there — the kernel closes the fd at execve); macOS relies on the spawn flag.
         var slaveFlags = NativeMethods.ORdwr | NativeMethods.ONoctty;
-        if (!IsMacOSRuntime)
+        if (!IsMacOsRuntime)
             slaveFlags |= NativeMethods.OCloexec;
         var slaveFd = NativeMethods.open(slavePath, slaveFlags);
         if (slaveFd < 0)
@@ -189,7 +189,7 @@ public sealed partial class PtyProcess
         var spawnAttr = IntPtr.Zero;
         try
         {
-            if (IsMacOSRuntime)
+            if (IsMacOsRuntime)
             {
                 // POSIX_SPAWN_SETEXEC makes posix_spawn replace the *calling* (forked)
                 // process instead of spawning a grandchild — the fork child stays the
@@ -405,7 +405,7 @@ public sealed partial class PtyProcess
         // Platform-specific exports: GetExport throws when the symbol is absent, and
         // the platform-foreign half must never be resolved — leaving those pointers
         // null is fine, the runtime branches in ChildMain never reach them. Asks the
-        // OS directly (not IsMacOSRuntime) to stay independent of static-initializer
+        // OS directly (not IsMacOsRuntime) to stay independent of static-initializer
         // ordering across the partial class's files.
         if (OperatingSystem.IsMacOS())
         {
@@ -570,7 +570,7 @@ public sealed partial class PtyProcess
         // exec-failure errno). Linux-only at runtime: on macOS CLOEXEC_DEFAULT does this
         // kernel-side at exec (the whole reason posix_spawn is used there). The sweep
         // runs BEFORE the ctty open below, so no exclusion for it is needed.
-        if (!IsMacOSRuntime)
+        if (!IsMacOsRuntime)
         {
             // Prefer close_range(2) (syscall 436, kernel 5.9+) — one syscall instead of a
             // loop bounded by FdIsolationCap, so fds above the cap are closed too. Any
@@ -597,7 +597,7 @@ public sealed partial class PtyProcess
         // the tty as the session's controlling terminal (a dup2 of a parent-opened fd
         // never does; the python ctty probe caught exactly that). Linux adds O_CLOEXEC
         // so the kernel closes this fd at execve (after the dup2 copies below).
-        var cttyFd = api.Open(ptySlavePath, IsMacOSRuntime
+        var cttyFd = api.Open(ptySlavePath, IsMacOsRuntime
             ? NativeMethods.ORdwr
             : NativeMethods.ORdwr | NativeMethods.OCloexec);
         if (cttyFd < 0)
@@ -606,7 +606,7 @@ public sealed partial class PtyProcess
             api.Exit(127);
         }
 
-        if (IsMacOSRuntime)
+        if (IsMacOsRuntime)
         {
             // stdio: under CLOEXEC_DEFAULT only file-action-created fds survive the spawn,
             // so the manually-opened ctty fd is dup2'd onto 0/1/2 by file actions — built

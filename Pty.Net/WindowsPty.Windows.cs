@@ -4,7 +4,6 @@ using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 using Windows.Win32;
-using Windows.Win32.Foundation;
 using Windows.Win32.System.Console;
 using Windows.Win32.System.Threading;
 using static Windows.Win32.PInvoke;
@@ -34,7 +33,7 @@ internal sealed record WindowsPtyResult(
 /// <see cref="System.IO.Pipes"/> creates and owns the byte channels used for parent-side I/O.
 /// Windows-only at runtime; compiled on every OS (single source set, see csproj).
 /// </summary>
-internal static partial class WindowsPty
+internal static class WindowsPty
 {
     // PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = 22 | PROC_THREAD_ATTRIBUTE_INPUT (0x20000).
     private const uint ProcThreadAttributePseudoConsole = 0x20016;
@@ -108,7 +107,7 @@ internal static partial class WindowsPty
             var attrListPtr = IntPtr.Zero;
             var attrListInitialized = false;
             PROCESS_INFORMATION processInfo = default;
-            var success = false;
+            bool success;
             var createProcessError = 0;
             try
             {
@@ -141,14 +140,14 @@ internal static partial class WindowsPty
                 {
                     success = CreateProcess(
                         default,
-                        (PWSTR)cmdLinePtr,
+                        cmdLinePtr,
                         null,
                         null,
                         false,
                         PROCESS_CREATION_FLAGS.EXTENDED_STARTUPINFO_PRESENT |
                         PROCESS_CREATION_FLAGS.CREATE_UNICODE_ENVIRONMENT,
                         envPtr,
-                        (PCWSTR)cwdPtr,
+                        cwdPtr,
                         (STARTUPINFOW*)&startupInfo,
                         &processInfo);
                     // Capture the error immediately: the attribute-list teardown in the
@@ -181,7 +180,7 @@ internal static partial class WindowsPty
                 new SafeFileHandle(processInfo.hThread, ownsHandle: true).Dispose();
 
             var result = new WindowsPtyResult(
-                inputWrite!, outputRead!, pseudoConsole, processHandle, (int)processInfo.dwProcessId);
+                inputWrite, outputRead, pseudoConsole, processHandle, (int)processInfo.dwProcessId);
 
             inputWrite = null;
             outputRead = null;

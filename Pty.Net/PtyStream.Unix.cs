@@ -87,7 +87,7 @@ public sealed partial class PtyStream
 
         var fd = (int)_handle.DangerousGetHandle();
 
-        if (!WaitForPoll(fd, NativeMethods.PollEvents.Pollin, timeoutMs, out _))
+        if (!WaitForPoll(fd, NativeMethods.PollEvents.Pollin, timeoutMs))
             return 0; // timed out with nothing available
 
         unsafe
@@ -177,7 +177,7 @@ public sealed partial class PtyStream
         var fd = (int)_handle.DangerousGetHandle();
         // A hangup reported here (POLLHUP/POLLERR without POLLIN) needs no special
         // casing: the read below then yields 0 or EIO, handled as EOF.
-        if (!WaitForPoll(fd, NativeMethods.PollEvents.Pollin, 0, out _))
+        if (!WaitForPoll(fd, NativeMethods.PollEvents.Pollin, 0))
             return false; // nothing available right now
 
         Span<byte> chunk = stackalloc byte[8192];
@@ -286,7 +286,7 @@ public sealed partial class PtyStream
                     if (err == NativeMethods.Eagain)
                     {
                         // pty buffer full: wait until the child drains it (or the slave is gone).
-                        WaitForPoll(fd, NativeMethods.PollEvents.Pollout, Timeout.Infinite, out _);
+                        WaitForPoll(fd, NativeMethods.PollEvents.Pollout, Timeout.Infinite);
                         continue;
                     }
                     if (err == NativeMethods.Eio)
@@ -369,11 +369,9 @@ public sealed partial class PtyStream
     /// <summary>
     /// Polls <paramref name="fd"/> for <paramref name="events"/> for up to
     /// <paramref name="timeoutMs"/> ms (0 = check once, non-blocking; negative = infinite).
-    /// Returns true when the events fired; false on timeout. HUP/ERR are reported through
-    /// <paramref name="revents"/> so callers can distinguish "slave gone" from plain EAGAIN.
+    /// Returns true when the events fired; false on timeout.
     /// </summary>
-    private static bool WaitForPoll(int fd, NativeMethods.PollEvents events, int timeoutMs,
-        out NativeMethods.PollEvents revents)
+    private static bool WaitForPoll(int fd, NativeMethods.PollEvents events, int timeoutMs)
     {
         var deadline = timeoutMs < 0 ? DateTime.MaxValue : DateTime.UtcNow + TimeSpan.FromMilliseconds(timeoutMs);
 
@@ -400,12 +398,10 @@ public sealed partial class PtyStream
                 case < 0:
                     throw new IOException($"poll failed: errno={Marshal.GetLastPInvokeError()}");
                 case > 0:
-                    revents = pollFd.Revents;
                     return true;
             }
 
             if (remainingMs != 0) continue;
-            revents = 0;
             return false; // poll(..., 0) timed out: nothing available right now
         }
     }

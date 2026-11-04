@@ -1,5 +1,4 @@
 using System.Text;
-using Microsoft.Win32.SafeHandles;
 
 namespace Ghostflyby.Pty;
 
@@ -30,7 +29,7 @@ public sealed partial class PtyProcess
     /// the untouched raw UTF-8 transport — except when a selected encoding already is
     /// UTF-8, in which case that direction passes BaseStream through unbridged (every
     /// spelling of UTF-8 shares codepage 65001; the BOM flag is StreamWriter business
-    /// and never crosses the bridge, so <see cref="Encoding.Equals"/> would wrongly
+    /// and never crosses the bridge, so <see cref="object.Equals(object)"/> would wrongly
     /// split equivalents).
     /// </summary>
     private void CreateFacadesWindows(
