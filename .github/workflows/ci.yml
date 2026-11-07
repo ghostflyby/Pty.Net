@@ -65,8 +65,18 @@ jobs:
         # xunit.v3 runs on Microsoft.Testing.Platform, which the .NET 10 SDK's
         # dotnet test drives natively (the VSTest blame-hang collector is gone with
         # the v2 runner; a hung test now burns the 30-minute job timeout instead of
-        # producing a hang report).
-        run: dotnet test --solution Pty.Net.slnx -c Release --no-build --no-restore
+        # producing a hang report). --report-trx (provided by
+        # Microsoft.Testing.Extensions.TrxReport, referenced by the test
+        # project) writes the .trx into TestResults.
+        run: dotnet test --solution Pty.Net.slnx -c Release --no-build --no-restore --report-trx --results-directory TestResults
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-results-${{ matrix.os }}
+          path: TestResults
+          if-no-files-found: ignore
 
   # Linux 上的 libc 差异由容器矩阵覆盖：同一套 Linux 运行时路径要分别在 glibc
   # (sdk:10.0，基于 Ubuntu) 与 musl (sdk:10.0-alpine，基于 Alpine) 上验证。
@@ -80,17 +90,21 @@ jobs:
   # 容器默认以 root 运行，而测试用 bash 的 '$' 提示符作 ReadUntil 标记（root 下是
   # '#'），所以建 testuser 并以该用户跑。
   test-container:
-    name: Test (${{ matrix.image }})
+    name: Test (${{ matrix.image.name }})
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         image:
-          - mcr.microsoft.com/dotnet/sdk:10.0        # glibc (Ubuntu 24.04)
-          - mcr.microsoft.com/dotnet/sdk:10.0-alpine # musl (Alpine)
+          # name labels the libc under test: the artifact name cannot carry the
+          # raw image reference (':' and '/' are invalid in artifact names).
+          - name: glibc
+            image: mcr.microsoft.com/dotnet/sdk:10.0        # Ubuntu 24.04 base
+          - name: musl
+            image: mcr.microsoft.com/dotnet/sdk:10.0-alpine # Alpine base
     container:
-      image: ${{ matrix.image }}
+      image: ${{ matrix.image.image }}
     steps:
       - uses: actions/checkout@v7
 
@@ -110,4 +124,12 @@ jobs:
         # addclose validates against, tracks the soft limit. Lowering the HARD limit
         # would need CAP_SYS_RESOURCE, which the container's users lack — and it is not
         # needed to exercise the constrained-fd path.
-        run: su testuser -s /bin/sh -c 'cd "$GITHUB_WORKSPACE" && ulimit -Sn 512 && dotnet test --solution Pty.Net.slnx -c Release'
+        run: su testuser -s /bin/sh -c 'cd "$GITHUB_WORKSPACE" && ulimit -Sn 512 && dotnet test --solution Pty.Net.slnx -c Release --report-trx --results-directory TestResults'
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-results-${{ matrix.image.name }}
+          path: TestResults
+          if-no-files-found: ignore
