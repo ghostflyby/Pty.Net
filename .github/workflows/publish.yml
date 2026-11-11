@@ -75,19 +75,16 @@ jobs:
     # API key (Trusted Publishing) and signs the build attestation; attestations: write
     # persists that attestation in the repository's attestation store (missing it fails
     # the step with "Resource not accessible by integration"); contents: write is for
-    # gh release create; pull-requests: write lets the housekeeping step create and
-    # merge its PR. Requires the repo setting "Allow GitHub Actions to create and
-    # approve pull requests" to be enabled, or the PR creation fails with "Resource
-    # not accessible by integration (createPullRequest)".
+    # gh release create. The API housekeeping PR runs in its own job with its own
+    # narrow permissions, so no publishing step holds pull-requests: write.
     permissions:
       id-token: write
       attestations: write
       contents: write
-      pull-requests: write
     steps:
       # gh release create resolves the repository through git, so this job needs the
       # checkout even though it builds nothing (artifacts come from the build jobs).
-      # fetch-depth: 0 so the housekeeping step can fetch main and inspect the tag commit.
+      # fetch-depth: 0 so the validation step can fetch main and inspect the tag commit.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -567,17 +564,39 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      # Publish-time housekeeping: the API shipped in this release must move from
-      # Unshipped to Shipped, so Shipped stays an accurate record of what is published.
-      # The exact set is the Unshipped entries present on the tag commit (this checkout),
-      # merged into main's Shipped and removed from main's Unshipped — later additions on
-      # main stay unshipped. main is protected (pull_request ruleset), so this opens a
-      # PR instead of pushing directly. The release itself is already done,
-      # so a failure here just marks the run red for manual follow-up.
+  # Publish-time housekeeping: the API shipped in this release must move from
+  # Unshipped to Shipped, so Shipped stays an accurate record of what is published.
+  # The exact set is the Unshipped entries present on the tag commit (this checkout),
+  # merged into main's Shipped and removed from main's Unshipped — later additions on
+  # main stay unshipped. main is protected (pull_request ruleset), so this opens a
+  # PR instead of pushing directly.
+  #
+  # A separate job with only contents/pull-requests write: it runs after the
+  # release is already done, so a failure here never affects the published
+  # packages, and the publishing steps never hold a PR-writing token.
+  housekeeping:
+    name: Move published API into Shipped
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+
       - name: Move published API into Shipped (housekeeping PR)
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
           # The working tree is the tag commit: its Unshipped entries are what shipped.
           $tagUnshipped = @(Get-Content 'Pty.Net/PublicAPI.Unshipped.txt' | Where-Object { $_ -and -not $_.StartsWith('#') })
           if ($tagUnshipped.Count -eq 0)
@@ -586,30 +605,61 @@ jobs:
             exit 0
           }
           git fetch origin main
-          git checkout -b "housekeeping/shipped-v$env:VERSION" FETCH_HEAD
+          git checkout -b "housekeeping/shipped-v$version" FETCH_HEAD
+
+          # The files are ordered by a case-insensitive ordinal sort of the whole
+          # line; *REMOVED* is ignored for the key so a removal sorts next to the
+          # symbol it removes. This is the order the analyzer's own fixer writes,
+          # so promoting an unchanged entry stays a no-op in the diff.
+          function Sort-ApiLines([string[]] $lines)
+          {
+            $items = [string[]]$lines.Clone()
+            $keys = [string[]]@($items | ForEach-Object { $_ -replace '^\*REMOVED\*', '' })
+            [Array]::Sort($keys, $items, [System.StringComparer]::OrdinalIgnoreCase)
+            return ,$items
+          }
+
           $shippedPath = 'Pty.Net/PublicAPI.Shipped.txt'
           $unshippedPath = 'Pty.Net/PublicAPI.Unshipped.txt'
+          # Keep every directive line (e.g. #nullable enable) verbatim.
+          $shippedHeader = @(Get-Content $shippedPath | Where-Object { $_.StartsWith('#') })
+          $unshippedHeader = @(Get-Content $unshippedPath | Where-Object { $_.StartsWith('#') })
           $shipped = @(Get-Content $shippedPath | Where-Object { $_ -and -not $_.StartsWith('#') })
           $unshipped = @(Get-Content $unshippedPath | Where-Object { $_ -and -not $_.StartsWith('#') })
           $removedPrefix = '*REMOVED*'
           $tagAdditions = @($tagUnshipped | Where-Object { -not $_.StartsWith($removedPrefix) })
           $tagRemovals = @($tagUnshipped | Where-Object { $_.StartsWith($removedPrefix) } | ForEach-Object { $_.Substring($removedPrefix.Length) })
-          $remainingShipped = @($shipped | Where-Object { $_ -notin $tagRemovals })
-          $newShipped = @(($remainingShipped + $tagAdditions) | Select-Object -Unique)
-          $newUnshipped = @($unshipped | Where-Object { $_ -notin $tagUnshipped })
-          # Sort by the stripped symbol key, matching the existing Shipped ordering.
-          $key = { param($s) ($s -replace '^\*REMOVED\*', '') -replace '^(static |override )', '' }
-          $newShipped = @($newShipped | Sort-Object -Property @{ Expression = $key })
-          $newUnshipped = @($newUnshipped | Sort-Object -Property @{ Expression = $key })
-          "#nullable enable`n$( $newShipped -join "`n" )`n" | Set-Content -Path $shippedPath -NoNewline
-          "#nullable enable`n$( $newUnshipped -join "`n" )`n" | Set-Content -Path $unshippedPath -NoNewline
+          # Set operations are case-sensitive: symbol signatures are.
+          $remainingShipped = @($shipped | Where-Object { $_ -cnotin $tagRemovals })
+          $newShipped = Sort-ApiLines @(($remainingShipped + $tagAdditions) | Select-Object -Unique)
+          $newUnshipped = Sort-ApiLines @($unshipped | Where-Object { $_ -cnotin $tagUnshipped })
+          ((@($shippedHeader) + $newShipped) -join "`n") + "`n" | Set-Content -Path $shippedPath -NoNewline
+          ((@($unshippedHeader) + $newUnshipped) -join "`n") + "`n" | Set-Content -Path $unshippedPath -NoNewline
           git add $shippedPath $unshippedPath
+
+          # A hotfix tag on an older main commit can name API main already promoted;
+          # the rewrite is then a no-op and there is nothing to commit.
+          if (-not (git status --porcelain))
+          {
+            Write-Host 'main already records this release; nothing to promote'
+            exit 0
+          }
+
+          # The branch is pushed with GITHUB_TOKEN, whose events start no workflow
+          # runs, so nothing else gates this merge. Build the rewritten files first:
+          # RS0016 (an entry went missing) and RS0017 (an entry has no symbol) fail
+          # the step, keeping a bad promotion off main.
+          dotnet build Pty.Net/Pty.Net.csproj -c Release --nologo
+
           git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' `
             commit -m "chore: move shipped API to Shipped for $env:GITHUB_REF_NAME"
-          git push -u origin "housekeeping/shipped-v$env:VERSION"
-          gh pr create --base main --head "housekeeping/shipped-v$env:VERSION" `
+          git push -u origin "housekeeping/shipped-v$version"
+          gh pr create --base main --head "housekeeping/shipped-v$version" `
             --title "chore: move shipped API to Shipped for $env:GITHUB_REF_NAME" `
             --body "Publish-time housekeeping: the API shipped in $env:GITHUB_REF_NAME moves from Unshipped to Shipped (the entries present on the tag commit)."
+          # Direct merge, not --auto: the branch is pushed with the repository's own
+          # GITHUB_TOKEN, whose events start no workflow runs, so the PR never gains
+          # checks and GitHub rejects auto-merge with "Pull request is in clean status".
           gh pr merge --merge
         env:
           GH_TOKEN: ${{ github.token }}
