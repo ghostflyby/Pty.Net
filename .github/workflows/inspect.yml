@@ -30,7 +30,7 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: 10.0.x
+          global-json-file: global.json
           cache: true
           cache-dependency-path: '**/*.csproj'
 
@@ -40,7 +40,7 @@ jobs:
       # Pinned: the rule set changes between releases and would flip the gate.
       # Warnings and errors only: code scanning turns every result into an alert.
       - name: Run InspectCode
-        run: dotnet tool exec JetBrains.ReSharper.GlobalTools@2026.2.3.1 -- inspectcode Pty.Net.slnx --output=inspect.sarif --format=Sarif --severity=WARNING --swea --verbosity=WARN
+        run: dotnet tool exec --yes JetBrains.ReSharper.GlobalTools@2026.2.3.1 -- inspectcode Pty.Net.slnx --output=inspect.sarif --format=Sarif --severity=WARNING --swea --verbosity=WARN
 
       # InspectCode exits 0 regardless of findings; only error level fails.
       - name: Enforce the failure gate
