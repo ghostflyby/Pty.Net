@@ -4,7 +4,7 @@
   // bands and minors), so the rolling sdk:10.0 container images and any newer
   // runner or local install satisfy it without a bump.
   "sdk": {
-    "version": "10.0.100",
+    "version": "10.0.404",
     "rollForward": "Major",
     "allowPrerelease": false
   },
